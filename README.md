@@ -1,3 +1,8 @@
-# BESSLab v0.2 — PV-only charging, AC-coupled
+# BESSLab — PV-only, AC-coupled (Streamlit)
 
-See app for changes. Run with VS Code F5 or `streamlit run app.py`.
+Pre-feasibility BESS sizing tool for PV-only charging.
+
+## Run locally
+```bash
+pip install -r requirements.txt
+streamlit run app.py
