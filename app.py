@@ -396,8 +396,8 @@ with st.expander("Help & Guide (click to open)", expanded=False):
 by Alfred Balaga
 
 **Who this is for.**  
-Created exclusively for **Emerging Power, Inc. (EPI)** to support **pre-feasibility** sizing and dispatch strategy for **PV-only charging, AC-coupled** BESS.
-We’ll keep improving this over time based on real project feedback.
+This Streamlit app helps engineers and analysts explore **PV-only charging, AC-coupled BESS** behavior during pre-feasibility studies.
+It originated from studies and technical services work at **Emerging Power Inc. (EPI)** and is shared publicly to support learning, transparency, and community improvements.
 
 ### What the app does
 - Checks if your **contracted MW × duration** can be met using PV\→Contract first and **BESS for the residual**.
@@ -453,7 +453,7 @@ We’ll keep improving this over time based on real project feedback.
 - You’ll see the version (e.g., `v0.3.x`) in the header.  
 - Send feedback/issues to my work email. I'll triage and iterate.
 
-*© EPI internal pre-feasibility tool. Not for external distribution without approval.*
+*©acbalaga. GNU General Public License v3.0 (GPL-3.0).*
 """)
 
 
