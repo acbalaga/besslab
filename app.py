@@ -4,6 +4,36 @@
 # - Keeps: README/Help, Threshold & SOH-trigger augmentation, EOY capability + PV/BESS split,
 #          final-year daily profile, flags, downloads
 
+# ---- Simple password gate (Streamlit Cloud) ----
+import streamlit as st
+
+def _check_password():
+    secret = st.secrets.get("BESSLAB_PASS", None)
+    if not secret:
+        st.stop()
+
+    if "auth_ok" not in st.session_state:
+        st.session_state["auth_ok"] = False
+
+    if st.session_state["auth_ok"]:
+        if st.sidebar.button("Logout"):
+            st.session_state["auth_ok"] = False
+            st.rerun()
+        return True
+
+    pw = st.sidebar.text_input("Password", type="password", help="Enter the access password.")
+    if pw:
+        if pw == secret:
+            st.session_state["auth_ok"] = True
+            st.rerun()
+        else:
+            st.sidebar.error("Incorrect password.")
+    st.stop()
+
+if not _check_password():
+    st.stop()
+# ---- end gate ----
+
 import math
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Dict
