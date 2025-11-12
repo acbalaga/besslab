@@ -392,37 +392,70 @@ st.title("BESS LAB — PV-only charging, AC-coupled")
 # README / Help
 with st.expander("Help & Guide (click to open)", expanded=False):
     st.markdown("""
-**Purpose.** Rapid pre-feasibility sizing for PV-charged, AC-coupled BESS with simple augmentation logic.
+## BESS Lab version 1 — Help
+by Alfred Balaga
 
-**Data.**
-- PV 8760: `hour_index, pv_mw` (MW at the BESS coupling bus). One row = one hour.
-- Cycle model: DoD-based retention curves (built-in, or upload a custom table).
-- Project life: 10–35 years. Default PV degradation 0.6%/yr.
+**Who this is for.**  
+Created exclusively for **Emerging Power, Inc. (EPI)** to support **pre-feasibility** sizing and dispatch strategy for **PV-only charging, AC-coupled** BESS.
+We’ll keep improving this over time based on real project feedback.
 
-**Dispatch.**
-- PV-only charging. During discharge windows, PV meets contract first; BESS supplies the residual.
-- Charge windows: blank = allow any PV hour.
+### What the app does
+- Checks if your **contracted MW × duration** can be met using PV\→Contract first and **BESS for the residual**.
+- Accounts for **PV degradation**, **availability**, **RTE**, **SOC limits**, **calendar + cycle fade**, and (optional) **augmentation**.
+- Surfaces **flags** (shortfalls, SOC hits) and **KPIs** (compliance, capture, cycles, etc.).
+- Visualizes **EOY capability vs target**, **EOY delivered split (PV vs BESS)**, and a **final-year average daily profile**.
 
-**KPIs.**
-- Delivery compliance = delivered firm ÷ expected firm (%).  
-- BESS share of firm = portion of firm energy served by BESS (vs PV).
-- Charge/Discharge ratio ≈ 1/RTE at AC context.
-- PV capture = charged ÷ (charged + curtailed).
-- Discharge capacity factor (final year) = final-year discharge MWh ÷ (avail-adj MW × discharge-window hours).
+### Data inputs
+(Already pre-loaded, can be updated upon request)
+- **PV 8760 CSV**: columns `hour_index, pv_mw` (MW at the BESS coupling bus). `hour_index` can be 0–8759 or 1–8760 (1-based will be auto-shifted).  
+- **Cycle model XLSX**: DoD tables (`DoD10_Cycles / DoD10_Ret(%)`, …, `DoD100_*`). If not uploaded, we use the internal table.
 
-**Flags.**
-- Firm shortfall hours, SOC floor/ceiling hits with quick “fix knobs”.
+### Key assumptions (pre-feasibility)
+- **PV-only charge**: no charging from the grid. During discharge windows, **PV serves the contract first**; any PV surplus may charge the BESS.
+- **Single RTE** at POI (internally split √RTE for charge/discharge).  
+- **Availability** is applied to PV energy and BESS power.  
+- **Degradation** = calendar (multiplicative retention) × cycle (from DoD curves).  
+- **Augmentation (optional)**: Threshold (Capability or SOH) or Periodic; **newer cohorts preferentially take more duty** (keeps C-hours).
 
-**Charts.**
-- *EOY Capability vs Target:* bars show what the fleet can sustain per day at year-end; target line overlaid.  
-- *EOY Delivered Firm Split:* stacked PV vs BESS average per day in each year; target line overlaid.  
-- *Average Daily Profile (final year):* PV/BESS to contract (positive) & charging (negative), with contract line.
+### KPIs (how to read them)
+- **Delivery compliance (%)** = delivered firm ÷ expected firm over the project life.  
+- **BESS share of firm (%)** = portion of firm MWh delivered by BESS (vs PV).  
+- **Charge/Discharge ratio** ≈ 1/RTE (AC context).  
+- **PV capture ratio** = charged ÷ (charged + curtailed).  
+- **Discharge capacity factor (final)** = final-year BESS discharge MWh ÷ (avail-adj MW × discharge-window hours).  
+- **Eq cycles/yr** (guardrail ~300–400): from discharged MWh vs DoD-bucket energy.
 
-**Augmentation (Threshold).**
-- **Trigger = Capability**: if EOY capability < target × (1−margin), top-up to target × (1+margin).  
-- **Trigger = SOH**: if fleet SOH ≤ X%, add +Y% of initial BOL energy.  
-  *Power is added to keep the original C-hours.*
-    """)
+### Flags (with quick fixes)
+- **Firm shortfall hours**: in-window hours when PV + BESS < contract.  
+  *Try:* widen ΔSOC; add BOL MWh; improve RTE; widen charge windows; add augmentation.  
+- **SOC floor hits**: energy-limited (running out).  
+  *Try:* raise ceiling / lower floor within limits; add energy; improve RTE.  
+- **SOC ceiling hits**: can’t accept more charge.  
+  *Try:* add shoulder discharge; lower ceiling; narrow charge window if unnecessary.
+
+### Charts
+- **EOY Capability vs Target**: bars show **energy- vs power-limited** portions; line = contract/day.  
+- **EOY Delivered Split (PV vs BESS)**: average per day; line = contract/day.  
+- **Average Daily Profile (final year)**: PV→Contract + BESS→Contract (above zero), **charging shown below zero**; contract line overlaid.
+
+### Design Advisor (physics-bounded)
+- Detects **power- vs energy-limit** first.  
+- Suggests bounded deltas (caps: **RTE ≤ 92%**, **ΔSOC ≤ 90%**, **5% ≤ floor**, **ceiling ≤ 98%**).  
+- Checks **PV charge sufficiency** and estimates **extra charge hours/day** needed.  
+- Warns when implied **EqCycles/yr** exceed guardrails (recommend augmentation instead of over-cycling).
+
+### Known limitations (by design)
+- No grid charging; no price optimization; no network constraints.  
+- Hourly granularity; sub-hourly only where warranted in later versions.  
+- Warranty, safety, and interconnection compliance are **out of scope** here—refer to OEM docs and standards.
+
+### Versioning & feedback
+- You’ll see the version (e.g., `v0.3.x`) in the header.  
+- Send feedback/issues to my work email. I'll triage and iterate.
+
+*© EPI internal pre-feasibility tool. Not for external distribution without approval.*
+""")
+
 
 with st.sidebar:
     st.header("Data Sources")
