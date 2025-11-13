@@ -2,7 +2,7 @@
 # - NEW: Design Advisor + "Required to Meet" calculator (final-year aware)
 # - NEW: KPI traffic-light hints vs practical benchmarks
 # - Keeps: README/Help, Threshold & SOH-trigger augmentation, EOY capability + PV/BESS split,
-#          final-year daily profile, flags, downloads
+#          multi-period daily profiles, flags, downloads
 
 # ---- Simple password gate (Streamlit Cloud) ----
 import streamlit as st
@@ -436,7 +436,7 @@ It originated from studies and technical services work at **Emerging Power Inc. 
 ### Charts
 - **EOY Capability vs Target**: bars show **energy- vs power-limited** portions; line = contract/day.  
 - **EOY Delivered Split (PV vs BESS)**: average per day; line = contract/day.  
-- **Average Daily Profile (final year)**: PV→Contract + BESS→Contract (above zero), **charging shown below zero**; contract line overlaid.
+- **Average Daily Profiles**: view PV→Contract + BESS→Contract (above zero) with charging shown below zero for Year 1, Final Year, and the average across the project; contract line overlaid.
 
 ### Design Advisor (physics-bounded)
 - Detects **power- vs energy-limit** first.  
@@ -629,9 +629,20 @@ state = SimState(
 # Simulate years
 results: List[YearResult] = []
 dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
+first_year_logs: Optional[HourlyLog] = None
 final_year_logs = None
+hod_count = np.zeros(24, dtype=float)
+hod_sum_pv = np.zeros(24, dtype=float)
+hod_sum_bess = np.zeros(24, dtype=float)
+hod_sum_charge = np.zeros(24, dtype=float)
 for y in range(1, cfg.years + 1):
     yr, logs, _ = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
+    hours = np.mod(logs.hod.astype(int), 24)
+    np.add.at(hod_count, hours, 1)
+    np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
+    np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
+    np.add.at(hod_sum_charge, hours, logs.charge_mw)
+    if y == 1: first_year_logs = logs
     if y == cfg.years: final_year_logs = logs
     state.cum_cycles = yr.cum_cycles
     results.append(yr)
@@ -960,33 +971,64 @@ else:
 
 st.markdown("---")
 
-# ---------- Average Daily Profile (final year) ----------
-st.subheader("Average Daily Profile — PV & BESS contributions to contract; charging shown below zero (final year)")
+# ---------- Average Daily Profile ----------
+st.subheader("Average Daily Profile — PV & BESS contributions to contract; charging shown below zero")
 
-if final_year_logs is not None:
+def _avg_profile_df_from_logs(logs: HourlyLog, cfg: SimConfig) -> pd.DataFrame:
     contracted_series = np.array([
         cfg.contracted_mw if any(w.contains(int(h)) for w in cfg.discharge_windows) else 0.0
-        for h in final_year_logs.hod
+        for h in logs.hod
     ], dtype=float)
-
     df_hr = pd.DataFrame({
-        'hod': final_year_logs.hod,
-        'pv_to_contract_mw': final_year_logs.pv_to_contract_mw,
-        'bess_to_contract_mw': final_year_logs.bess_to_contract_mw,
-        'charge_mw_neg': -final_year_logs.charge_mw,
+        'hod': logs.hod.astype(int),
+        'pv_to_contract_mw': logs.pv_to_contract_mw,
+        'bess_to_contract_mw': logs.bess_to_contract_mw,
+        'charge_mw': logs.charge_mw,
         'contracted_mw': contracted_series,
     })
     avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
+    avg['charge_mw_neg'] = -avg['charge_mw']
+    return avg[['hour', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
-    base = alt.Chart(avg).encode(x=alt.X('hour:O', title='Hour of Day'))
+def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
+    base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
     area_pv = base.mark_area(opacity=0.6).encode(y=alt.Y('pv_to_contract_mw:Q', title='MW'), color=alt.value('#86c5da'))
     area_bess = base.mark_area(opacity=0.6).encode(y='bess_to_contract_mw:Q', color=alt.value('#7fd18b'))
-    area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))  # below zero
+    area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
     line_contract = base.mark_line(color='#f2a900', strokeWidth=2).encode(y='contracted_mw:Q')
     st.altair_chart(area_pv + area_bess + area_chg + line_contract, use_container_width=True)
+
+if final_year_logs is not None and first_year_logs is not None:
+    avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
+    avg_final_year = _avg_profile_df_from_logs(final_year_logs, cfg)
+
+    contracted_by_hour = np.array([
+        cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0
+        for h in range(24)
+    ], dtype=float)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        avg_project = pd.DataFrame({
+            'hour': np.arange(24),
+            'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
+            'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
+            'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
+            'contracted_mw': contracted_by_hour,
+        })
+
+    tab_final, tab_first, tab_project = st.tabs([
+        "Final year",
+        "Year 1",
+        "Average across project",
+    ])
+    with tab_final:
+        _render_avg_profile_chart(avg_final_year)
+    with tab_first:
+        _render_avg_profile_chart(avg_first_year)
+    with tab_project:
+        _render_avg_profile_chart(avg_project)
     st.caption("Positive areas: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). Contract line overlaid (gold).")
 else:
-    st.info("No final-year logs available.")
+    st.info("Average daily profiles unavailable — simulation logs not generated.")
 
 st.markdown("---")
 
