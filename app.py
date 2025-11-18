@@ -5,10 +5,17 @@
 #          multi-period daily profiles, flags, downloads
 
 # ---- Simple password gate (Streamlit Cloud) ----
+import os
 import streamlit as st
 
 def _check_password():
-    secret = st.secrets.get("BESSLAB_PASS", None)
+    if os.environ.get("BESSLAB_BYPASS_AUTH") == "1":
+        return True
+
+    try:
+        secret = st.secrets.get("BESSLAB_PASS", None)
+    except Exception:
+        secret = None
     if not secret:
         st.stop()
 
@@ -86,9 +93,10 @@ def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
 
 @dataclass
 class Window:
-    start: int  # 0..23
-    end: int    # 0..23, exclusive
-    def contains(self, hod: int) -> bool:
+    start: float  # hour-of-day, inclusive
+    end: float    # hour-of-day, exclusive
+
+    def contains(self, hod: float) -> bool:
         if self.start <= self.end:
             return self.start <= hod < self.end
         return hod >= self.start or hod < self.end
@@ -97,12 +105,28 @@ def parse_windows(text: str) -> List[Window]:
     if not text.strip():
         return []
     wins = []
+
+    def _parse_time(token: str) -> float:
+        parts = token.split(':')
+        if len(parts) == 1:
+            hour = int(parts[0])
+            minute = 0
+        elif len(parts) == 2:
+            hour = int(parts[0])
+            minute = int(parts[1])
+        else:
+            raise ValueError("Too many ':' characters")
+        if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+            raise ValueError("Hour must be 0-23 and minute 0-59")
+        return hour + minute / 60.0
+
     for part in [p.strip() for p in text.split(',') if p.strip()]:
         try:
             a, b = part.split('-')
-            h1 = int(a.split(':')[0]); h2 = int(b.split(':')[0])
-            if not (0 <= h1 <= 23 and 0 <= h2 <= 23):
-                st.warning(f"Invalid window hour in '{part}' (0..23). Skipped.")
+            h1 = _parse_time(a)
+            h2 = _parse_time(b)
+            if not (0.0 <= h1 < 24.0 and 0.0 <= h2 < 24.0):
+                st.warning(f"Invalid window hour in '{part}' (00:00-23:59). Skipped.")
                 continue
             wins.append(Window(h1, h2))
         except Exception:
@@ -222,7 +246,8 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     pv_mw = state.pv_df['pv_mw'].to_numpy(float) * pv_scale * cfg.pv_availability
 
     pow_cap_mw = state.current_power_mw * cfg.bess_availability
-    soh_cal = calc_calendar_soh(year_idx, cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
+    soh_cal_start = calc_calendar_soh(max(year_idx - 1, 0), cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
+    soh_cal_eoy = calc_calendar_soh(year_idx, cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
 
     eta_rt = max(0.05, min(cfg.rte_roundtrip, 0.9999))
     eta_ch = eta_rt ** 0.5; eta_dis = eta_rt ** 0.5
@@ -232,7 +257,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     dod_for_lookup = dod_key if dod_key else 100
     soh_cycle_pre = cycle_retention_lookup(state.cycle_df, dod_for_lookup, state.cum_cycles)
-    usable_mwh_start = state.current_usable_mwh_bolref * soh_cal * soh_cycle_pre
+    usable_mwh_start = state.current_usable_mwh_bolref * soh_cal_start * soh_cycle_pre
 
     soc_mwh = usable_mwh_start * 0.5
     soc_min = usable_mwh_start * cfg.soc_floor
@@ -248,6 +273,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     charge_mw_log = np.zeros(n_hours)
     discharge_mw_log = np.zeros(n_hours)
     soc_log = np.zeros(n_hours)
+    shortfall_day_flags = np.zeros(day_index.max() + 1, dtype=bool)
 
     expected_firm_mwh = charged_mwh = discharged_mwh = pv_to_contract_mwh = bess_to_contract_mwh = pv_curtailed_mwh = 0.0
     flag_shortfall_hours = flag_soc_floor_hits = flag_soc_ceiling_hits = 0
@@ -272,6 +298,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
                 delivered = e_can * eta_dis / dt
                 if delivered + pv_to_contract_mw < target_mw - 1e-9:
                     flag_shortfall_hours += 1
+                    shortfall_day_flags[day_index[h]] = True
                 dis_mw = delivered; e_req = e_can
             soc_mwh -= e_req
             discharged_mwh += dis_mw * dt
@@ -307,14 +334,14 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     eq_cycles_year = discharged_mwh / usable_for_cycles
     cum_cycles_new = state.cum_cycles + eq_cycles_year
     soh_cycle = cycle_retention_lookup(state.cycle_df, dod_key_eff, cum_cycles_new)
-    soh_total = soh_cal * soh_cycle
+    soh_total = soh_cal_eoy * soh_cycle
 
     eoy_usable_mwh = state.current_usable_mwh_bolref * soh_total
     eoy_power_mw = pow_cap_mw
 
     delivered_firm_mwh = pv_to_contract_mwh + bess_to_contract_mwh
     shortfall_mwh = max(0.0, expected_firm_mwh - delivered_firm_mwh)
-    breach_days = int((shortfall_mwh > 0) * 1)
+    breach_days = int(shortfall_day_flags.sum())
 
     yr = YearResult(
         year_index=year_idx,
@@ -330,7 +357,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         eq_cycles=float(eq_cycles_year),
         cum_cycles=float(cum_cycles_new),
         soh_cycle=float(soh_cycle),
-        soh_calendar=float(soh_cal),
+        soh_calendar=float(soh_cal_eoy),
         soh_total=float(soh_total),
         eoy_usable_mwh=float(eoy_usable_mwh),
         eoy_power_mw=float(eoy_power_mw),
@@ -386,674 +413,681 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
 
 # --------- Streamlit UI ---------
 
-st.set_page_config(page_title="BESSLab by ACB", layout="wide")
-st.title("BESS LAB — PV-only charging, AC-coupled")
 
-# README / Help
-with st.expander("Help & Guide (click to open)", expanded=False):
-    st.markdown("""
-## BESS Lab version 1 — Help
-by Alfred Balaga
-
-**Who this is for.**  
-This Streamlit app helps engineers and analysts explore **PV-only charging, AC-coupled BESS** behavior during pre-feasibility studies.
-It originated from studies and technical services work at **Emerging Power Inc. (EPI)** and is shared publicly to support learning, transparency, and community improvements.
-
-### What the app does
-- Checks if your **contracted MW × duration** can be met using PV\→Contract first and **BESS for the residual**.
-- Accounts for **PV degradation**, **availability**, **RTE**, **SOC limits**, **calendar + cycle fade**, and (optional) **augmentation**.
-- Surfaces **flags** (shortfalls, SOC hits) and **KPIs** (compliance, capture, cycles, etc.).
-- Visualizes **EOY capability vs target**, **EOY delivered split (PV vs BESS)**, and a **final-year average daily profile**.
-
-### Data inputs
-(Already pre-loaded, can be updated upon request)
-- **PV 8760 CSV**: columns `hour_index, pv_mw` (MW at the BESS coupling bus). `hour_index` can be 0–8759 or 1–8760 (1-based will be auto-shifted).  
-- **Cycle model XLSX**: DoD tables (`DoD10_Cycles / DoD10_Ret(%)`, …, `DoD100_*`). If not uploaded, we use the internal table.
-
-### Key assumptions (pre-feasibility)
-- **PV-only charge**: no charging from the grid. During discharge windows, **PV serves the contract first**; any PV surplus may charge the BESS.
-- **Single RTE** at POI (internally split √RTE for charge/discharge).  
-- **Availability** is applied to PV energy and BESS power.  
-- **Degradation** = calendar (multiplicative retention) × cycle (from DoD curves).  
-- **Augmentation (optional)**: Threshold (Capability or SOH) or Periodic; **newer cohorts preferentially take more duty** (keeps C-hours).
-
-### KPIs (how to read them)
-- **Delivery compliance (%)** = delivered firm ÷ expected firm over the project life.  
-- **BESS share of firm (%)** = portion of firm MWh delivered by BESS (vs PV).  
-- **Charge/Discharge ratio** ≈ 1/RTE (AC context).  
-- **PV capture ratio** = charged ÷ (charged + curtailed).  
-- **Discharge capacity factor (final)** = final-year BESS discharge MWh ÷ (avail-adj MW × discharge-window hours).  
-- **Eq cycles/yr** (guardrail ~300–400): from discharged MWh vs DoD-bucket energy.
-
-### Flags (with quick fixes)
-- **Firm shortfall hours**: in-window hours when PV + BESS < contract.  
-  *Try:* widen ΔSOC; add BOL MWh; improve RTE; widen charge windows; add augmentation.  
-- **SOC floor hits**: energy-limited (running out).  
-  *Try:* raise ceiling / lower floor within limits; add energy; improve RTE.  
-- **SOC ceiling hits**: can’t accept more charge.  
-  *Try:* add shoulder discharge; lower ceiling; narrow charge window if unnecessary.
-
-### Charts
-- **EOY Capability vs Target**: bars show **energy- vs power-limited** portions; line = contract/day.  
-- **EOY Delivered Split (PV vs BESS)**: average per day; line = contract/day.  
-- **Average Daily Profiles**: view PV→Contract + BESS→Contract (above zero) with charging shown below zero for Year 1, Final Year, and the average across the project; contract line overlaid.
-
-### Design Advisor (physics-bounded)
-- Detects **power- vs energy-limit** first.  
-- Suggests bounded deltas (caps: **RTE ≤ 92%**, **ΔSOC ≤ 90%**, **5% ≤ floor**, **ceiling ≤ 98%**).  
-- Checks **PV charge sufficiency** and estimates **extra charge hours/day** needed.  
-- Warns when implied **EqCycles/yr** exceed guardrails (recommend augmentation instead of over-cycling).
-
-### Known limitations (by design)
-- No grid charging; no price optimization; no network constraints.  
-- Hourly granularity; sub-hourly only where warranted in later versions.  
-- Warranty, safety, and interconnection compliance are **out of scope** here—refer to OEM docs and standards.
-
-### Versioning & feedback
-- You’ll see the version (e.g., `v0.3.x`) in the header.  
-- Send feedback/issues to my work email. I'll triage and iterate.
-
-*©acbalaga. GNU General Public License v3.0 (GPL-3.0).*
-""")
+def run_app():
 
 
-with st.sidebar:
-    st.header("Data Sources")
-    default_pv_paths = [str(BASE_DIR / 'data' / 'PV_8760_MW.csv')]
-    default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
+    st.set_page_config(page_title="BESSLab by ACB", layout="wide")
+    st.title("BESS LAB — PV-only charging, AC-coupled")
 
-    pv_file = st.file_uploader("PV 8760 CSV (hour_index, pv_mw in MW)", type=['csv'])
-    pv_df = pd.read_csv(pv_file) if pv_file is not None else read_pv_profile(default_pv_paths)
+    # README / Help
+    with st.expander("Help & Guide (click to open)", expanded=False):
+        st.markdown("""
+    ## BESS Lab version 1 — Help
+    by Alfred Balaga
 
-    cycle_file = st.file_uploader("Cycle model Excel (optional override)", type=['xlsx'])
-    cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
+    **Who this is for.**  
+    This Streamlit app helps engineers and analysts explore **PV-only charging, AC-coupled BESS** behavior during pre-feasibility studies.
+    It originated from studies and technical services work at **Emerging Power Inc. (EPI)** and is shared publicly to support learning, transparency, and community improvements.
 
-    st.caption("If no files are uploaded, built-in defaults are read from ./data/")
+    ### What the app does
+    - Checks if your **contracted MW × duration** can be met using PV\→Contract first and **BESS for the residual**.
+    - Accounts for **PV degradation**, **availability**, **RTE**, **SOC limits**, **calendar + cycle fade**, and (optional) **augmentation**.
+    - Surfaces **flags** (shortfalls, SOC hits) and **KPIs** (compliance, capture, cycles, etc.).
+    - Visualizes **EOY capability vs target**, **EOY delivered split (PV vs BESS)**, and a **final-year average daily profile**.
 
-st.subheader("Inputs")
+    ### Data inputs
+    (Already pre-loaded, can be updated upon request)
+    - **PV 8760 CSV**: columns `hour_index, pv_mw` (MW at the BESS coupling bus). `hour_index` can be 0–8759 or 1–8760 (1-based will be auto-shifted).  
+    - **Cycle model XLSX**: DoD tables (`DoD10_Cycles / DoD10_Ret(%)`, …, `DoD100_*`). If not uploaded, we use the internal table.
 
-# Project & PV
-with st.expander("Project & PV", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        years = st.selectbox("Project life (years)", list(range(10, 36, 5)), index=2,
-            help="Extend to test augmentation schedules and end effects.")
-    with c2:
-        pv_deg = st.number_input("PV degradation %/yr", 0.0, 5.0, 0.6, 0.1,
-            help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).") / 100.0
-    with c3:
-        pv_avail = st.slider("PV availability", 0.90, 1.00, 0.98, 0.01,
-            help="Uptime factor applied to PV output.")
+    ### Key assumptions (pre-feasibility)
+    - **PV-only charge**: no charging from the grid. During discharge windows, **PV serves the contract first**; any PV surplus may charge the BESS.
+    - **Single RTE** at POI (internally split √RTE for charge/discharge).  
+    - **Availability** is applied to PV energy and BESS power.  
+    - **Degradation** = calendar (multiplicative retention) × cycle (from DoD curves).  
+    - **Augmentation (optional)**: Threshold (Capability or SOH) or Periodic; **newer cohorts preferentially take more duty** (keeps C-hours).
 
-# Availability
-with st.expander("Availability", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        bess_avail = st.slider("BESS availability", 0.90, 1.00, 0.99, 0.01,
-            help="Uptime factor applied to BESS power capability.")
-    with c2:
-        rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
-            help="Single RTE; internally split √RTE for charge/discharge.")
+    ### KPIs (how to read them)
+    - **Delivery compliance (%)** = delivered firm ÷ expected firm over the project life.  
+    - **BESS share of firm (%)** = portion of firm MWh delivered by BESS (vs PV).  
+    - **Charge/Discharge ratio** ≈ 1/RTE (AC context).  
+    - **PV capture ratio** = charged ÷ (charged + curtailed).  
+    - **Discharge capacity factor (final)** = final-year BESS discharge MWh ÷ (avail-adj MW × discharge-window hours).  
+    - **Eq cycles/yr** (guardrail ~300–400): from discharged MWh vs DoD-bucket energy.
 
-# BESS Specs
-with st.expander("BESS Specs (high-level)", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        init_power = st.number_input("Power rating (MW)", 1.0, None, 30.0, 1.0,
-            help="Initial nameplate power (POI context), before availability.")
-    with c2:
-        init_energy = st.number_input("Usable energy at BOL (MWh)", 1.0, None, 120.0, 1.0,
-            help="Initial usable energy (POI context).")
-    with c3:
-        soc_floor = st.slider("SOC floor (%)", 0, 50, 10, 1,
-            help="Reserve to protect cycling; lowers daily swing.") / 100.0
-        soc_ceiling = st.slider("SOC ceiling (%)", 50, 100, 98, 1,
-            help="Upper limit to protect cycling; raises daily swing when higher.") / 100.0
+    ### Flags (with quick fixes)
+    - **Firm shortfall hours**: in-window hours when PV + BESS < contract.  
+      *Try:* widen ΔSOC; add BOL MWh; improve RTE; widen charge windows; add augmentation.  
+    - **SOC floor hits**: energy-limited (running out).  
+      *Try:* raise ceiling / lower floor within limits; add energy; improve RTE.  
+    - **SOC ceiling hits**: can’t accept more charge.  
+      *Try:* add shoulder discharge; lower ceiling; narrow charge window if unnecessary.
 
-# Dispatch
-with st.expander("Dispatch Strategy", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        contracted_mw = st.number_input("Contracted MW (firm)", 0.0, None, 30.0, 1.0,
-            help="Firm capacity to meet during discharge windows.")
-    with c2:
-        discharge_windows_text = st.text_input("Discharge windows (HH:MM-HH:MM, comma-separated)",
-            "10:00-14:00, 18:00-22:00",
-            help="Ex: 10:00-14:00, 18:00-22:00")
-    with c3:
-        charge_windows_text = st.text_input("Charge windows (blank = any PV hours)", "",
-            help="PV-only charging; blank allows any PV hour (even during discharge if PV surplus exists).")
+    ### Charts
+    - **EOY Capability vs Target**: bars show **energy- vs power-limited** portions; line = contract/day.  
+    - **EOY Delivered Split (PV vs BESS)**: average per day; line = contract/day.  
+    - **Average Daily Profiles**: view PV→Contract + BESS→Contract (above zero) with charging shown below zero for Year 1, Final Year, and the average across the project; contract line overlaid.
 
-# Degradation
-with st.expander("Degradation modeling", expanded=False):
-    c1, c2 = st.columns(2)
-    with c1:
-        cal_fade = st.number_input("Calendar fade %/yr (empirical)", 0.0, 5.0, 1.0, 0.1,
-            help="Multiplicative retention: (1 − rate)^year.") / 100.0
-    with c2:
-        dod_override = st.selectbox("Degradation DoD basis",
-            ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
-            help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.")
+    ### Design Advisor (physics-bounded)
+    - Detects **power- vs energy-limit** first.  
+    - Suggests bounded deltas (caps: **RTE ≤ 92%**, **ΔSOC ≤ 90%**, **5% ≤ floor**, **ceiling ≤ 98%**).  
+    - Checks **PV charge sufficiency** and estimates **extra charge hours/day** needed.  
+    - Warns when implied **EqCycles/yr** exceed guardrails (recommend augmentation instead of over-cycling).
 
-# Augmentation (conditional, with explainers)
-with st.expander("Augmentation strategy", expanded=False):
-    aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic"], index=0)
-    if aug_mode == "Threshold":
-        trigger = st.selectbox("Trigger type", ["Capability", "SOH"], index=0,
-            help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.")
-        if trigger == "Capability":
+    ### Known limitations (by design)
+    - No grid charging; no price optimization; no network constraints.  
+    - Hourly granularity; sub-hourly only where warranted in later versions.  
+    - Warranty, safety, and interconnection compliance are **out of scope** here—refer to OEM docs and standards.
+
+    ### Versioning & feedback
+    - You’ll see the version (e.g., `v0.3.x`) in the header.  
+    - Send feedback/issues to my work email. I'll triage and iterate.
+
+    *©acbalaga. GNU General Public License v3.0 (GPL-3.0).*
+    """)
+
+
+    with st.sidebar:
+        st.header("Data Sources")
+        default_pv_paths = [str(BASE_DIR / 'data' / 'PV_8760_MW.csv')]
+        default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
+
+        pv_file = st.file_uploader("PV 8760 CSV (hour_index, pv_mw in MW)", type=['csv'])
+        pv_df = pd.read_csv(pv_file) if pv_file is not None else read_pv_profile(default_pv_paths)
+
+        cycle_file = st.file_uploader("Cycle model Excel (optional override)", type=['xlsx'])
+        cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
+
+        st.caption("If no files are uploaded, built-in defaults are read from ./data/")
+
+    st.subheader("Inputs")
+
+    # Project & PV
+    with st.expander("Project & PV", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            years = st.selectbox("Project life (years)", list(range(10, 36, 5)), index=2,
+                help="Extend to test augmentation schedules and end effects.")
+        with c2:
+            pv_deg = st.number_input("PV degradation %/yr", 0.0, 5.0, 0.6, 0.1,
+                help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).") / 100.0
+        with c3:
+            pv_avail = st.slider("PV availability", 0.90, 1.00, 0.98, 0.01,
+                help="Uptime factor applied to PV output.")
+
+    # Availability
+    with st.expander("Availability", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            bess_avail = st.slider("BESS availability", 0.90, 1.00, 0.99, 0.01,
+                help="Uptime factor applied to BESS power capability.")
+        with c2:
+            rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
+                help="Single RTE; internally split √RTE for charge/discharge.")
+
+    # BESS Specs
+    with st.expander("BESS Specs (high-level)", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            init_power = st.number_input("Power rating (MW)", 1.0, None, 30.0, 1.0,
+                help="Initial nameplate power (POI context), before availability.")
+        with c2:
+            init_energy = st.number_input("Usable energy at BOL (MWh)", 1.0, None, 120.0, 1.0,
+                help="Initial usable energy (POI context).")
+        with c3:
+            soc_floor = st.slider("SOC floor (%)", 0, 50, 10, 1,
+                help="Reserve to protect cycling; lowers daily swing.") / 100.0
+            soc_ceiling = st.slider("SOC ceiling (%)", 50, 100, 98, 1,
+                help="Upper limit to protect cycling; raises daily swing when higher.") / 100.0
+
+    # Dispatch
+    with st.expander("Dispatch Strategy", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            contracted_mw = st.number_input("Contracted MW (firm)", 0.0, None, 30.0, 1.0,
+                help="Firm capacity to meet during discharge windows.")
+        with c2:
+            discharge_windows_text = st.text_input("Discharge windows (HH:MM-HH:MM, comma-separated)",
+                "10:00-14:00, 18:00-22:00",
+                help="Ex: 10:00-14:00, 18:00-22:00")
+        with c3:
+            charge_windows_text = st.text_input("Charge windows (blank = any PV hours)", "",
+                help="PV-only charging; blank allows any PV hour (even during discharge if PV surplus exists).")
+
+    # Degradation
+    with st.expander("Degradation modeling", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            cal_fade = st.number_input("Calendar fade %/yr (empirical)", 0.0, 5.0, 1.0, 0.1,
+                help="Multiplicative retention: (1 − rate)^year.") / 100.0
+        with c2:
+            dod_override = st.selectbox("Degradation DoD basis",
+                ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
+                help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.")
+
+    # Augmentation (conditional, with explainers)
+    with st.expander("Augmentation strategy", expanded=False):
+        aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic"], index=0)
+        if aug_mode == "Threshold":
+            trigger = st.selectbox("Trigger type", ["Capability", "SOH"], index=0,
+                help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.")
+            if trigger == "Capability":
+                c1, c2 = st.columns(2)
+                with c1:
+                    aug_thr_margin = st.number_input("Allowance margin (%)", 0.0, None, 0.0, 0.5,
+                        help="Trigger when capability < target × (1 − margin).") / 100.0
+                with c2:
+                    aug_topup = st.number_input("Top-up margin (%)", 0.0, None, 5.0, 0.5,
+                        help="Augment up to target × (1 + margin) when triggered.") / 100.0
+                aug_every = 5; aug_frac = 0.10
+                aug_trigger_type = "Capability"
+                aug_soh_trig = 0.80; aug_soh_add = 0.10
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    aug_soh_trig = st.number_input("SOH trigger (%)", 50.0, 100.0, 80.0, 1.0,
+                        help="If fleet SOH at year-end ≤ this threshold, augment.") / 100.0
+                with c2:
+                    aug_soh_add = st.number_input("Add % of initial BOL energy", 0.0, None, 10.0, 1.0,
+                        help="Added energy as % of initial BOL. Power added to keep original C-hours.") / 100.0
+                aug_thr_margin = 0.0; aug_topup = 0.0
+                aug_every = 5; aug_frac = 0.10
+                aug_trigger_type = "SOH"
+        elif aug_mode == "Periodic":
             c1, c2 = st.columns(2)
             with c1:
-                aug_thr_margin = st.number_input("Allowance margin (%)", 0.0, None, 0.0, 0.5,
-                    help="Trigger when capability < target × (1 − margin).") / 100.0
+                aug_every = st.number_input("Every N years", 1, None, 5, 1,
+                    help="Add capacity on this cadence (e.g., every 5 years).")
             with c2:
-                aug_topup = st.number_input("Top-up margin (%)", 0.0, None, 5.0, 0.5,
-                    help="Augment up to target × (1 + margin) when triggered.") / 100.0
-            aug_every = 5; aug_frac = 0.10
+                aug_frac = st.number_input("Add % of current BOL-ref energy", 0.0, None, 10.0, 1.0,
+                    help="Top-up energy relative to current BOL reference.") / 100.0
+            aug_thr_margin = 0.0; aug_topup = 0.0
             aug_trigger_type = "Capability"
             aug_soh_trig = 0.80; aug_soh_add = 0.10
         else:
-            c1, c2 = st.columns(2)
-            with c1:
-                aug_soh_trig = st.number_input("SOH trigger (%)", 50.0, 100.0, 80.0, 1.0,
-                    help="If fleet SOH at year-end ≤ this threshold, augment.") / 100.0
-            with c2:
-                aug_soh_add = st.number_input("Add % of initial BOL energy", 0.0, None, 10.0, 1.0,
-                    help="Added energy as % of initial BOL. Power added to keep original C-hours.") / 100.0
             aug_thr_margin = 0.0; aug_topup = 0.0
             aug_every = 5; aug_frac = 0.10
-            aug_trigger_type = "SOH"
-    elif aug_mode == "Periodic":
-        c1, c2 = st.columns(2)
-        with c1:
-            aug_every = st.number_input("Every N years", 1, None, 5, 1,
-                help="Add capacity on this cadence (e.g., every 5 years).")
-        with c2:
-            aug_frac = st.number_input("Add % of current BOL-ref energy", 0.0, None, 10.0, 1.0,
-                help="Top-up energy relative to current BOL reference.") / 100.0
-        aug_thr_margin = 0.0; aug_topup = 0.0
-        aug_trigger_type = "Capability"
-        aug_soh_trig = 0.80; aug_soh_add = 0.10
-    else:
-        aug_thr_margin = 0.0; aug_topup = 0.0
-        aug_every = 5; aug_frac = 0.10
-        aug_trigger_type = "Capability"
-        aug_soh_trig = 0.80; aug_soh_add = 0.10
+            aug_trigger_type = "Capability"
+            aug_soh_trig = 0.80; aug_soh_add = 0.10
 
-# Build config
-cfg = SimConfig(
-    years=int(years),
-    pv_deg_rate=float(pv_deg),
-    pv_availability=float(pv_avail),
-    bess_availability=float(bess_avail),
-    rte_roundtrip=float(rte),
-    soc_floor=float(soc_floor),
-    soc_ceiling=float(soc_ceiling),
-    initial_power_mw=float(init_power),
-    initial_usable_mwh=float(init_energy),
-    contracted_mw=float(contracted_mw),
-    discharge_windows=parse_windows(discharge_windows_text),
-    charge_windows_text=charge_windows_text,
-    max_cycles_per_day_cap=1.2,
-    calendar_fade_rate=float(cal_fade),
-    use_calendar_exp_model=True,
-    augmentation=aug_mode,
-    aug_trigger_type=aug_trigger_type,
-    aug_threshold_margin=float(aug_thr_margin),
-    aug_topup_margin=float(aug_topup),
-    aug_soh_trigger_pct=float(aug_soh_trig),
-    aug_soh_add_frac_initial=float(aug_soh_add),
-    aug_periodic_every_years=int(aug_every),
-    aug_periodic_add_frac_of_bol=float(aug_frac),
-)
-
-if not cfg.discharge_windows:
-    st.error("Please provide at least one discharge window."); st.stop()
-
-# Discharge hours/day
-dis_hours_per_day = 0.0
-for w in cfg.discharge_windows:
-    dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
-
-# Initial state
-state = SimState(
-    pv_df=pv_df,
-    cycle_df=cycle_df,
-    cfg=cfg,
-    current_power_mw=cfg.initial_power_mw,
-    current_usable_mwh_bolref=cfg.initial_usable_mwh,
-    initial_bol_energy_mwh=cfg.initial_usable_mwh,
-    initial_bol_power_mw=cfg.initial_power_mw,
-)
-
-# Simulate years
-results: List[YearResult] = []
-dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
-first_year_logs: Optional[HourlyLog] = None
-final_year_logs = None
-hod_count = np.zeros(24, dtype=float)
-hod_sum_pv = np.zeros(24, dtype=float)
-hod_sum_bess = np.zeros(24, dtype=float)
-hod_sum_charge = np.zeros(24, dtype=float)
-for y in range(1, cfg.years + 1):
-    yr, logs, _ = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
-    hours = np.mod(logs.hod.astype(int), 24)
-    np.add.at(hod_count, hours, 1)
-    np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
-    np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
-    np.add.at(hod_sum_charge, hours, logs.charge_mw)
-    if y == 1: first_year_logs = logs
-    if y == cfg.years: final_year_logs = logs
-    state.cum_cycles = yr.cum_cycles
-    results.append(yr)
-    add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
-    if add_p > 0 or add_e > 0:
-        state.current_power_mw += add_p
-        state.current_usable_mwh_bolref += add_e
-
-# Yearly table
-res_df = pd.DataFrame([{
-    'Year': r.year_index,
-    'Expected firm MWh': r.expected_firm_mwh,
-    'Delivered firm MWh': r.delivered_firm_mwh,
-    'Shortfall MWh': r.shortfall_mwh,
-    'Breach days (has any shortfall)': r.breach_days,
-    'Charge MWh': r.charge_mwh,
-    'Discharge MWh (from BESS)': r.discharge_mwh,
-    'PV→Contract MWh': r.pv_to_contract_mwh,
-    'BESS→Contract MWh': r.bess_to_contract_mwh,
-    'Avg RTE': r.avg_rte,
-    'Eq cycles (year)': r.eq_cycles,
-    'Cum cycles': r.cum_cycles,
-    'SOH_cycle': r.soh_cycle,
-    'SOH_calendar': r.soh_calendar,
-    'SOH_total': r.soh_total,
-    'EOY usable MWh': r.eoy_usable_mwh,
-    'EOY power MW (avail-adjusted)': r.eoy_power_mw,
-    'PV curtailed MWh': r.pv_curtailed_mwh,
-} for r in results])
-
-# --------- KPIs ---------
-final = results[-1]
-expected_total = sum(r.expected_firm_mwh for r in results)
-actual_total = sum(r.delivered_firm_mwh for r in results)
-compliance = (actual_total / expected_total * 100.0) if expected_total > 0 else float('nan')
-total_discharge_mwh = sum(r.discharge_mwh for r in results)
-total_charge_mwh = sum(r.charge_mwh for r in results)
-charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float('nan')
-bess_share_of_firm = (sum(r.bess_to_contract_mwh for r in results) / actual_total * 100.0) if actual_total > 0 else float('nan')
-pv_capture_ratio = (total_charge_mwh / (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results))) if (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results)) > 0 else float('nan')
-hours_in_discharge_windows_year = dis_hours_per_day * 365.0
-discharge_capacity_factor = (final.discharge_mwh / (final.eoy_power_mw * hours_in_discharge_windows_year)) if final.eoy_power_mw > 0 else float('nan')
-
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Delivery compliance (%)", f"{compliance:,.2f}")
-c2.metric("BESS share of firm (%)", f"{bess_share_of_firm:,.1f}", help="Portion of contracted energy supplied by BESS vs PV.")
-c3.metric("Charge/Discharge ratio", f"{charge_discharge_ratio:,.3f}", help="AC charged MWh ÷ AC discharged MWh.")
-c4.metric("PV capture ratio", f"{pv_capture_ratio:,.3f}", help="Charged MWh ÷ (Charged MWh + Curtailed MWh).")
-c5.metric("Discharge cap. factor (final yr)", f"{discharge_capacity_factor:,.3f}", help="Final-year BESS discharge MWh ÷ (avail-adjusted MW × discharge-window hours).")
-
-# --------- KPI Traffic-lights ----------
-st.markdown("### KPI Health (traffic-light hints)")
-def light_icon(color: str) -> str:
-    return {"green":"🟢", "yellow":"🟡", "red":"🔴"}[color]
-
-def eval_rte(rte_single: float) -> str:
-    return "green" if rte_single >= 0.85 else ("yellow" if rte_single >= 0.80 else "red")
-
-def eval_avail(av: float) -> str:
-    return "green" if av >= 0.98 else ("yellow" if av >= 0.97 else "red")
-
-def eval_capture(x: float) -> str:
-    return "green" if x >= 0.60 else ("yellow" if x >= 0.50 else "red")
-
-def eval_cf(x: float) -> str:
-    # mid-merit 4–6h typical band
-    return "green" if 0.35 <= x <= 0.60 else ("yellow" if 0.30 <= x < 0.35 or 0.60 < x <= 0.70 else "red")
-
-def eval_cycles_per_year(e):  # vendor guardrail ~300–400 EFC/yr
-    return "green" if e <= 300 else ("yellow" if e <= 400 else "red")
-
-def eval_final_cap_margin(cap_ratio: float) -> str:
-    return "green" if cap_ratio >= 1.05 else ("yellow" if cap_ratio >= 1.00 else "red")
-
-avg_eq_cycles_per_year = float(np.mean([r.eq_cycles for r in results]))
-cap_daily_final = min(final.eoy_usable_mwh, final.eoy_power_mw * dis_hours_per_day)
-cap_ratio_final = cap_daily_final / (cfg.contracted_mw * dis_hours_per_day) if dis_hours_per_day > 0 else float('nan')
-
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-k1.markdown(f"{light_icon(eval_rte(cfg.rte_roundtrip))} **RTE (single)**: {cfg.rte_roundtrip:.2f}")
-k1.caption("≥0.85 green · 0.80–0.85 yellow")
-k2.markdown(f"{light_icon(eval_avail(cfg.bess_availability))} **BESS availability**: {cfg.bess_availability:.2f}")
-k2.caption("≥0.98 green · 0.97–0.98 yellow")
-k3.markdown(f"{light_icon(eval_capture(pv_capture_ratio))} **PV capture**: {pv_capture_ratio:.3f}")
-k3.caption("≥0.60 green · 0.50–0.60 yellow")
-k4.markdown(f"{light_icon(eval_cf(discharge_capacity_factor))} **Discharge CF (final)**: {discharge_capacity_factor:.3f}")
-k4.caption("0.35–0.60 green for 4–6h mid-merit")
-k5.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
-k5.caption("≤300 green · 300–400 yellow")
-k6.markdown(f"{light_icon(eval_final_cap_margin(cap_ratio_final))} **EOY cap / target**: {cap_ratio_final:.3f}")
-k6.caption("≥1.05 green · 1.00–1.05 yellow")
-
-st.markdown("---")
-st.subheader("Yearly Summary")
-st.dataframe(res_df.style.format({
-    'Expected firm MWh': '{:,.1f}',
-    'Delivered firm MWh': '{:,.1f}',
-    'Shortfall MWh': '{:,.1f}',
-    'Charge MWh': '{:,.1f}',
-    'Discharge MWh (from BESS)': '{:,.1f}',
-    'PV→Contract MWh': '{:,.1f}',
-    'BESS→Contract MWh': '{:,.1f}',
-    'Avg RTE': '{:,.3f}',
-    'Eq cycles (year)': '{:,.1f}',
-    'Cum cycles': '{:,.1f}',
-    'SOH_cycle': '{:,.3f}',
-    'SOH_calendar': '{:,.3f}',
-    'SOH_total': '{:,.3f}',
-    'EOY usable MWh': '{:,.1f}',
-    'EOY power MW (avail-adjusted)': '{:,.1f}',
-    'PV curtailed MWh': '{:,.1f}',
-}))
-
-# ---------- EOY capability vs Firm target (STACKED + LINE) ----------
-st.subheader("EOY Energy Capability vs Firm Target (per day)")
-target_daily_mwh = cfg.contracted_mw * dis_hours_per_day
-years_list = [r.year_index for r in results]
-energy_cap = [r.eoy_usable_mwh for r in results]
-power_cap = [r.eoy_power_mw * dis_hours_per_day for r in results]
-cap = [min(e, p) for e, p in zip(energy_cap, power_cap)]
-energy_limited_segment = [c if e <= p else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
-power_limited_segment  = [c if p <  e else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
-
-cap_df = pd.DataFrame({
-    'Year': years_list,
-    'Energy-limited (MWh/day)': energy_limited_segment,
-    'Power-limited (MWh/day)': power_limited_segment,
-    'Target firm (MWh/day)': [target_daily_mwh]*len(years_list),
-})
-
-cap_long = cap_df.melt(id_vars='Year', value_vars=['Energy-limited (MWh/day)', 'Power-limited (MWh/day)'],
-                       var_name='Limit', value_name='MWh/day')
-
-bar = alt.Chart(cap_long).mark_bar().encode(
-    x=alt.X('Year:O', title='Year'),
-    y=alt.Y('MWh/day:Q', title='MWh/day'),
-    color=alt.Color('Limit:N', scale=alt.Scale(range=['#86c5da', '#7fd18b']))
-)
-line = alt.Chart(cap_df).mark_line(point=True, color='#f2a900').encode(
-    x='Year:O',
-    y='Target firm (MWh/day):Q',
-)
-st.altair_chart(bar + line, use_container_width=True)
-
-# ---------- EOY Delivered Firm Split (per day): PV vs BESS ----------
-st.subheader("EOY Delivered Firm Split (per day) — PV vs BESS")
-deliv_df = pd.DataFrame({
-    'Year': years_list,
-    'PV→Contract (MWh/day)': [r.pv_to_contract_mwh/365.0 for r in results],
-    'BESS→Contract (MWh/day)': [r.bess_to_contract_mwh/365.0 for r in results],
-    'Target firm (MWh/day)': [target_daily_mwh]*len(years_list),
-})
-deliv_long = deliv_df.melt(id_vars='Year', value_vars=['PV→Contract (MWh/day)', 'BESS→Contract (MWh/day)'],
-                           var_name='Source', value_name='MWh/day')
-
-bar2 = alt.Chart(deliv_long).mark_bar().encode(
-    x=alt.X('Year:O', title='Year'),
-    y=alt.Y('MWh/day:Q', title='MWh/day'),
-    color=alt.Color('Source:N', scale=alt.Scale(range=['#86c5da', '#7fd18b']))
-)
-line2 = alt.Chart(deliv_df).mark_line(point=True, color='#f2a900').encode(
-    x='Year:O',
-    y='Target firm (MWh/day):Q',
-)
-st.altair_chart(bar2 + line2, use_container_width=True)
-
-# ---------- Flags ----------
-st.subheader("Flags & Guidance")
-flag_totals = {
-    'firm_shortfall_hours': sum(r.flags['firm_shortfall_hours'] for r in results),
-    'soc_floor_hits': sum(r.flags['soc_floor_hits'] for r in results),
-    'soc_ceiling_hits': sum(r.flags['soc_ceiling_hits'] for r in results),
-}
-f1, f2, f3 = st.columns(3)
-f1.metric("Firm shortfall hours", f"{flag_totals['firm_shortfall_hours']:,}")
-f1.caption("Meaning: In-window hours when PV + BESS could not meet contracted MW.\nFix knobs: increase energy/power, relax windows, augment, or reduce contract.")
-f2.metric("SOC floor hits", f"{flag_totals['soc_floor_hits']:,}")
-f2.caption("Meaning: SOC hit the minimum reserve.\nFix knobs: raise ceiling, lower floor, increase energy, improve RTE, widen charge windows.")
-f3.metric("SOC ceiling hits", f"{flag_totals['soc_ceiling_hits']:,}")
-f3.caption("Meaning: Battery reached upper SOC limit (limited charging).\nFix knobs: increase shoulder discharge, lower ceiling, narrow charge window if unnecessary.")
-
-st.markdown("---")
-
-# ---------- Design Advisor (physics-bounded) ----------
-st.subheader("Design Advisor (final-year, physics-bounded)")
-
-# --- Bounds / guardrails (editable if you like) ---
-RTE_RT_MAX = 0.92              # plausible AC-to-AC roundtrip limit
-SOC_FLOOR_MIN = 0.05           # don't recommend below this
-SOC_CEILING_MAX = 0.98         # don't recommend above this
-DELTA_SOC_MAX = 0.90           # ~5-95%
-EFC_YR_GREEN = 300.0           # vendor guardrail
-EFC_YR_YELLOW = 400.0
-
-# --- Final-year context ---
-eta_rt_now = max(0.05, min(cfg.rte_roundtrip, 0.9999))  # roundtrip now
-eta_dis_now = eta_rt_now ** 0.5
-delta_soc_now = max(0.0, cfg.soc_ceiling - cfg.soc_floor)
-delta_soc_cap = min(DELTA_SOC_MAX, SOC_CEILING_MAX - SOC_FLOOR_MIN)
-soh_final = float(final.soh_total)
-
-target_day = cfg.contracted_mw * dis_hours_per_day                    # MWh/day
-pv_to_contract_day = final.pv_to_contract_mwh / 365.0                 # MWh/day
-bess_share_day = max(0.0, target_day - pv_to_contract_day)            # MWh/day BESS must supply
-
-deliverable_day_now = cfg.initial_usable_mwh * soh_final * delta_soc_now * eta_dis_now
-shortfall_day_now = max(0.0, target_day - deliverable_day_now)
-
-colA, colB, colC, colD = st.columns(4)
-colA.metric("Deliverable/day now (final yr)", f"{deliverable_day_now:,.1f} MWh")
-colB.metric("Shortfall/day (final yr)", f"{shortfall_day_now:,.1f} MWh")
-colC.metric("Target/day", f"{target_day:,.1f} MWh")
-colD.metric("EOY power avail (final)", f"{final.eoy_power_mw:,.2f} MW",
-            help="Availability-adjusted final-year power capability.")
-
-# --- 1) Power vs Energy limiter ---
-if final.eoy_power_mw + 1e-9 < cfg.contracted_mw:
-    st.error(
-        f"Power-limited: final-year available power {final.eoy_power_mw:.2f} MW "
-        f"is below contract {cfg.contracted_mw:.2f} MW."
+    # Build config
+    cfg = SimConfig(
+        years=int(years),
+        pv_deg_rate=float(pv_deg),
+        pv_availability=float(pv_avail),
+        bess_availability=float(bess_avail),
+        rte_roundtrip=float(rte),
+        soc_floor=float(soc_floor),
+        soc_ceiling=float(soc_ceiling),
+        initial_power_mw=float(init_power),
+        initial_usable_mwh=float(init_energy),
+        contracted_mw=float(contracted_mw),
+        discharge_windows=parse_windows(discharge_windows_text),
+        charge_windows_text=charge_windows_text,
+        max_cycles_per_day_cap=1.2,
+        calendar_fade_rate=float(cal_fade),
+        use_calendar_exp_model=True,
+        augmentation=aug_mode,
+        aug_trigger_type=aug_trigger_type,
+        aug_threshold_margin=float(aug_thr_margin),
+        aug_topup_margin=float(aug_topup),
+        aug_soh_trigger_pct=float(aug_soh_trig),
+        aug_soh_add_frac_initial=float(aug_soh_add),
+        aug_periodic_every_years=int(aug_every),
+        aug_periodic_add_frac_of_bol=float(aug_frac),
     )
-    need = cfg.contracted_mw - final.eoy_power_mw
-    st.markdown(
-        f"- **Option D (Power)**: Increase power (final-year, avail-adjusted) by **{need:.2f} MW**, "
-        f"or reduce contract MW / shift windows."
+
+    if not cfg.discharge_windows:
+        st.error("Please provide at least one discharge window."); st.stop()
+
+    # Discharge hours/day
+    dis_hours_per_day = 0.0
+    for w in cfg.discharge_windows:
+        dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
+
+    # Initial state
+    state = SimState(
+        pv_df=pv_df,
+        cycle_df=cycle_df,
+        cfg=cfg,
+        current_power_mw=cfg.initial_power_mw,
+        current_usable_mwh_bolref=cfg.initial_usable_mwh,
+        initial_bol_energy_mwh=cfg.initial_usable_mwh,
+        initial_bol_power_mw=cfg.initial_power_mw,
     )
-else:
-    # --- Energy-limited path ---
-    st.caption("Energy-limited in final year (power is sufficient).")
 
-    # --- 2) Sequential bounded solve: ΔSOC → RTE → Energy ---
-    # a) try to meet target with ΔSOC first (bounded)
-    req_delta_soc_at_current = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * eta_dis_now)
-    delta_soc_adopt = min(delta_soc_cap, max(delta_soc_now, req_delta_soc_at_current))
+    # Simulate years
+    results: List[YearResult] = []
+    dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
+    first_year_logs: Optional[HourlyLog] = None
+    final_year_logs = None
+    hod_count = np.zeros(24, dtype=float)
+    hod_sum_pv = np.zeros(24, dtype=float)
+    hod_sum_bess = np.zeros(24, dtype=float)
+    hod_sum_charge = np.zeros(24, dtype=float)
+    for y in range(1, cfg.years + 1):
+        yr, logs, _ = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
+        hours = np.mod(logs.hod.astype(int), 24)
+        np.add.at(hod_count, hours, 1)
+        np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
+        np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
+        np.add.at(hod_sum_charge, hours, logs.charge_mw)
+        if y == 1: first_year_logs = logs
+        if y == cfg.years: final_year_logs = logs
+        state.cum_cycles = yr.cum_cycles
+        results.append(yr)
+        add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
+        if add_p > 0 or add_e > 0:
+            state.current_power_mw += add_p
+            state.current_usable_mwh_bolref += add_e
 
-    # b) then RTE (bounded)
-    req_eta_dis_at_soc = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)
-    req_rte_rt_at_soc = min(0.9999, max(0.0, req_eta_dis_at_soc ** 2))
-    rte_rt_adopt = min(RTE_RT_MAX, max(eta_rt_now, req_rte_rt_at_soc))
+    # Yearly table
+    res_df = pd.DataFrame([{
+        'Year': r.year_index,
+        'Expected firm MWh': r.expected_firm_mwh,
+        'Delivered firm MWh': r.delivered_firm_mwh,
+        'Shortfall MWh': r.shortfall_mwh,
+        'Breach days (has any shortfall)': r.breach_days,
+        'Charge MWh': r.charge_mwh,
+        'Discharge MWh (from BESS)': r.discharge_mwh,
+        'PV→Contract MWh': r.pv_to_contract_mwh,
+        'BESS→Contract MWh': r.bess_to_contract_mwh,
+        'Avg RTE': r.avg_rte,
+        'Eq cycles (year)': r.eq_cycles,
+        'Cum cycles': r.cum_cycles,
+        'SOH_cycle': r.soh_cycle,
+        'SOH_calendar': r.soh_calendar,
+        'SOH_total': r.soh_total,
+        'EOY usable MWh': r.eoy_usable_mwh,
+        'EOY power MW (avail-adjusted)': r.eoy_power_mw,
+        'PV curtailed MWh': r.pv_curtailed_mwh,
+    } for r in results])
 
-    # c) finally BOL energy to close any remaining gap
-    ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5))
-    ebol_delta = max(0.0, ebol_req - cfg.initial_usable_mwh)
+    # --------- KPIs ---------
+    final = results[-1]
+    expected_total = sum(r.expected_firm_mwh for r in results)
+    actual_total = sum(r.delivered_firm_mwh for r in results)
+    compliance = (actual_total / expected_total * 100.0) if expected_total > 0 else float('nan')
+    total_discharge_mwh = sum(r.discharge_mwh for r in results)
+    total_charge_mwh = sum(r.charge_mwh for r in results)
+    charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float('nan')
+    bess_share_of_firm = (sum(r.bess_to_contract_mwh for r in results) / actual_total * 100.0) if actual_total > 0 else float('nan')
+    pv_capture_ratio = (total_charge_mwh / (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results))) if (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results)) > 0 else float('nan')
+    hours_in_discharge_windows_year = dis_hours_per_day * 365.0
+    discharge_capacity_factor = (final.discharge_mwh / (final.eoy_power_mw * hours_in_discharge_windows_year)) if final.eoy_power_mw > 0 else float('nan')
 
-    # Helper to render SOC variant text (raise ceiling vs lower floor)
-    def soc_variant_text(delta_soc_goal: float) -> str:
-        # choice A: keep floor, raise ceiling
-        ceil_needed = min(SOC_CEILING_MAX, cfg.soc_floor + delta_soc_goal)
-        # choice B: keep ceiling, lower floor
-        floor_needed = max(SOC_FLOOR_MIN, cfg.soc_ceiling - delta_soc_goal)
-        return (f"(e.g., keep floor at {cfg.soc_floor*100:.0f}% → raise ceiling to **{ceil_needed*100:.0f}%**, "
-                f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Delivery compliance (%)", f"{compliance:,.2f}")
+    c2.metric("BESS share of firm (%)", f"{bess_share_of_firm:,.1f}", help="Portion of contracted energy supplied by BESS vs PV.")
+    c3.metric("Charge/Discharge ratio", f"{charge_discharge_ratio:,.3f}", help="AC charged MWh ÷ AC discharged MWh.")
+    c4.metric("PV capture ratio", f"{pv_capture_ratio:,.3f}", help="Charged MWh ÷ (Charged MWh + Curtailed MWh).")
+    c5.metric("Discharge cap. factor (final yr)", f"{discharge_capacity_factor:,.3f}", help="Final-year BESS discharge MWh ÷ (avail-adjusted MW × discharge-window hours).")
 
-    # --- 3) PV charge sufficiency check under the adopted RTE ---
-    pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
-    charged_day_now = final.charge_mwh / 365.0                     # MWh/day currently charged
-    charge_deficit_day = max(0.0, pv_charge_req_day - charged_day_now)
-    extra_charge_hours_day = charge_deficit_day / max(1e-9, final.eoy_power_mw)
+    # --------- KPI Traffic-lights ----------
+    st.markdown("### KPI Health (traffic-light hints)")
+    def light_icon(color: str) -> str:
+        return {"green":"🟢", "yellow":"🟡", "red":"🔴"}[color]
 
-    # --- 4) Implied cycles guardrail under the proposed ΔSOC/Ebol ---
-    def dod_from_delta_soc(ds: float) -> int:
-        return 100 if ds >= 0.90 else (80 if ds >= 0.80 else (40 if ds >= 0.40 else (20 if ds >= 0.20 else 10)))
-    dod_key_prop = dod_from_delta_soc(delta_soc_adopt)
-    dod_frac_map = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}
-    dod_frac_prop = dod_frac_map[dod_key_prop]
-    efc_year_prop = (bess_share_day * 365.0) / max(1e-9, ebol_req * dod_frac_prop)
+    def eval_rte(rte_single: float) -> str:
+        return "green" if rte_single >= 0.85 else ("yellow" if rte_single >= 0.80 else "red")
 
-    # --- 5) Print bounded options ---
-    opts = []
+    def eval_avail(av: float) -> str:
+        return "green" if av >= 0.98 else ("yellow" if av >= 0.97 else "red")
 
-    # OPTION A — ΔSOC only (bounded to cap); if still short, explain why it's insufficient alone
-    if delta_soc_now + 1e-9 < delta_soc_cap:
-        need_soc = max(0.0, delta_soc_adopt - delta_soc_now) * 100.0
-        # re-compute Ebol needed if we keep RTE at current (ΔSOC only)
-        ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * (eta_rt_now ** 0.5))
-        short_if_only_soc = max(0.0, ebol_req_soc_only - cfg.initial_usable_mwh)
-        if short_if_only_soc <= 1e-6:
-            opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)}")
-        else:
-            opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)} "
-                        f"→ still short on energy by **{short_if_only_soc:,.1f} MWh** (at current RTE).")
-    else:
-        opts.append(f"- **Option A (ΔSOC)**: Already at cap (**{delta_soc_now*100:,.1f}%**).")
+    def eval_capture(x: float) -> str:
+        return "green" if x >= 0.60 else ("yellow" if x >= 0.50 else "red")
 
-    # OPTION B — ΔSOC (adopted) + RTE (bounded)
-    if rte_rt_adopt > eta_rt_now + 1e-9:
-        opts.append(f"- **Option B (ΔSOC + RTE)**: Keep ΔSOC at **{delta_soc_adopt*100:,.1f}%** and improve roundtrip RTE to "
-                    f"**{rte_rt_adopt*100:,.1f}%** (cap {RTE_RT_MAX*100:.0f}%).")
-    else:
-        opts.append(f"- **Option B (ΔSOC + RTE)**: RTE already at limit for this option (current {eta_rt_now*100:.1f}%, cap {RTE_RT_MAX*100:.0f}%).")
+    def eval_cf(x: float) -> str:
+        # mid-merit 4–6h typical band
+        return "green" if 0.35 <= x <= 0.60 else ("yellow" if 0.30 <= x < 0.35 or 0.60 < x <= 0.70 else "red")
 
-    # OPTION C — Energy at BOL to close the gap (with adopted ΔSOC & RTE)
-    if ebol_delta > 1e-6:
-        opts.append(f"- **Option C (Energy)**: Increase BOL usable by **{ebol_delta:,.1f} MWh** (to **{ebol_req:,.1f} MWh**).")
-    else:
-        opts.append(f"- **Option C (Energy)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
+    def eval_cycles_per_year(e):  # vendor guardrail ~300–400 EFC/yr
+        return "green" if e <= 300 else ("yellow" if e <= 400 else "red")
 
-    st.markdown("**Bounded recommendations:**")
-    st.markdown("\n".join(opts))
+    def eval_final_cap_margin(cap_ratio: float) -> str:
+        return "green" if cap_ratio >= 1.05 else ("yellow" if cap_ratio >= 1.00 else "red")
 
-    # --- 6) PV charge sufficiency + charge-hours hint ---
-    st.caption(
-        f"PV charge required/day for BESS share ≈ **{pv_charge_req_day:,.1f} MWh** "
-        f"(BESS share {bess_share_day:,.1f} ÷ RTE {rte_rt_adopt:.2f}). "
-        f"Currently charging **{charged_day_now:,.1f} MWh/day**."
+    avg_eq_cycles_per_year = float(np.mean([r.eq_cycles for r in results]))
+    cap_daily_final = min(final.eoy_usable_mwh, final.eoy_power_mw * dis_hours_per_day)
+    cap_ratio_final = cap_daily_final / (cfg.contracted_mw * dis_hours_per_day) if dis_hours_per_day > 0 else float('nan')
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.markdown(f"{light_icon(eval_rte(cfg.rte_roundtrip))} **RTE (single)**: {cfg.rte_roundtrip:.2f}")
+    k1.caption("≥0.85 green · 0.80–0.85 yellow")
+    k2.markdown(f"{light_icon(eval_avail(cfg.bess_availability))} **BESS availability**: {cfg.bess_availability:.2f}")
+    k2.caption("≥0.98 green · 0.97–0.98 yellow")
+    k3.markdown(f"{light_icon(eval_capture(pv_capture_ratio))} **PV capture**: {pv_capture_ratio:.3f}")
+    k3.caption("≥0.60 green · 0.50–0.60 yellow")
+    k4.markdown(f"{light_icon(eval_cf(discharge_capacity_factor))} **Discharge CF (final)**: {discharge_capacity_factor:.3f}")
+    k4.caption("0.35–0.60 green for 4–6h mid-merit")
+    k5.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
+    k5.caption("≤300 green · 300–400 yellow")
+    k6.markdown(f"{light_icon(eval_final_cap_margin(cap_ratio_final))} **EOY cap / target**: {cap_ratio_final:.3f}")
+    k6.caption("≥1.05 green · 1.00–1.05 yellow")
+
+    st.markdown("---")
+    st.subheader("Yearly Summary")
+    st.dataframe(res_df.style.format({
+        'Expected firm MWh': '{:,.1f}',
+        'Delivered firm MWh': '{:,.1f}',
+        'Shortfall MWh': '{:,.1f}',
+        'Charge MWh': '{:,.1f}',
+        'Discharge MWh (from BESS)': '{:,.1f}',
+        'PV→Contract MWh': '{:,.1f}',
+        'BESS→Contract MWh': '{:,.1f}',
+        'Avg RTE': '{:,.3f}',
+        'Eq cycles (year)': '{:,.1f}',
+        'Cum cycles': '{:,.1f}',
+        'SOH_cycle': '{:,.3f}',
+        'SOH_calendar': '{:,.3f}',
+        'SOH_total': '{:,.3f}',
+        'EOY usable MWh': '{:,.1f}',
+        'EOY power MW (avail-adjusted)': '{:,.1f}',
+        'PV curtailed MWh': '{:,.1f}',
+    }))
+
+    # ---------- EOY capability vs Firm target (STACKED + LINE) ----------
+    st.subheader("EOY Energy Capability vs Firm Target (per day)")
+    target_daily_mwh = cfg.contracted_mw * dis_hours_per_day
+    years_list = [r.year_index for r in results]
+    energy_cap = [r.eoy_usable_mwh for r in results]
+    power_cap = [r.eoy_power_mw * dis_hours_per_day for r in results]
+    cap = [min(e, p) for e, p in zip(energy_cap, power_cap)]
+    energy_limited_segment = [c if e <= p else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
+    power_limited_segment  = [c if p <  e else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
+
+    cap_df = pd.DataFrame({
+        'Year': years_list,
+        'Energy-limited (MWh/day)': energy_limited_segment,
+        'Power-limited (MWh/day)': power_limited_segment,
+        'Target firm (MWh/day)': [target_daily_mwh]*len(years_list),
+    })
+
+    cap_long = cap_df.melt(id_vars='Year', value_vars=['Energy-limited (MWh/day)', 'Power-limited (MWh/day)'],
+                           var_name='Limit', value_name='MWh/day')
+
+    bar = alt.Chart(cap_long).mark_bar().encode(
+        x=alt.X('Year:O', title='Year'),
+        y=alt.Y('MWh/day:Q', title='MWh/day'),
+        color=alt.Color('Limit:N', scale=alt.Scale(range=['#86c5da', '#7fd18b']))
     )
-    if charge_deficit_day > 1e-3:
-        st.warning(
-            f"PV charge **insufficient** by **{charge_deficit_day:,.1f} MWh/day** in final year. "
-            f"At {final.eoy_power_mw:.1f} MW charge power, this needs **+{extra_charge_hours_day:,.2f} h/day** "
-            f"of charge window or equivalent **shoulder discharge** to create headroom while PV is up."
-        )
-    else:
-        st.success("PV charge looks sufficient at the proposed settings.")
+    line = alt.Chart(cap_df).mark_line(point=True, color='#f2a900').encode(
+        x='Year:O',
+        y='Target firm (MWh/day):Q',
+    )
+    st.altair_chart(bar + line, use_container_width=True)
 
-    # --- 7) Cycles guardrail hint ---
-    if efc_year_prop > EFC_YR_YELLOW:
+    # ---------- EOY Delivered Firm Split (per day): PV vs BESS ----------
+    st.subheader("EOY Delivered Firm Split (per day) — PV vs BESS")
+    deliv_df = pd.DataFrame({
+        'Year': years_list,
+        'PV→Contract (MWh/day)': [r.pv_to_contract_mwh/365.0 for r in results],
+        'BESS→Contract (MWh/day)': [r.bess_to_contract_mwh/365.0 for r in results],
+        'Target firm (MWh/day)': [target_daily_mwh]*len(years_list),
+    })
+    deliv_long = deliv_df.melt(id_vars='Year', value_vars=['PV→Contract (MWh/day)', 'BESS→Contract (MWh/day)'],
+                               var_name='Source', value_name='MWh/day')
+
+    bar2 = alt.Chart(deliv_long).mark_bar().encode(
+        x=alt.X('Year:O', title='Year'),
+        y=alt.Y('MWh/day:Q', title='MWh/day'),
+        color=alt.Color('Source:N', scale=alt.Scale(range=['#86c5da', '#7fd18b']))
+    )
+    line2 = alt.Chart(deliv_df).mark_line(point=True, color='#f2a900').encode(
+        x='Year:O',
+        y='Target firm (MWh/day):Q',
+    )
+    st.altair_chart(bar2 + line2, use_container_width=True)
+
+    # ---------- Flags ----------
+    st.subheader("Flags & Guidance")
+    flag_totals = {
+        'firm_shortfall_hours': sum(r.flags['firm_shortfall_hours'] for r in results),
+        'soc_floor_hits': sum(r.flags['soc_floor_hits'] for r in results),
+        'soc_ceiling_hits': sum(r.flags['soc_ceiling_hits'] for r in results),
+    }
+    f1, f2, f3 = st.columns(3)
+    f1.metric("Firm shortfall hours", f"{flag_totals['firm_shortfall_hours']:,}")
+    f1.caption("Meaning: In-window hours when PV + BESS could not meet contracted MW.\nFix knobs: increase energy/power, relax windows, augment, or reduce contract.")
+    f2.metric("SOC floor hits", f"{flag_totals['soc_floor_hits']:,}")
+    f2.caption("Meaning: SOC hit the minimum reserve.\nFix knobs: raise ceiling, lower floor, increase energy, improve RTE, widen charge windows.")
+    f3.metric("SOC ceiling hits", f"{flag_totals['soc_ceiling_hits']:,}")
+    f3.caption("Meaning: Battery reached upper SOC limit (limited charging).\nFix knobs: increase shoulder discharge, lower ceiling, narrow charge window if unnecessary.")
+
+    st.markdown("---")
+
+    # ---------- Design Advisor (physics-bounded) ----------
+    st.subheader("Design Advisor (final-year, physics-bounded)")
+
+    # --- Bounds / guardrails (editable if you like) ---
+    RTE_RT_MAX = 0.92              # plausible AC-to-AC roundtrip limit
+    SOC_FLOOR_MIN = 0.05           # don't recommend below this
+    SOC_CEILING_MAX = 0.98         # don't recommend above this
+    DELTA_SOC_MAX = 0.90           # ~5-95%
+    EFC_YR_GREEN = 300.0           # vendor guardrail
+    EFC_YR_YELLOW = 400.0
+
+    # --- Final-year context ---
+    eta_rt_now = max(0.05, min(cfg.rte_roundtrip, 0.9999))  # roundtrip now
+    eta_dis_now = eta_rt_now ** 0.5
+    delta_soc_now = max(0.0, cfg.soc_ceiling - cfg.soc_floor)
+    delta_soc_cap = min(DELTA_SOC_MAX, SOC_CEILING_MAX - SOC_FLOOR_MIN)
+    soh_final = float(final.soh_total)
+
+    target_day = cfg.contracted_mw * dis_hours_per_day                    # MWh/day
+    pv_to_contract_day = final.pv_to_contract_mwh / 365.0                 # MWh/day
+    bess_share_day = max(0.0, target_day - pv_to_contract_day)            # MWh/day BESS must supply
+
+    deliverable_day_now = cfg.initial_usable_mwh * soh_final * delta_soc_now * eta_dis_now
+    shortfall_day_now = max(0.0, target_day - deliverable_day_now)
+
+    colA, colB, colC, colD = st.columns(4)
+    colA.metric("Deliverable/day now (final yr)", f"{deliverable_day_now:,.1f} MWh")
+    colB.metric("Shortfall/day (final yr)", f"{shortfall_day_now:,.1f} MWh")
+    colC.metric("Target/day", f"{target_day:,.1f} MWh")
+    colD.metric("EOY power avail (final)", f"{final.eoy_power_mw:,.2f} MW",
+                help="Availability-adjusted final-year power capability.")
+
+    # --- 1) Power vs Energy limiter ---
+    if final.eoy_power_mw + 1e-9 < cfg.contracted_mw:
         st.error(
-            f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}): exceeds typical guardrails. "
-            "Prefer **augmentation** (Threshold/SOH) or reduce ΔSOC."
+            f"Power-limited: final-year available power {final.eoy_power_mw:.2f} MW "
+            f"is below contract {cfg.contracted_mw:.2f} MW."
         )
-    elif efc_year_prop > EFC_YR_GREEN:
-        st.warning(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}**: near vendor guardrail; consider augmentation.")
+        need = cfg.contracted_mw - final.eoy_power_mw
+        st.markdown(
+            f"- **Option D (Power)**: Increase power (final-year, avail-adjusted) by **{need:.2f} MW**, "
+            f"or reduce contract MW / shift windows."
+        )
     else:
-        st.info(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** under proposed ΔSOC/Ebol looks reasonable.")
+        # --- Energy-limited path ---
+        st.caption("Energy-limited in final year (power is sufficient).")
 
-st.markdown("---")
+        # --- 2) Sequential bounded solve: ΔSOC → RTE → Energy ---
+        # a) try to meet target with ΔSOC first (bounded)
+        req_delta_soc_at_current = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * eta_dis_now)
+        delta_soc_adopt = min(delta_soc_cap, max(delta_soc_now, req_delta_soc_at_current))
 
-# ---------- Average Daily Profile ----------
-st.subheader("Average Daily Profile — PV & BESS contributions to contract; charging shown below zero")
+        # b) then RTE (bounded)
+        req_eta_dis_at_soc = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)
+        req_rte_rt_at_soc = min(0.9999, max(0.0, req_eta_dis_at_soc ** 2))
+        rte_rt_adopt = min(RTE_RT_MAX, max(eta_rt_now, req_rte_rt_at_soc))
 
-def _avg_profile_df_from_logs(logs: HourlyLog, cfg: SimConfig) -> pd.DataFrame:
-    contracted_series = np.array([
-        cfg.contracted_mw if any(w.contains(int(h)) for w in cfg.discharge_windows) else 0.0
-        for h in logs.hod
-    ], dtype=float)
-    df_hr = pd.DataFrame({
-        'hod': logs.hod.astype(int),
-        'pv_to_contract_mw': logs.pv_to_contract_mw,
-        'bess_to_contract_mw': logs.bess_to_contract_mw,
-        'charge_mw': logs.charge_mw,
-        'contracted_mw': contracted_series,
-    })
-    avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
-    avg['charge_mw_neg'] = -avg['charge_mw']
-    return avg[['hour', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
+        # c) finally BOL energy to close any remaining gap
+        ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5))
+        ebol_delta = max(0.0, ebol_req - cfg.initial_usable_mwh)
 
-def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
-    base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
-    area_pv = base.mark_area(opacity=0.6).encode(y=alt.Y('pv_to_contract_mw:Q', title='MW'), color=alt.value('#86c5da'))
-    area_bess = base.mark_area(opacity=0.6).encode(y='bess_to_contract_mw:Q', color=alt.value('#7fd18b'))
-    area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
-    line_contract = base.mark_line(color='#f2a900', strokeWidth=2).encode(y='contracted_mw:Q')
-    st.altair_chart(area_pv + area_bess + area_chg + line_contract, use_container_width=True)
+        # Helper to render SOC variant text (raise ceiling vs lower floor)
+        def soc_variant_text(delta_soc_goal: float) -> str:
+            # choice A: keep floor, raise ceiling
+            ceil_needed = min(SOC_CEILING_MAX, cfg.soc_floor + delta_soc_goal)
+            # choice B: keep ceiling, lower floor
+            floor_needed = max(SOC_FLOOR_MIN, cfg.soc_ceiling - delta_soc_goal)
+            return (f"(e.g., keep floor at {cfg.soc_floor*100:.0f}% → raise ceiling to **{ceil_needed*100:.0f}%**, "
+                    f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
 
-if final_year_logs is not None and first_year_logs is not None:
-    avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
-    avg_final_year = _avg_profile_df_from_logs(final_year_logs, cfg)
+        # --- 3) PV charge sufficiency check under the adopted RTE ---
+        pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
+        charged_day_now = final.charge_mwh / 365.0                     # MWh/day currently charged
+        charge_deficit_day = max(0.0, pv_charge_req_day - charged_day_now)
+        extra_charge_hours_day = charge_deficit_day / max(1e-9, final.eoy_power_mw)
 
-    contracted_by_hour = np.array([
-        cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0
-        for h in range(24)
-    ], dtype=float)
-    with np.errstate(invalid='ignore', divide='ignore'):
-        avg_project = pd.DataFrame({
-            'hour': np.arange(24),
-            'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
-            'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
-            'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
-            'contracted_mw': contracted_by_hour,
+        # --- 4) Implied cycles guardrail under the proposed ΔSOC/Ebol ---
+        def dod_from_delta_soc(ds: float) -> int:
+            return 100 if ds >= 0.90 else (80 if ds >= 0.80 else (40 if ds >= 0.40 else (20 if ds >= 0.20 else 10)))
+        dod_key_prop = dod_from_delta_soc(delta_soc_adopt)
+        dod_frac_map = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}
+        dod_frac_prop = dod_frac_map[dod_key_prop]
+        efc_year_prop = (bess_share_day * 365.0) / max(1e-9, ebol_req * dod_frac_prop)
+
+        # --- 5) Print bounded options ---
+        opts = []
+
+        # OPTION A — ΔSOC only (bounded to cap); if still short, explain why it's insufficient alone
+        if delta_soc_now + 1e-9 < delta_soc_cap:
+            need_soc = max(0.0, delta_soc_adopt - delta_soc_now) * 100.0
+            # re-compute Ebol needed if we keep RTE at current (ΔSOC only)
+            ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * (eta_rt_now ** 0.5))
+            short_if_only_soc = max(0.0, ebol_req_soc_only - cfg.initial_usable_mwh)
+            if short_if_only_soc <= 1e-6:
+                opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)}")
+            else:
+                opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)} "
+                            f"→ still short on energy by **{short_if_only_soc:,.1f} MWh** (at current RTE).")
+        else:
+            opts.append(f"- **Option A (ΔSOC)**: Already at cap (**{delta_soc_now*100:,.1f}%**).")
+
+        # OPTION B — ΔSOC (adopted) + RTE (bounded)
+        if rte_rt_adopt > eta_rt_now + 1e-9:
+            opts.append(f"- **Option B (ΔSOC + RTE)**: Keep ΔSOC at **{delta_soc_adopt*100:,.1f}%** and improve roundtrip RTE to "
+                        f"**{rte_rt_adopt*100:,.1f}%** (cap {RTE_RT_MAX*100:.0f}%).")
+        else:
+            opts.append(f"- **Option B (ΔSOC + RTE)**: RTE already at limit for this option (current {eta_rt_now*100:.1f}%, cap {RTE_RT_MAX*100:.0f}%).")
+
+        # OPTION C — Energy at BOL to close the gap (with adopted ΔSOC & RTE)
+        if ebol_delta > 1e-6:
+            opts.append(f"- **Option C (Energy)**: Increase BOL usable by **{ebol_delta:,.1f} MWh** (to **{ebol_req:,.1f} MWh**).")
+        else:
+            opts.append(f"- **Option C (Energy)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
+
+        st.markdown("**Bounded recommendations:**")
+        st.markdown("\n".join(opts))
+
+        # --- 6) PV charge sufficiency + charge-hours hint ---
+        st.caption(
+            f"PV charge required/day for BESS share ≈ **{pv_charge_req_day:,.1f} MWh** "
+            f"(BESS share {bess_share_day:,.1f} ÷ RTE {rte_rt_adopt:.2f}). "
+            f"Currently charging **{charged_day_now:,.1f} MWh/day**."
+        )
+        if charge_deficit_day > 1e-3:
+            st.warning(
+                f"PV charge **insufficient** by **{charge_deficit_day:,.1f} MWh/day** in final year. "
+                f"At {final.eoy_power_mw:.1f} MW charge power, this needs **+{extra_charge_hours_day:,.2f} h/day** "
+                f"of charge window or equivalent **shoulder discharge** to create headroom while PV is up."
+            )
+        else:
+            st.success("PV charge looks sufficient at the proposed settings.")
+
+        # --- 7) Cycles guardrail hint ---
+        if efc_year_prop > EFC_YR_YELLOW:
+            st.error(
+                f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}): exceeds typical guardrails. "
+                "Prefer **augmentation** (Threshold/SOH) or reduce ΔSOC."
+            )
+        elif efc_year_prop > EFC_YR_GREEN:
+            st.warning(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}**: near vendor guardrail; consider augmentation.")
+        else:
+            st.info(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** under proposed ΔSOC/Ebol looks reasonable.")
+
+    st.markdown("---")
+
+    # ---------- Average Daily Profile ----------
+    st.subheader("Average Daily Profile — PV & BESS contributions to contract; charging shown below zero")
+
+    def _avg_profile_df_from_logs(logs: HourlyLog, cfg: SimConfig) -> pd.DataFrame:
+        contracted_series = np.array([
+            cfg.contracted_mw if any(w.contains(int(h)) for w in cfg.discharge_windows) else 0.0
+            for h in logs.hod
+        ], dtype=float)
+        df_hr = pd.DataFrame({
+            'hod': logs.hod.astype(int),
+            'pv_to_contract_mw': logs.pv_to_contract_mw,
+            'bess_to_contract_mw': logs.bess_to_contract_mw,
+            'charge_mw': logs.charge_mw,
+            'contracted_mw': contracted_series,
         })
+        avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
+        avg['charge_mw_neg'] = -avg['charge_mw']
+        return avg[['hour', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
-    tab_final, tab_first, tab_project = st.tabs([
-        "Final year",
-        "Year 1",
-        "Average across project",
-    ])
-    with tab_final:
-        _render_avg_profile_chart(avg_final_year)
-    with tab_first:
-        _render_avg_profile_chart(avg_first_year)
-    with tab_project:
-        _render_avg_profile_chart(avg_project)
-    st.caption("Positive areas: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). Contract line overlaid (gold).")
-else:
-    st.info("Average daily profiles unavailable — simulation logs not generated.")
+    def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
+        base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
+        area_pv = base.mark_area(opacity=0.6).encode(y=alt.Y('pv_to_contract_mw:Q', title='MW'), color=alt.value('#86c5da'))
+        area_bess = base.mark_area(opacity=0.6).encode(y='bess_to_contract_mw:Q', color=alt.value('#7fd18b'))
+        area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
+        line_contract = base.mark_line(color='#f2a900', strokeWidth=2).encode(y='contracted_mw:Q')
+        st.altair_chart(area_pv + area_bess + area_chg + line_contract, use_container_width=True)
 
-st.markdown("---")
+    if final_year_logs is not None and first_year_logs is not None:
+        avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
+        avg_final_year = _avg_profile_df_from_logs(final_year_logs, cfg)
 
-# ---------- Downloads ----------
-st.subheader("Downloads")
-st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
-                   file_name='bess_yearly_summary.csv', mime='text/csv')
+        contracted_by_hour = np.array([
+            cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0
+            for h in range(24)
+        ], dtype=float)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            avg_project = pd.DataFrame({
+                'hour': np.arange(24),
+                'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
+                'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
+                'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
+                'contracted_mw': contracted_by_hour,
+            })
 
-if final_year_logs is not None:
-    hourly_df = pd.DataFrame({
-        'hour_index': np.arange(len(final_year_logs.hod)),
-        'hod': final_year_logs.hod,
-        'pv_to_contract_mw': final_year_logs.pv_to_contract_mw,
-        'bess_to_contract_mw': final_year_logs.bess_to_contract_mw,
-        'charge_mw': final_year_logs.charge_mw,
-        'discharge_mw': final_year_logs.discharge_mw,
-        'soc_mwh': final_year_logs.soc_mwh,
-    })
-    st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
-                       file_name='final_year_hourly_logs.csv', mime='text/csv')
+        tab_final, tab_first, tab_project = st.tabs([
+            "Final year",
+            "Year 1",
+            "Average across project",
+        ])
+        with tab_final:
+            _render_avg_profile_chart(avg_final_year)
+        with tab_first:
+            _render_avg_profile_chart(avg_first_year)
+        with tab_project:
+            _render_avg_profile_chart(avg_project)
+        st.caption("Positive areas: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). Contract line overlaid (gold).")
+    else:
+        st.info("Average daily profiles unavailable — simulation logs not generated.")
 
-st.info("""
-Notes & Caveats:
-- PV-only charging is enforced; during discharge hours, PV first meets the contract, then surplus PV charges the BESS.
-- Threshold augmentation offers **Capability** and **SOH** triggers. Power is added to keep original C-hours.
-- EOY capability = what the fleet can sustain per day at year-end; Delivered Split = what actually happened per day on average.
-- Design Advisor uses a conservative energy-limited view: Deliverable/day ≈ BOL usable × SOH(final) × ΔSOC × η_dis.
-""")
+    st.markdown("---")
+
+    # ---------- Downloads ----------
+    st.subheader("Downloads")
+    st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
+                       file_name='bess_yearly_summary.csv', mime='text/csv')
+
+    if final_year_logs is not None:
+        hourly_df = pd.DataFrame({
+            'hour_index': np.arange(len(final_year_logs.hod)),
+            'hod': final_year_logs.hod,
+            'pv_to_contract_mw': final_year_logs.pv_to_contract_mw,
+            'bess_to_contract_mw': final_year_logs.bess_to_contract_mw,
+            'charge_mw': final_year_logs.charge_mw,
+            'discharge_mw': final_year_logs.discharge_mw,
+            'soc_mwh': final_year_logs.soc_mwh,
+        })
+        st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
+                           file_name='final_year_hourly_logs.csv', mime='text/csv')
+
+    st.info("""
+    Notes & Caveats:
+    - PV-only charging is enforced; during discharge hours, PV first meets the contract, then surplus PV charges the BESS.
+    - Threshold augmentation offers **Capability** and **SOH** triggers. Power is added to keep original C-hours.
+    - EOY capability = what the fleet can sustain per day at year-end; Delivered Split = what actually happened per day on average.
+    - Design Advisor uses a conservative energy-limited view: Deliverable/day ≈ BOL usable × SOH(final) × ΔSOC × η_dis.
+    """)
+
+if __name__ == "__main__":
+    run_app()
