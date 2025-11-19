@@ -4,41 +4,31 @@
 # - Keeps: README/Help, Threshold & SOH-trigger augmentation, EOY capability + PV/BESS split,
 #          multi-period daily profiles, flags, downloads
 
-# ---- Simple password gate (Streamlit Cloud) ----
-import os
+# ---- Abuse protection (rate limit) ----
+import time
 import streamlit as st
 
-def _check_password():
-    if os.environ.get("BESSLAB_BYPASS_AUTH") == "1":
-        return True
 
-    try:
-        secret = st.secrets.get("BESSLAB_PASS", None)
-    except Exception:
-        secret = None
-    if not secret:
+def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
+    """Simple session-based rate limit to deter abuse on open deployments."""
+    now = time.time()
+    recent = st.session_state.get("recent_runs", [])
+    recent = [t for t in recent if now - t < window_seconds]
+    if len(recent) >= max_runs:
+        wait_for = int(window_seconds - (now - min(recent)))
+        st.error(
+            "Rate limit reached. Please wait a few minutes before running more calculations."
+        )
+        st.info(
+            f"You can retry in approximately {max(wait_for, 1)} seconds."
+        )
         st.stop()
 
-    if "auth_ok" not in st.session_state:
-        st.session_state["auth_ok"] = False
+    recent.append(now)
+    st.session_state["recent_runs"] = recent
 
-    if st.session_state["auth_ok"]:
-        if st.sidebar.button("Logout"):
-            st.session_state["auth_ok"] = False
-            st.rerun()
-        return True
 
-    pw = st.sidebar.text_input("Password", type="password", help="Enter the access password.")
-    if pw:
-        if pw == secret:
-            st.session_state["auth_ok"] = True
-            st.rerun()
-        else:
-            st.sidebar.error("Incorrect password.")
-    st.stop()
-
-if not _check_password():
-    st.stop()
+enforce_rate_limit()
 # ---- end gate ----
 
 import math
@@ -49,7 +39,6 @@ from typing import List, Tuple, Optional, Dict
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 from pathlib import Path
 import altair as alt
 from fpdf import FPDF
