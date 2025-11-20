@@ -9,8 +9,17 @@ import time
 import streamlit as st
 
 
-def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
-    """Simple session-based rate limit to deter abuse on open deployments."""
+def enforce_rate_limit(
+    max_runs: int = 60,
+    window_seconds: int = 600,
+    min_spacing_seconds: float = 2.0,
+) -> None:
+    """Simple session-based rate limit to deter abuse on open deployments.
+
+    The `min_spacing_seconds` guard prevents multiple Streamlit reruns triggered by
+    a single UI action (e.g., widget update + state change) from being counted as
+    separate runs, which otherwise exhausts the allowance during small batches.
+    """
     now = time.time()
     recent = st.session_state.get("recent_runs", [])
     recent = [t for t in recent if now - t < window_seconds]
@@ -24,11 +33,12 @@ def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
         )
         st.stop()
 
-    recent.append(now)
+    last_recorded = st.session_state.get("last_rate_limit_ts")
+    if last_recorded is None or now - last_recorded >= min_spacing_seconds:
+        recent.append(now)
+        st.session_state["last_rate_limit_ts"] = now
+
     st.session_state["recent_runs"] = recent
-
-
-enforce_rate_limit()
 # ---- end gate ----
 
 import math
@@ -1098,6 +1108,7 @@ def run_app():
     )
 
     scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
+    rate_limited_this_rerun = False
     with scenarios_run_col:
         run_all_clicked = st.button(
             "Run all scenarios", use_container_width=True, disabled=not scenarios
@@ -1110,6 +1121,7 @@ def run_app():
 
     if run_all_clicked:
         enforce_rate_limit()
+        rate_limited_this_rerun = True
         comparison_rows = []
         with st.spinner("Running all saved scenarios..."):
             for sc in scenarios:
@@ -1178,6 +1190,9 @@ def run_app():
             ).properties(title="Cross-scenario KPIs")
             st.altair_chart(chart, use_container_width=True)
 
+
+    if not rate_limited_this_rerun:
+        enforce_rate_limit()
 
     try:
         sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
