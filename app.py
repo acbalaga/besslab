@@ -9,7 +9,7 @@ import time
 import streamlit as st
 
 
-def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
+def enforce_rate_limit(max_runs: int = 60, window_seconds: int = 600) -> None:
     """Simple session-based rate limit to deter abuse on open deployments."""
     now = time.time()
     recent = st.session_state.get("recent_runs", [])
