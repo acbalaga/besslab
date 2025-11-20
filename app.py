@@ -408,8 +408,10 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         f"PV->Contract: {final.pv_to_contract_mwh:,.1f} MWh/yr | BESS->Contract: {final.bess_to_contract_mwh:,.1f} MWh/yr",
         f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}",
     ]
+
+    pdf.set_x(margin)
     for line in param_lines:
-        pdf.multi_cell(0, 5, line)
+        pdf.multi_cell(usable_width, 5, line)
 
     pdf.ln(2)
     pdf.set_font("Helvetica", "", 8)
