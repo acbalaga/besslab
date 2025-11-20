@@ -1186,6 +1186,10 @@ def run_app():
             'pv_to_contract_mw': 'PV→Contract',
             'bess_to_contract_mw': 'BESS→Contract',
         })
+        contrib_long['SourceOrder'] = contrib_long['Source'].map({
+            'PV→Contract': 0,
+            'BESS→Contract': 1,
+        })
         contrib_chart = (
             alt.Chart(contrib_long)
             .mark_bar(opacity=0.85)
@@ -1194,7 +1198,7 @@ def run_app():
                 y=alt.Y('MW:Q', title='MW', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b'])),
-                order=alt.Order('Source:N', sort=['PV→Contract', 'BESS→Contract'])
+                order=alt.Order('SourceOrder:Q', sort='ascending')
             )
         )
 
