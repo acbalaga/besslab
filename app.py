@@ -33,9 +33,9 @@ enforce_rate_limit()
 
 import math
 import calendar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from io import BytesIO
-from typing import List, Tuple, Optional, Dict
+from typing import Any, List, Tuple, Optional, Dict
 
 import numpy as np
 import pandas as pd
@@ -180,6 +180,14 @@ class SimConfig:
     aug_soh_add_frac_initial: float = 0.10  # SOH mode: add % of initial BOL energy
     aug_periodic_every_years: int = 5
     aug_periodic_add_frac_of_bol: float = 0.10
+
+
+@dataclass
+class ScenarioConfig:
+    label: str
+    bess_specs: Dict[str, Any]
+    dispatch: Dict[str, Any]
+    augmentation: Dict[str, Any]
 
 @dataclass
 class YearResult:
@@ -843,6 +851,87 @@ def run_app():
             aug_every = 5; aug_frac = 0.10
             aug_trigger_type = "Capability"
             aug_soh_trig = 0.80; aug_soh_add = 0.10
+
+    with st.expander("Scenario set", expanded=False):
+        st.caption("Capture different BESS specs/dispatch/augmentation combinations for later reuse.")
+
+        def build_scenario(label: str) -> ScenarioConfig:
+            return ScenarioConfig(
+                label=label,
+                bess_specs={
+                    "power_mw": float(init_power),
+                    "usable_mwh": float(init_energy),
+                    "soc_floor": float(soc_floor),
+                    "soc_ceiling": float(soc_ceiling),
+                },
+                dispatch={
+                    "contracted_mw": float(contracted_mw),
+                    "discharge_windows_text": discharge_windows_text,
+                    "charge_windows_text": charge_windows_text,
+                },
+                augmentation={
+                    "mode": aug_mode,
+                    "trigger_type": aug_trigger_type,
+                    "threshold_margin": float(aug_thr_margin),
+                    "topup_margin": float(aug_topup),
+                    "soh_trigger_pct": float(aug_soh_trig),
+                    "soh_add_frac_initial": float(aug_soh_add),
+                    "periodic_every_years": int(aug_every),
+                    "periodic_add_frac_of_bol": float(aug_frac),
+                },
+            )
+
+        scenarios: List[ScenarioConfig] = st.session_state.setdefault("scenarios", [])
+        default_label = f"Scenario {len(scenarios) + 1}"
+        new_label = st.text_input("Scenario label", value=default_label)
+
+        add_cols = st.columns([1, 1])
+        with add_cols[0]:
+            if st.button("Add current inputs", use_container_width=True):
+                scenarios.append(build_scenario(new_label or default_label))
+                st.success("Scenario added to the session set.")
+
+        if scenarios:
+            scenario_options = {f"{i + 1}. {sc.label}": i for i, sc in enumerate(scenarios)}
+            selected_key = st.selectbox("Select a scenario", list(scenario_options.keys()))
+            selected_idx = scenario_options[selected_key]
+            selected = scenarios[selected_idx]
+
+            with add_cols[1]:
+                if st.button("Duplicate selected", use_container_width=True):
+                    dup_label = f"{selected.label} (copy)"
+                    scenarios.append(replace(selected, label=dup_label))
+                    st.success(f"Duplicated as '{dup_label}'.")
+
+            del_col1, _del_col2 = st.columns([1, 1])
+            with del_col1:
+                if st.button("Delete selected", use_container_width=True):
+                    scenarios.pop(selected_idx)
+                    st.warning("Scenario removed from the session set.")
+
+            table_rows = []
+            for sc in scenarios:
+                table_rows.append({
+                    "Label": sc.label,
+                    "Power (MW)": sc.bess_specs.get("power_mw"),
+                    "Usable (MWh)": sc.bess_specs.get("usable_mwh"),
+                    "SOC floor": sc.bess_specs.get("soc_floor"),
+                    "SOC ceiling": sc.bess_specs.get("soc_ceiling"),
+                    "Contracted MW": sc.dispatch.get("contracted_mw"),
+                    "Discharge windows": sc.dispatch.get("discharge_windows_text"),
+                    "Charge windows": sc.dispatch.get("charge_windows_text") or "Any PV hour",
+                    "Aug strategy": sc.augmentation.get("mode"),
+                    "Aug trigger": sc.augmentation.get("trigger_type"),
+                })
+
+            st.data_editor(
+                pd.DataFrame(table_rows),
+                hide_index=True,
+                disabled=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("No scenarios saved yet. Use 'Add current inputs' to capture this configuration.")
 
     # Build config
     cfg = SimConfig(
