@@ -246,6 +246,38 @@ class MonthResult:
     pv_curtailed_mwh: float
     flags: Dict[str, int]
 
+
+@dataclass
+class SimulationOutput:
+    cfg: SimConfig
+    discharge_hours_per_day: float
+    results: List[YearResult]
+    monthly_results: List[MonthResult]
+    first_year_logs: Optional[HourlyLog]
+    final_year_logs: Optional[HourlyLog]
+    hod_count: np.ndarray
+    hod_sum_pv: np.ndarray
+    hod_sum_bess: np.ndarray
+    hod_sum_charge: np.ndarray
+    augmentation_events: int
+
+
+@dataclass
+class SimulationSummary:
+    compliance: float
+    bess_share_of_firm: float
+    charge_discharge_ratio: float
+    pv_capture_ratio: float
+    discharge_capacity_factor: float
+    total_project_generation_mwh: float
+    bess_generation_mwh: float
+    pv_generation_mwh: float
+    pv_excess_mwh: float
+    bess_losses_mwh: float
+    total_shortfall_mwh: float
+    avg_eq_cycles_per_year: float
+    cap_ratio_final: float
+
 @dataclass
 class SimState:
     pv_df: pd.DataFrame
@@ -687,6 +719,111 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
 
     return 0.0, 0.0
 
+
+def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame, dod_override: str,
+                     need_logs: bool = True) -> SimulationOutput:
+    if not cfg.discharge_windows:
+        raise ValueError("Please provide at least one discharge window.")
+
+    dis_hours_per_day = 0.0
+    for w in cfg.discharge_windows:
+        dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
+
+    state = SimState(
+        pv_df=pv_df,
+        cycle_df=cycle_df,
+        cfg=cfg,
+        current_power_mw=cfg.initial_power_mw,
+        current_usable_mwh_bolref=cfg.initial_usable_mwh,
+        initial_bol_energy_mwh=cfg.initial_usable_mwh,
+        initial_bol_power_mw=cfg.initial_power_mw,
+    )
+
+    results: List[YearResult] = []
+    monthly_results_all: List[MonthResult] = []
+    dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
+    first_year_logs: Optional[HourlyLog] = None
+    final_year_logs = None
+    hod_count = np.zeros(24, dtype=float)
+    hod_sum_pv = np.zeros(24, dtype=float)
+    hod_sum_bess = np.zeros(24, dtype=float)
+    hod_sum_charge = np.zeros(24, dtype=float)
+    augmentation_events = 0
+
+    for y in range(1, cfg.years + 1):
+        yr, logs, monthly_results = simulate_year(state, y, dod_key_override, need_logs=(need_logs and y == cfg.years))
+        hours = np.mod(logs.hod.astype(int), 24)
+        np.add.at(hod_count, hours, 1)
+        np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
+        np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
+        np.add.at(hod_sum_charge, hours, logs.charge_mw)
+        if y == 1 and need_logs:
+            first_year_logs = logs
+        if y == cfg.years and need_logs:
+            final_year_logs = logs
+        state.cum_cycles = yr.cum_cycles
+        results.append(yr)
+        monthly_results_all.extend(monthly_results)
+        add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
+        if add_p > 0 or add_e > 0:
+            augmentation_events += 1
+            state.current_power_mw += add_p
+            state.current_usable_mwh_bolref += add_e
+
+    return SimulationOutput(
+        cfg=cfg,
+        discharge_hours_per_day=dis_hours_per_day,
+        results=results,
+        monthly_results=monthly_results_all,
+        first_year_logs=first_year_logs,
+        final_year_logs=final_year_logs,
+        hod_count=hod_count,
+        hod_sum_pv=hod_sum_pv,
+        hod_sum_bess=hod_sum_bess,
+        hod_sum_charge=hod_sum_charge,
+        augmentation_events=augmentation_events,
+    )
+
+
+def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
+    results = sim_output.results
+    final = results[-1]
+    expected_total = sum(r.expected_firm_mwh for r in results)
+    actual_total = sum(r.delivered_firm_mwh for r in results)
+    compliance = (actual_total / expected_total * 100.0) if expected_total > 0 else float('nan')
+    total_discharge_mwh = sum(r.discharge_mwh for r in results)
+    total_charge_mwh = sum(r.charge_mwh for r in results)
+    bess_generation_mwh = sum(r.bess_to_contract_mwh for r in results)
+    pv_generation_mwh = sum(r.pv_to_contract_mwh for r in results)
+    pv_excess_mwh = sum(r.pv_curtailed_mwh for r in results)
+    charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float('nan')
+    bess_share_of_firm = (bess_generation_mwh / actual_total * 100.0) if actual_total > 0 else float('nan')
+    pv_capture_ratio = (total_charge_mwh / (total_charge_mwh + pv_excess_mwh)) if (total_charge_mwh + pv_excess_mwh) > 0 else float('nan')
+    hours_in_discharge_windows_year = sim_output.discharge_hours_per_day * 365.0
+    discharge_capacity_factor = (final.discharge_mwh / (final.eoy_power_mw * hours_in_discharge_windows_year)) if final.eoy_power_mw > 0 else float('nan')
+    total_project_generation_mwh = actual_total
+    bess_losses_mwh = max(total_charge_mwh - total_discharge_mwh, 0.0)
+    total_shortfall_mwh = sum(r.shortfall_mwh for r in results)
+    avg_eq_cycles_per_year = float(np.mean([r.eq_cycles for r in results]))
+    cap_daily_final = min(final.eoy_usable_mwh, final.eoy_power_mw * sim_output.discharge_hours_per_day)
+    cap_ratio_final = cap_daily_final / (sim_output.cfg.contracted_mw * sim_output.discharge_hours_per_day) if sim_output.discharge_hours_per_day > 0 else float('nan')
+
+    return SimulationSummary(
+        compliance=compliance,
+        bess_share_of_firm=bess_share_of_firm,
+        charge_discharge_ratio=charge_discharge_ratio,
+        pv_capture_ratio=pv_capture_ratio,
+        discharge_capacity_factor=discharge_capacity_factor,
+        total_project_generation_mwh=total_project_generation_mwh,
+        bess_generation_mwh=bess_generation_mwh,
+        pv_generation_mwh=pv_generation_mwh,
+        pv_excess_mwh=pv_excess_mwh,
+        bess_losses_mwh=bess_losses_mwh,
+        total_shortfall_mwh=total_shortfall_mwh,
+        avg_eq_cycles_per_year=avg_eq_cycles_per_year,
+        cap_ratio_final=cap_ratio_final,
+    )
+
 # --------- Streamlit UI ---------
 
 
@@ -960,51 +1097,103 @@ def run_app():
         aug_periodic_add_frac_of_bol=float(aug_frac),
     )
 
-    if not cfg.discharge_windows:
-        st.error("Please provide at least one discharge window."); st.stop()
+    scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
+    with scenarios_run_col:
+        run_all_clicked = st.button(
+            "Run all scenarios", use_container_width=True, disabled=not scenarios
+        )
+    with scenarios_hint_col:
+        if scenarios:
+            st.caption("Batch run saved scenarios to compare KPIs side-by-side.")
+        else:
+            st.caption("Save scenarios above to enable batch runs.")
 
-    # Discharge hours/day
-    dis_hours_per_day = 0.0
-    for w in cfg.discharge_windows:
-        dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
+    if run_all_clicked:
+        enforce_rate_limit()
+        comparison_rows = []
+        with st.spinner("Running all saved scenarios..."):
+            for sc in scenarios:
+                sc_charge_windows = sc.dispatch.get("charge_windows_text", "")
+                scenario_cfg = replace(
+                    cfg,
+                    initial_power_mw=float(sc.bess_specs.get("power_mw", cfg.initial_power_mw)),
+                    initial_usable_mwh=float(sc.bess_specs.get("usable_mwh", cfg.initial_usable_mwh)),
+                    soc_floor=float(sc.bess_specs.get("soc_floor", cfg.soc_floor)),
+                    soc_ceiling=float(sc.bess_specs.get("soc_ceiling", cfg.soc_ceiling)),
+                    contracted_mw=float(sc.dispatch.get("contracted_mw", cfg.contracted_mw)),
+                    discharge_windows=parse_windows(sc.dispatch.get("discharge_windows_text", "")),
+                    charge_windows_text=sc_charge_windows,
+                    augmentation=sc.augmentation.get("mode", cfg.augmentation),
+                    aug_trigger_type=sc.augmentation.get("trigger_type", cfg.aug_trigger_type),
+                    aug_threshold_margin=float(sc.augmentation.get("threshold_margin", cfg.aug_threshold_margin)),
+                    aug_topup_margin=float(sc.augmentation.get("topup_margin", cfg.aug_topup_margin)),
+                    aug_soh_trigger_pct=float(sc.augmentation.get("soh_trigger_pct", cfg.aug_soh_trigger_pct)),
+                    aug_soh_add_frac_initial=float(sc.augmentation.get("soh_add_frac_initial", cfg.aug_soh_add_frac_initial)),
+                    aug_periodic_every_years=int(sc.augmentation.get("periodic_every_years", cfg.aug_periodic_every_years)),
+                    aug_periodic_add_frac_of_bol=float(sc.augmentation.get("periodic_add_frac_of_bol", cfg.aug_periodic_add_frac_of_bol)),
+                )
+                try:
+                    scenario_output = simulate_project(
+                        scenario_cfg, pv_df, cycle_df, dod_override, need_logs=False
+                    )
+                except ValueError as exc:  # noqa: BLE001
+                    st.warning(f"Skipping '{sc.label}': {exc}")
+                    continue
 
-    # Initial state
-    state = SimState(
-        pv_df=pv_df,
-        cycle_df=cycle_df,
-        cfg=cfg,
-        current_power_mw=cfg.initial_power_mw,
-        current_usable_mwh_bolref=cfg.initial_usable_mwh,
-        initial_bol_energy_mwh=cfg.initial_usable_mwh,
-        initial_bol_power_mw=cfg.initial_power_mw,
-    )
+                scenario_summary = summarize_simulation(scenario_output)
+                comparison_rows.append({
+                    'Label': sc.label,
+                    'Compliance (%)': scenario_summary.compliance,
+                    'BESS share of firm (%)': scenario_summary.bess_share_of_firm,
+                    'Total shortfall (MWh)': scenario_summary.total_shortfall_mwh,
+                    'Charge/Discharge ratio': scenario_summary.charge_discharge_ratio,
+                    'PV capture ratio': scenario_summary.pv_capture_ratio,
+                    'Augmentation events': scenario_output.augmentation_events,
+                })
 
-    # Simulate years
-    results: List[YearResult] = []
-    monthly_results_all: List[MonthResult] = []
-    dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
-    first_year_logs: Optional[HourlyLog] = None
-    final_year_logs = None
-    hod_count = np.zeros(24, dtype=float)
-    hod_sum_pv = np.zeros(24, dtype=float)
-    hod_sum_bess = np.zeros(24, dtype=float)
-    hod_sum_charge = np.zeros(24, dtype=float)
-    for y in range(1, cfg.years + 1):
-        yr, logs, monthly_results = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
-        hours = np.mod(logs.hod.astype(int), 24)
-        np.add.at(hod_count, hours, 1)
-        np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
-        np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
-        np.add.at(hod_sum_charge, hours, logs.charge_mw)
-        if y == 1: first_year_logs = logs
-        if y == cfg.years: final_year_logs = logs
-        state.cum_cycles = yr.cum_cycles
-        results.append(yr)
-        monthly_results_all.extend(monthly_results)
-        add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
-        if add_p > 0 or add_e > 0:
-            state.current_power_mw += add_p
-            state.current_usable_mwh_bolref += add_e
+        if comparison_rows:
+            comp_df = pd.DataFrame(comparison_rows)
+            st.dataframe(
+                comp_df.style.format({
+                    'Compliance (%)': '{:,.2f}',
+                    'BESS share of firm (%)': '{:,.1f}',
+                    'Total shortfall (MWh)': '{:,.1f}',
+                    'Charge/Discharge ratio': '{:,.3f}',
+                    'PV capture ratio': '{:,.3f}',
+                }),
+                use_container_width=True,
+            )
+
+            bar_metrics = comp_df.melt(
+                id_vars='Label',
+                value_vars=['Compliance (%)', 'BESS share of firm (%)', 'Total shortfall (MWh)', 'Augmentation events'],
+                var_name='Metric',
+                value_name='Value',
+            )
+            chart = alt.Chart(bar_metrics).mark_bar().encode(
+                x=alt.X('Label:N', sort=None),
+                y=alt.Y('Value:Q'),
+                color='Metric:N',
+                column=alt.Column('Metric:N', sort=None),
+            ).properties(title="Cross-scenario KPIs")
+            st.altair_chart(chart, use_container_width=True)
+
+
+    try:
+        sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+    except ValueError as exc:  # noqa: BLE001
+        st.error(str(exc))
+        st.stop()
+
+    results = sim_output.results
+    monthly_results_all = sim_output.monthly_results
+    first_year_logs = sim_output.first_year_logs
+    final_year_logs = sim_output.final_year_logs
+    hod_count = sim_output.hod_count
+    hod_sum_pv = sim_output.hod_sum_pv
+    hod_sum_bess = sim_output.hod_sum_bess
+    hod_sum_charge = sim_output.hod_sum_charge
+    dis_hours_per_day = sim_output.discharge_hours_per_day
 
     # Yearly table
     res_df = pd.DataFrame([{
@@ -1052,21 +1241,19 @@ def run_app():
 
     # --------- KPIs ---------
     final = results[-1]
-    expected_total = sum(r.expected_firm_mwh for r in results)
-    actual_total = sum(r.delivered_firm_mwh for r in results)
-    compliance = (actual_total / expected_total * 100.0) if expected_total > 0 else float('nan')
-    total_discharge_mwh = sum(r.discharge_mwh for r in results)
-    total_charge_mwh = sum(r.charge_mwh for r in results)
-    total_project_generation_mwh = actual_total
-    bess_generation_mwh = sum(r.bess_to_contract_mwh for r in results)
-    pv_generation_mwh = sum(r.pv_to_contract_mwh for r in results)
-    pv_excess_mwh = sum(r.pv_curtailed_mwh for r in results)
-    bess_losses_mwh = max(total_charge_mwh - total_discharge_mwh, 0.0)
-    charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float('nan')
-    bess_share_of_firm = (sum(r.bess_to_contract_mwh for r in results) / actual_total * 100.0) if actual_total > 0 else float('nan')
-    pv_capture_ratio = (total_charge_mwh / (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results))) if (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results)) > 0 else float('nan')
-    hours_in_discharge_windows_year = dis_hours_per_day * 365.0
-    discharge_capacity_factor = (final.discharge_mwh / (final.eoy_power_mw * hours_in_discharge_windows_year)) if final.eoy_power_mw > 0 else float('nan')
+    summary = summarize_simulation(sim_output)
+    compliance = summary.compliance
+    bess_share_of_firm = summary.bess_share_of_firm
+    charge_discharge_ratio = summary.charge_discharge_ratio
+    pv_capture_ratio = summary.pv_capture_ratio
+    discharge_capacity_factor = summary.discharge_capacity_factor
+    total_project_generation_mwh = summary.total_project_generation_mwh
+    bess_generation_mwh = summary.bess_generation_mwh
+    pv_generation_mwh = summary.pv_generation_mwh
+    pv_excess_mwh = summary.pv_excess_mwh
+    bess_losses_mwh = summary.bess_losses_mwh
+    avg_eq_cycles_per_year = summary.avg_eq_cycles_per_year
+    cap_ratio_final = summary.cap_ratio_final
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Delivery compliance (%)", f"{compliance:,.2f}")
@@ -1098,10 +1285,6 @@ def run_app():
 
     def eval_final_cap_margin(cap_ratio: float) -> str:
         return "green" if cap_ratio >= 1.05 else ("yellow" if cap_ratio >= 1.00 else "red")
-
-    avg_eq_cycles_per_year = float(np.mean([r.eq_cycles for r in results]))
-    cap_daily_final = min(final.eoy_usable_mwh, final.eoy_power_mw * dis_hours_per_day)
-    cap_ratio_final = cap_daily_final / (cfg.contracted_mw * dis_hours_per_day) if dis_hours_per_day > 0 else float('nan')
 
     k1, k2, k3, k4, k5, k6 = st.columns(6)
     k1.markdown(f"{light_icon(eval_rte(cfg.rte_roundtrip))} **RTE (single)**: {cfg.rte_roundtrip:.2f}")
