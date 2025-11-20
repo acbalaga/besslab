@@ -1108,7 +1108,6 @@ def run_app():
     )
 
     scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
-    rate_limited_this_rerun = False
     with scenarios_run_col:
         run_all_clicked = st.button(
             "Run all scenarios", use_container_width=True, disabled=not scenarios
@@ -1121,8 +1120,8 @@ def run_app():
 
     if run_all_clicked:
         enforce_rate_limit()
-        rate_limited_this_rerun = True
         comparison_rows = []
+        scored_runs = []
         with st.spinner("Running all saved scenarios..."):
             for sc in scenarios:
                 sc_charge_windows = sc.dispatch.get("charge_windows_text", "")
@@ -1153,6 +1152,12 @@ def run_app():
                     continue
 
                 scenario_summary = summarize_simulation(scenario_output)
+                scored_runs.append({
+                    'label': sc.label,
+                    'cfg': scenario_cfg,
+                    'summary': scenario_summary,
+                    'results': scenario_output.results,
+                })
                 comparison_rows.append({
                     'Label': sc.label,
                     'Compliance (%)': scenario_summary.compliance,
@@ -1176,6 +1181,142 @@ def run_app():
                 use_container_width=True,
             )
 
+            def _score_coverage(min_coverage: float) -> float:
+                if min_coverage < 0.99:
+                    return float('nan')
+                if min_coverage >= 0.999:
+                    return 5.0
+                if min_coverage >= 0.995:
+                    return 4.0
+                if min_coverage >= 0.990:
+                    return 3.0
+                if min_coverage >= 0.980:
+                    return 2.0
+                return 1.0
+
+            def _score_shortfall(shortfall: float, min_s: float, max_s: float) -> float:
+                if math.isclose(max_s, min_s):
+                    return 5.0
+                raw = 1.0 + 4.0 * (max_s - shortfall) / max(1e-9, (max_s - min_s))
+                return max(1.0, min(5.0, raw))
+
+            def _score_grid_margins(violations: int, near_limit_frac: float) -> float:
+                if violations == 0 and near_limit_frac < 0.01:
+                    return 5.0
+                if violations == 0 and near_limit_frac < 0.05:
+                    return 4.0
+                if (1 <= violations <= 5) or (0.05 <= near_limit_frac < 0.10):
+                    return 3.0
+                if violations > 5 and near_limit_frac < 0.20:
+                    return 2.0
+                return 1.0
+
+            def _score_soh_margin(margin: float) -> float:
+                if margin >= 0.10:
+                    return 5.0
+                if margin >= 0.05:
+                    return 4.0
+                if margin >= 0.0:
+                    return 3.0
+                if margin >= -0.05:
+                    return 2.0
+                return 1.0
+
+            def _score_cycles_ratio(ratio: float) -> float:
+                if ratio <= 0.60:
+                    return 5.0
+                if ratio <= 0.75:
+                    return 4.0
+                if ratio <= 0.90:
+                    return 3.0
+                if ratio <= 1.00:
+                    return 2.0
+                return 1.0
+
+            def _score_stress_fraction(fraction: float) -> float:
+                if fraction <= 0.01:
+                    return 5.0
+                if fraction <= 0.05:
+                    return 4.0
+                if fraction <= 0.10:
+                    return 3.0
+                if fraction <= 0.20:
+                    return 2.0
+                return 1.0
+
+            if scored_runs:
+                passing_shortfalls = []
+                coverage_lookup = {}
+                for run in scored_runs:
+                    coverage_year = [
+                        (r.delivered_firm_mwh / r.expected_firm_mwh) if r.expected_firm_mwh > 0 else float('nan')
+                        for r in run['results']
+                    ]
+                    coverage_min = float(np.nanmin(coverage_year)) if coverage_year else float('nan')
+                    coverage_lookup[run['label']] = coverage_min
+                    if not math.isnan(coverage_min) and coverage_min >= 0.99:
+                        passing_shortfalls.append(run['summary'].total_shortfall_mwh)
+
+                min_s = min(passing_shortfalls) if passing_shortfalls else 0.0
+                max_s = max(passing_shortfalls) if passing_shortfalls else 0.0
+                soh_requirement = 0.80
+                cycles_allowed = 400.0
+
+                score_rows = []
+                for run in scored_runs:
+                    summary = run['summary']
+                    coverage_min = coverage_lookup.get(run['label'], float('nan'))
+                    c1 = _score_coverage(coverage_min)
+                    c2 = _score_shortfall(summary.total_shortfall_mwh, min_s, max_s) if not math.isnan(c1) else float('nan')
+                    total_violation_hours = sum(r.flags['firm_shortfall_hours'] for r in run['results'])
+                    near_limit_hours = sum(r.flags['soc_floor_hits'] + r.flags['soc_ceiling_hits'] for r in run['results'])
+                    total_hours = run['cfg'].years * 8760
+                    near_limit_frac = near_limit_hours / max(1, total_hours)
+                    c3 = _score_grid_margins(total_violation_hours, near_limit_frac)
+                    contract_score = (
+                        0.6 * c1 + 0.25 * c2 + 0.15 * c3
+                    ) if not any(math.isnan(x) for x in [c1, c2, c3]) else float('nan')
+
+                    final_soh = run['results'][-1].soh_total if run['results'] else float('nan')
+                    soh_margin = final_soh - soh_requirement if not math.isnan(final_soh) else float('nan')
+                    t1 = _score_soh_margin(soh_margin)
+                    cycle_ratio = summary.avg_eq_cycles_per_year / cycles_allowed if cycles_allowed > 0 else float('nan')
+                    t2 = _score_cycles_ratio(cycle_ratio)
+                    stress_fraction = near_limit_hours / max(1, total_hours)
+                    t3 = _score_stress_fraction(stress_fraction)
+                    tech_score = (
+                        0.5 * t1 + 0.3 * t2 + 0.2 * t3
+                    ) if not any(math.isnan(x) for x in [t1, t2, t3]) else float('nan')
+
+                    score_rows.append({
+                        'Label': run['label'],
+                        'C1 (coverage)': c1,
+                        'C2 (shortfall energy)': c2,
+                        'C3 (grid margins)': c3,
+                        'Contract & grid score (C)': contract_score,
+                        'T1 (SoH margin)': t1,
+                        'T2 (cycle loading)': t2,
+                        'T3 (C-rate stress)': t3,
+                        'Technical robustness (T)': tech_score,
+                    })
+
+                score_df = pd.DataFrame(score_rows)
+                st.dataframe(score_df.style.format('{:,.2f}'), use_container_width=True)
+
+                heat_df = score_df.melt(
+                    id_vars='Label',
+                    value_vars=['Contract & grid score (C)', 'Technical robustness (T)'],
+                    var_name='Metric',
+                    value_name='Score',
+                )
+                heat_chart = alt.Chart(heat_df).mark_rect().encode(
+                    x=alt.X('Metric:N', title=''),
+                    y=alt.Y('Label:N', sort=None, title='Scenario'),
+                    color=alt.Color('Score:Q', scale=alt.Scale(domain=[1, 5], scheme='blues'), title='Score (1–5)'),
+                    tooltip=['Label', 'Metric', alt.Tooltip('Score:Q', format='.2f')],
+                ).properties(title='Scenario feasibility & reliability heatmap')
+                st.altair_chart(heat_chart, use_container_width=True)
+
             bar_metrics = comp_df.melt(
                 id_vars='Label',
                 value_vars=['Compliance (%)', 'BESS share of firm (%)', 'Total shortfall (MWh)', 'Augmentation events'],
@@ -1190,9 +1331,6 @@ def run_app():
             ).properties(title="Cross-scenario KPIs")
             st.altair_chart(chart, use_container_width=True)
 
-
-    if not rate_limited_this_rerun:
-        enforce_rate_limit()
 
     try:
         sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
