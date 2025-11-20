@@ -258,51 +258,165 @@ def calc_calendar_soh_fraction(years_elapsed: float, rate: float, exp_model: boo
     return max(0.0, (1.0 - rate) ** years_elapsed) if exp_model else max(0.0, 1.0 - rate * years_elapsed)
 
 
+def _draw_metric_card(pdf: FPDF, x: float, y: float, w: float, h: float, title: str, value: str, subtitle: str,
+                      fill_rgb: Tuple[int, int, int]) -> None:
+    pdf.set_fill_color(*fill_rgb)
+    pdf.set_draw_color(230, 232, 235)
+    pdf.rect(x, y, w, h, style="DF")
+    pdf.set_xy(x + 2, y + 2)
+    pdf.set_text_color(50, 50, 50)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(w - 4, 5, title, ln=1)
+
+    pdf.set_xy(x + 2, y + 9)
+    pdf.set_font("Helvetica", "", 13)
+    pdf.set_text_color(15, 15, 15)
+    pdf.cell(w - 4, 7, value, ln=1)
+
+    pdf.set_xy(x + 2, y + h - 6)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(80, 80, 80)
+    pdf.cell(w - 4, 4, subtitle)
+    pdf.set_text_color(0, 0, 0)
+
+
+def _draw_sparkline(pdf: FPDF, x: float, y: float, w: float, h: float, series: List[Tuple[str, List[float], Tuple[int, int, int]]],
+                    y_label: str) -> None:
+    pdf.set_draw_color(230, 232, 235)
+    pdf.rect(x, y, w, h)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_xy(x, y - 5)
+    pdf.cell(w, 4, y_label)
+
+    if not series or not series[0][1]:
+        return
+
+    max_len = max(len(vals) for _, vals, _ in series)
+    if max_len < 2:
+        return
+
+    all_values = [v for _, vals, _ in series for v in vals]
+    min_v = min(all_values)
+    max_v = max(all_values)
+    span = max(1e-9, max_v - min_v)
+
+    for label, vals, color in series:
+        if len(vals) < 2:
+            continue
+        pdf.set_draw_color(*color)
+        step_x = w / max(1, len(vals) - 1)
+        points = []
+        for idx, val in enumerate(vals):
+            px = x + idx * step_x
+            py = y + h - ((val - min_v) / span * h)
+            points.append((px, py))
+        for i in range(len(points) - 1):
+            pdf.line(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+        pdf.set_xy(points[-1][0] - 8, points[-1][1] - 3)
+        pdf.cell(16, 4, label, align="C")
+
+
+def _fmt(val: float, suffix: str = "") -> str:
+    return f"{val:,.2f}{suffix}" if abs(val) >= 10 else f"{val:,.3f}{suffix}"
+
+
 def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: float, bess_share: float,
                       charge_discharge_ratio: float, pv_capture_ratio: float,
                       discharge_capacity_factor: float, discharge_windows_text: str,
                       charge_windows_text: str) -> bytes:
     final = results[-1]
-    pdf = FPDF()
+    first = results[0]
+    pdf = FPDF(format="A4")
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "BESS Lab - Results Snapshot", ln=1)
+    margin = 12
+    usable_width = 210 - 2 * margin
 
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, f"Project life: {cfg.years} years", ln=1)
-    pdf.cell(0, 8, f"Contracted MW: {cfg.contracted_mw:.2f} | Initial power: {cfg.initial_power_mw:.2f} MW | Initial usable: {cfg.initial_usable_mwh:.2f} MWh", ln=1)
-    pdf.cell(0, 8, f"Discharge windows: {discharge_windows_text}", ln=1)
-    pdf.cell(0, 8, f"Charge windows: {charge_windows_text if charge_windows_text else 'Any PV hour'}", ln=1)
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Lifecycle KPIs", ln=1)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, f"Delivery compliance: {compliance:,.2f}%", ln=1)
-    pdf.cell(0, 8, f"BESS share of firm: {bess_share:,.1f}%", ln=1)
-    pdf.cell(0, 8, f"Charge/Discharge ratio: {charge_discharge_ratio:,.3f}", ln=1)
-    pdf.cell(0, 8, f"PV capture ratio: {pv_capture_ratio:,.3f}", ln=1)
-    pdf.cell(0, 8, f"Discharge capacity factor (final year): {discharge_capacity_factor:,.3f}", ln=1)
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Final-year highlights", ln=1)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, f"EOY usable energy: {final.eoy_usable_mwh:,.1f} MWh", ln=1)
-    pdf.cell(0, 8, f"EOY power (avail-adjusted): {final.eoy_power_mw:,.2f} MW", ln=1)
-    pdf.cell(0, 8, f"PV to Contract: {final.pv_to_contract_mwh:,.1f} MWh/year", ln=1)
-    pdf.cell(0, 8, f"BESS to Contract: {final.bess_to_contract_mwh:,.1f} MWh/year", ln=1)
-    pdf.cell(0, 8, f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}", ln=1)
-    pdf.cell(0, 8, f"SOH_total: {final.soh_total:,.3f} (cycle: {final.soh_cycle:,.3f}, calendar: {final.soh_calendar:,.3f})", ln=1)
-    pdf.ln(4)
-
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Notes", ln=1)
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.set_text_color(20, 20, 20)
+    pdf.cell(0, 10, "BESS Lab - One-page Summary", ln=1)
     pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, "Snapshot generated directly from the current Streamlit inputs. Share as a quick reference; rerun the app to update with new parameters.")
+    pdf.cell(0, 6, f"Project life: {cfg.years} years  |  Contracted: {cfg.contracted_mw:.1f} MW  |  PV-only charging", ln=1)
+    pdf.cell(0, 6, f"Discharge windows: {discharge_windows_text}  |  Charge windows: {charge_windows_text or 'Any PV hour'}", ln=1)
+    pdf.ln(2)
+
+    card_width = (usable_width - 10) / 3
+    card_height = 22
+    x0 = margin
+    y0 = pdf.get_y()
+    _draw_metric_card(pdf, x0, y0, card_width, card_height, "Delivery compliance", f"{compliance:,.2f}%", "Across full life",
+                      (225, 245, 255))
+    _draw_metric_card(pdf, x0 + card_width + 5, y0, card_width, card_height, "BESS share of firm",
+                      f"{bess_share:,.1f}%", "Portion of contract served", (235, 248, 240))
+    _draw_metric_card(pdf, x0 + 2 * (card_width + 5), y0, card_width, card_height, "Charge/Discharge ratio",
+                      _fmt(charge_discharge_ratio), "Energy in vs out", (245, 238, 255))
+
+    y_cards2 = y0 + card_height + 4
+    _draw_metric_card(pdf, x0, y_cards2, card_width, card_height, "PV capture ratio",
+                      _fmt(pv_capture_ratio), "PV used vs available", (255, 245, 235))
+    _draw_metric_card(pdf, x0 + card_width + 5, y_cards2, card_width, card_height, "Discharge CF (final)",
+                      _fmt(discharge_capacity_factor), "Avg MW / contracted", (238, 245, 255))
+    _draw_metric_card(pdf, x0 + 2 * (card_width + 5), y_cards2, card_width, card_height, "SOH total (final)",
+                      _fmt(final.soh_total, ""), "Cycle & calendar combined", (240, 240, 240))
+
+    pdf.set_y(y_cards2 + card_height + 6)
+    chart_width = (usable_width - 5) / 2
+    chart_height = 55
+    chart_x_left = margin
+    chart_y = pdf.get_y()
+
+    expected = [r.expected_firm_mwh for r in results]
+    delivered = [r.delivered_firm_mwh for r in results]
+    _draw_sparkline(
+        pdf,
+        chart_x_left,
+        chart_y,
+        chart_width,
+        chart_height,
+        [
+            ("Exp", expected, (255, 160, 122)),
+            ("Del", delivered, (76, 175, 80)),
+        ],
+        "Annual firm energy (MWh)",
+    )
+
+    soh_series = [r.soh_total for r in results]
+    pdf.set_xy(chart_x_left + chart_width + 5, chart_y)
+    _draw_sparkline(
+        pdf,
+        chart_x_left + chart_width + 5,
+        chart_y,
+        chart_width,
+        chart_height,
+        [
+            ("Total", soh_series, (66, 133, 244)),
+            ("Cycle", [r.soh_cycle for r in results], (142, 68, 173)),
+            ("Cal", [r.soh_calendar for r in results], (255, 193, 7)),
+        ],
+        "State of health (fraction)",
+    )
+
+    pdf.set_y(chart_y + chart_height + 8)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, "Design + final year snapshot", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    param_lines = [
+        f"Initial usable: {cfg.initial_usable_mwh:.1f} MWh | Initial power: {cfg.initial_power_mw:.1f} MW",
+        f"Augmentation: {cfg.augmentation} | SoC window: {cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}",
+        f"Round-trip efficiency: {cfg.rte_roundtrip:.2f} | Calendar fade: {cfg.calendar_fade_rate:.3f}/yr",
+        f"EOY usable: {final.eoy_usable_mwh:,.1f} MWh (Year 1: {first.eoy_usable_mwh:,.1f})",
+        f"EOY power: {final.eoy_power_mw:,.2f} MW (Year 1: {first.eoy_power_mw:,.2f})",
+        f"PV->Contract: {final.pv_to_contract_mwh:,.1f} MWh/yr | BESS->Contract: {final.bess_to_contract_mwh:,.1f} MWh/yr",
+        f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}",
+    ]
+    for line in param_lines:
+        pdf.multi_cell(0, 5, line)
+
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_text_color(90, 90, 90)
+    pdf.multi_cell(0, 4, "Auto-generated from current Streamlit inputs. Keep everything on one page by focusing on the metrics that shape bankability and warranty conversations.")
 
     pdf_bytes = pdf.output(dest='S')
-    # fpdf2 returns a bytearray for `dest='S'`; guard against both str and bytearray
     return pdf_bytes.encode('latin-1') if isinstance(pdf_bytes, str) else bytes(pdf_bytes)
 
 def in_any_window(hod: int, windows: List[Window]) -> bool:
