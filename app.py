@@ -324,6 +324,18 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
                       charge_discharge_ratio: float, pv_capture_ratio: float,
                       discharge_capacity_factor: float, discharge_windows_text: str,
                       charge_windows_text: str) -> bytes:
+    if not results:
+        pdf = FPDF(format="A4")
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 14)
+        pdf.cell(0, 10, "BESS Lab - One-page Summary")
+        pdf.ln(8)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.set_text_color(90, 90, 90)
+        pdf.multi_cell(0, 5, "PDF snapshot unavailable because no results were generated. Run a simulation to view the summary.")
+        pdf_bytes = pdf.output(dest='S')
+        return pdf_bytes.encode('latin-1') if isinstance(pdf_bytes, str) else bytes(pdf_bytes)
+
     final = results[-1]
     first = results[0]
     pdf = FPDF(format="A4")
@@ -1347,11 +1359,19 @@ def run_app():
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
                            file_name='final_year_hourly_logs.csv', mime='text/csv')
 
-    pdf_bytes = build_pdf_summary(cfg, results, compliance, bess_share_of_firm, charge_discharge_ratio,
-                                  pv_capture_ratio, discharge_capacity_factor,
-                                  discharge_windows_text, charge_windows_text)
-    st.download_button("Download brief PDF snapshot", pdf_bytes,
-                       file_name='bess_results_snapshot.pdf', mime='application/pdf')
+    pdf_bytes = None
+    try:
+        pdf_bytes = build_pdf_summary(cfg, results, compliance, bess_share_of_firm, charge_discharge_ratio,
+                                      pv_capture_ratio, discharge_capacity_factor,
+                                      discharge_windows_text, charge_windows_text)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"PDF snapshot unavailable: {exc}")
+
+    if pdf_bytes:
+        st.download_button("Download brief PDF snapshot", pdf_bytes,
+                           file_name='bess_results_snapshot.pdf', mime='application/pdf')
+    else:
+        st.info("PDF snapshot will appear after the simulation succeeds.")
 
     st.info("""
     Notes & Caveats:
