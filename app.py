@@ -301,7 +301,9 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     pdf.set_font("Helvetica", "", 10)
     pdf.multi_cell(0, 6, "Snapshot generated directly from the current Streamlit inputs. Share as a quick reference; rerun the app to update with new parameters.")
 
-    return pdf.output(dest='S').encode('latin-1')
+    pdf_bytes = pdf.output(dest='S')
+    # fpdf2 returns a bytearray for `dest='S'`; guard against both str and bytearray
+    return pdf_bytes.encode('latin-1') if isinstance(pdf_bytes, str) else bytes(pdf_bytes)
 
 def in_any_window(hod: int, windows: List[Window]) -> bool:
     return any(w.contains(hod) for w in windows)
