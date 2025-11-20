@@ -4,41 +4,31 @@
 # - Keeps: README/Help, Threshold & SOH-trigger augmentation, EOY capability + PV/BESS split,
 #          multi-period daily profiles, flags, downloads
 
-# ---- Simple password gate (Streamlit Cloud) ----
-import os
+# ---- Abuse protection (rate limit) ----
+import time
 import streamlit as st
 
-def _check_password():
-    if os.environ.get("BESSLAB_BYPASS_AUTH") == "1":
-        return True
 
-    try:
-        secret = st.secrets.get("BESSLAB_PASS", None)
-    except Exception:
-        secret = None
-    if not secret:
+def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
+    """Simple session-based rate limit to deter abuse on open deployments."""
+    now = time.time()
+    recent = st.session_state.get("recent_runs", [])
+    recent = [t for t in recent if now - t < window_seconds]
+    if len(recent) >= max_runs:
+        wait_for = int(window_seconds - (now - min(recent)))
+        st.error(
+            "Rate limit reached. Please wait a few minutes before running more calculations."
+        )
+        st.info(
+            f"You can retry in approximately {max(wait_for, 1)} seconds."
+        )
         st.stop()
 
-    if "auth_ok" not in st.session_state:
-        st.session_state["auth_ok"] = False
+    recent.append(now)
+    st.session_state["recent_runs"] = recent
 
-    if st.session_state["auth_ok"]:
-        if st.sidebar.button("Logout"):
-            st.session_state["auth_ok"] = False
-            st.rerun()
-        return True
 
-    pw = st.sidebar.text_input("Password", type="password", help="Enter the access password.")
-    if pw:
-        if pw == secret:
-            st.session_state["auth_ok"] = True
-            st.rerun()
-        else:
-            st.sidebar.error("Incorrect password.")
-    st.stop()
-
-if not _check_password():
-    st.stop()
+enforce_rate_limit()
 # ---- end gate ----
 
 import math
@@ -49,7 +39,6 @@ from typing import List, Tuple, Optional, Dict
 
 import numpy as np
 import pandas as pd
-import streamlit as st
 from pathlib import Path
 import altair as alt
 from fpdf import FPDF
@@ -980,39 +969,10 @@ def run_app():
             'PV curtailed MWh': '{:,.1f}',
         }))
 
-    # ---------- EOY capability vs Firm target (STACKED + LINE) ----------
-    st.subheader("EOY Energy Capability vs Firm Target (per day)")
-    target_daily_mwh = cfg.contracted_mw * dis_hours_per_day
-    years_list = [r.year_index for r in results]
-    energy_cap = [r.eoy_usable_mwh for r in results]
-    power_cap = [r.eoy_power_mw * dis_hours_per_day for r in results]
-    cap = [min(e, p) for e, p in zip(energy_cap, power_cap)]
-    energy_limited_segment = [c if e <= p else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
-    power_limited_segment  = [c if p <  e else 0.0 for c, e, p in zip(cap, energy_cap, power_cap)]
-
-    cap_df = pd.DataFrame({
-        'Year': years_list,
-        'Energy-limited (MWh/day)': energy_limited_segment,
-        'Power-limited (MWh/day)': power_limited_segment,
-        'Target firm (MWh/day)': [target_daily_mwh]*len(years_list),
-    })
-
-    cap_long = cap_df.melt(id_vars='Year', value_vars=['Energy-limited (MWh/day)', 'Power-limited (MWh/day)'],
-                           var_name='Limit', value_name='MWh/day')
-
-    bar = alt.Chart(cap_long).mark_bar().encode(
-        x=alt.X('Year:O', title='Year'),
-        y=alt.Y('MWh/day:Q', title='MWh/day'),
-        color=alt.Color('Limit:N', scale=alt.Scale(range=['#86c5da', '#7fd18b']))
-    )
-    line = alt.Chart(cap_df).mark_line(point=True, color='#f2a900').encode(
-        x='Year:O',
-        y='Target firm (MWh/day):Q',
-    )
-    st.altair_chart(bar + line, use_container_width=True)
-
     # ---------- EOY Delivered Firm Split (per day): PV vs BESS ----------
     st.subheader("EOY Delivered Firm Split (per day) — PV vs BESS")
+    target_daily_mwh = cfg.contracted_mw * dis_hours_per_day
+    years_list = [r.year_index for r in results]
     deliv_df = pd.DataFrame({
         'Year': years_list,
         'PV→Contract (MWh/day)': [r.pv_to_contract_mwh/365.0 for r in results],
@@ -1216,11 +1176,28 @@ def run_app():
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
         base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
-        area_pv = base.mark_area(opacity=0.6).encode(y=alt.Y('pv_to_contract_mw:Q', title='MW'), color=alt.value('#86c5da'))
-        area_bess = base.mark_area(opacity=0.6).encode(y='bess_to_contract_mw:Q', color=alt.value('#7fd18b'))
+
+        contrib_long = avg_df.melt(id_vars=['hour'],
+                                   value_vars=['pv_to_contract_mw', 'bess_to_contract_mw'],
+                                   var_name='Source', value_name='MW')
+        contrib_long['Source'] = contrib_long['Source'].replace({
+            'pv_to_contract_mw': 'PV→Contract',
+            'bess_to_contract_mw': 'BESS→Contract',
+        })
+        contrib_chart = (
+            alt.Chart(contrib_long)
+            .mark_area(opacity=0.65)
+            .encode(
+                x=alt.X('hour:O', title='Hour of Day'),
+                y=alt.Y('MW:Q', title='MW', stack='zero'),
+                color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
+                                                           range=['#86c5da', '#7fd18b']))
+            )
+        )
+
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
         line_contract = base.mark_line(color='#f2a900', strokeWidth=2).encode(y='contracted_mw:Q')
-        st.altair_chart(area_pv + area_bess + area_chg + line_contract, use_container_width=True)
+        st.altair_chart(contrib_chart + area_chg + line_contract, use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
         avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
