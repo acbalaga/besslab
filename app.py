@@ -42,7 +42,9 @@ if not _check_password():
 # ---- end gate ----
 
 import math
+import calendar
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import List, Tuple, Optional, Dict
 
 import numpy as np
@@ -50,6 +52,7 @@ import pandas as pd
 import streamlit as st
 from pathlib import Path
 import altair as alt
+from fpdf import FPDF
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -221,6 +224,31 @@ class HourlyLog:
     discharge_mw: np.ndarray
     soc_mwh: np.ndarray
 
+
+@dataclass
+class MonthResult:
+    year_index: int
+    month_index: int
+    month_label: str
+    expected_firm_mwh: float
+    delivered_firm_mwh: float
+    shortfall_mwh: float
+    breach_days: int
+    charge_mwh: float
+    discharge_mwh: float
+    pv_to_contract_mwh: float
+    bess_to_contract_mwh: float
+    avg_rte: float
+    eq_cycles: float
+    cum_cycles: float
+    soh_cycle: float
+    soh_calendar: float
+    soh_total: float
+    eom_usable_mwh: float
+    eom_power_mw: float
+    pv_curtailed_mwh: float
+    flags: Dict[str, int]
+
 @dataclass
 class SimState:
     pv_df: pd.DataFrame
@@ -236,10 +264,62 @@ class SimState:
 def calc_calendar_soh(year_idx: int, rate: float, exp_model: bool) -> float:
     return max(0.0, (1.0 - rate) ** year_idx) if exp_model else max(0.0, 1.0 - rate * year_idx)
 
+
+def calc_calendar_soh_fraction(years_elapsed: float, rate: float, exp_model: bool) -> float:
+    return max(0.0, (1.0 - rate) ** years_elapsed) if exp_model else max(0.0, 1.0 - rate * years_elapsed)
+
+
+def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: float, bess_share: float,
+                      charge_discharge_ratio: float, pv_capture_ratio: float,
+                      discharge_capacity_factor: float, discharge_windows_text: str,
+                      charge_windows_text: str) -> bytes:
+    final = results[-1]
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "BESS Lab - Results Snapshot", ln=1)
+
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"Project life: {cfg.years} years", ln=1)
+    pdf.cell(0, 8, f"Contracted MW: {cfg.contracted_mw:.2f} | Initial power: {cfg.initial_power_mw:.2f} MW | Initial usable: {cfg.initial_usable_mwh:.2f} MWh", ln=1)
+    pdf.cell(0, 8, f"Discharge windows: {discharge_windows_text}", ln=1)
+    pdf.cell(0, 8, f"Charge windows: {charge_windows_text if charge_windows_text else 'Any PV hour'}", ln=1)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Lifecycle KPIs", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"Delivery compliance: {compliance:,.2f}%", ln=1)
+    pdf.cell(0, 8, f"BESS share of firm: {bess_share:,.1f}%", ln=1)
+    pdf.cell(0, 8, f"Charge/Discharge ratio: {charge_discharge_ratio:,.3f}", ln=1)
+    pdf.cell(0, 8, f"PV capture ratio: {pv_capture_ratio:,.3f}", ln=1)
+    pdf.cell(0, 8, f"Discharge capacity factor (final year): {discharge_capacity_factor:,.3f}", ln=1)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Final-year highlights", ln=1)
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(0, 8, f"EOY usable energy: {final.eoy_usable_mwh:,.1f} MWh", ln=1)
+    pdf.cell(0, 8, f"EOY power (avail-adjusted): {final.eoy_power_mw:,.2f} MW", ln=1)
+    pdf.cell(0, 8, f"PV to Contract: {final.pv_to_contract_mwh:,.1f} MWh/year", ln=1)
+    pdf.cell(0, 8, f"BESS to Contract: {final.bess_to_contract_mwh:,.1f} MWh/year", ln=1)
+    pdf.cell(0, 8, f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}", ln=1)
+    pdf.cell(0, 8, f"SOH_total: {final.soh_total:,.3f} (cycle: {final.soh_cycle:,.3f}, calendar: {final.soh_calendar:,.3f})", ln=1)
+    pdf.ln(4)
+
+    pdf.set_font("Helvetica", "B", 12)
+    pdf.cell(0, 8, "Notes", ln=1)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.multi_cell(0, 6, "Snapshot generated directly from the current Streamlit inputs. Share as a quick reference; rerun the app to update with new parameters.")
+
+    pdf_bytes = pdf.output(dest='S')
+    # fpdf2 returns a bytearray for `dest='S'`; guard against both str and bytearray
+    return pdf_bytes.encode('latin-1') if isinstance(pdf_bytes, str) else bytes(pdf_bytes)
+
 def in_any_window(hod: int, windows: List[Window]) -> bool:
     return any(w.contains(hod) for w in windows)
 
-def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_logs: bool=False) -> Tuple[YearResult, HourlyLog, np.ndarray]:
+def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_logs: bool=False) -> Tuple[YearResult, HourlyLog, List[MonthResult]]:
     cfg = state.cfg; dt = cfg.step_hours
 
     pv_scale = (1.0 - cfg.pv_deg_rate) ** (year_idx - 1)
@@ -265,6 +345,8 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     n_hours = len(pv_mw)
     day_index = np.array([i // 24 for i in range(n_hours)])
+    calendar_index = pd.date_range("2020-01-01", periods=n_hours, freq=pd.Timedelta(hours=dt))
+    month_index = calendar_index.month - 1
     daily_dis_mwh = np.zeros(day_index.max() + 1)
     hod = np.arange(n_hours) % 24
 
@@ -274,6 +356,18 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     discharge_mw_log = np.zeros(n_hours)
     soc_log = np.zeros(n_hours)
     shortfall_day_flags = np.zeros(day_index.max() + 1, dtype=bool)
+
+    month_expected = np.zeros(12)
+    month_delivered = np.zeros(12)
+    month_shortfall = np.zeros(12)
+    month_charge = np.zeros(12)
+    month_discharge = np.zeros(12)
+    month_pv_contract = np.zeros(12)
+    month_bess_contract = np.zeros(12)
+    month_pv_curtailed = np.zeros(12)
+    month_flag_shortfall_hours = np.zeros(12, dtype=int)
+    month_flag_soc_floor_hits = np.zeros(12, dtype=int)
+    month_flag_soc_ceiling_hits = np.zeros(12, dtype=int)
 
     expected_firm_mwh = charged_mwh = discharged_mwh = pv_to_contract_mwh = bess_to_contract_mwh = pv_curtailed_mwh = 0.0
     flag_shortfall_hours = flag_soc_floor_hits = flag_soc_ceiling_hits = 0
@@ -298,6 +392,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
                 delivered = e_can * eta_dis / dt
                 if delivered + pv_to_contract_mw < target_mw - 1e-9:
                     flag_shortfall_hours += 1
+                    month_flag_shortfall_hours[month_index[h]] += 1
                     shortfall_day_flags[day_index[h]] = True
                 dis_mw = delivered; e_req = e_can
             soc_mwh -= e_req
@@ -307,6 +402,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
             discharge_mw_log[h] = dis_mw
             bess_to_contract_mw_log[h] = dis_mw
             if abs(soc_mwh - soc_min) < 1e-6: flag_soc_floor_hits += 1
+            if abs(soc_mwh - soc_min) < 1e-6: month_flag_soc_floor_hits[month_index[h]] += 1
 
         pv_to_contract_mwh += pv_to_contract_mw * dt
 
@@ -321,10 +417,21 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
                 charged_mwh += ch_mw * dt
                 charge_mw_log[h] = ch_mw
                 if abs(soc_mwh - soc_max) < 1e-6: flag_soc_ceiling_hits += 1
+                if abs(soc_mwh - soc_max) < 1e-6: month_flag_soc_ceiling_hits[month_index[h]] += 1
 
         pv_curtailed_mwh += max(0.0, pv_avail_after_contract - ch_mw) * dt
         pv_to_contract_mw_log[h] = pv_to_contract_mw
         soc_log[h] = soc_mwh
+
+        month_expected[month_index[h]] += target_mw * dt
+        delivered_hour = pv_to_contract_mw + dis_mw
+        month_delivered[month_index[h]] += delivered_hour * dt
+        month_shortfall[month_index[h]] += max(0.0, target_mw - delivered_hour) * dt
+        month_charge[month_index[h]] += ch_mw * dt
+        month_discharge[month_index[h]] += dis_mw * dt
+        month_pv_contract[month_index[h]] += pv_to_contract_mw * dt
+        month_bess_contract[month_index[h]] += dis_mw * dt
+        month_pv_curtailed[month_index[h]] += max(0.0, pv_avail_after_contract - ch_mw) * dt
 
     avg_rte = (discharged_mwh / charged_mwh) if charged_mwh > 0 else np.nan
 
@@ -365,6 +472,50 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         flags={'firm_shortfall_hours':int(flag_shortfall_hours),'soc_floor_hits':int(flag_soc_floor_hits),'soc_ceiling_hits':int(flag_soc_ceiling_hits)},
     )
 
+    month_for_day = np.zeros(day_index.max() + 1, dtype=int)
+    for d in range(day_index.max() + 1):
+        idx = np.argmax(day_index == d)
+        month_for_day[d] = month_index[idx]
+
+    month_shortfall_days = [int(shortfall_day_flags[month_for_day == m].sum()) for m in range(12)]
+
+    monthly_results: List[MonthResult] = []
+    cum_cycles_running = state.cum_cycles
+    for m in range(12):
+        eq_cycles_month = month_discharge[m] / usable_for_cycles
+        cum_cycles_running += eq_cycles_month
+        soh_cycle_month = cycle_retention_lookup(state.cycle_df, dod_key_eff, cum_cycles_running)
+        years_elapsed = year_idx - 1 + (m + 1) / 12.0
+        soh_calendar_month = calc_calendar_soh_fraction(years_elapsed, cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
+        soh_total_month = soh_calendar_month * soh_cycle_month
+        monthly_results.append(MonthResult(
+            year_index=year_idx,
+            month_index=m + 1,
+            month_label=calendar.month_name[m + 1],
+            expected_firm_mwh=month_expected[m],
+            delivered_firm_mwh=month_delivered[m],
+            shortfall_mwh=month_shortfall[m],
+            breach_days=month_shortfall_days[m],
+            charge_mwh=month_charge[m],
+            discharge_mwh=month_discharge[m],
+            pv_to_contract_mwh=month_pv_contract[m],
+            bess_to_contract_mwh=month_bess_contract[m],
+            avg_rte=float(month_discharge[m] / month_charge[m]) if month_charge[m] > 0 else float('nan'),
+            eq_cycles=float(eq_cycles_month),
+            cum_cycles=float(cum_cycles_running),
+            soh_cycle=float(soh_cycle_month),
+            soh_calendar=float(soh_calendar_month),
+            soh_total=float(soh_total_month),
+            eom_usable_mwh=float(state.current_usable_mwh_bolref * soh_total_month),
+            eom_power_mw=float(pow_cap_mw),
+            pv_curtailed_mwh=float(month_pv_curtailed[m]),
+            flags={
+                'firm_shortfall_hours': int(month_flag_shortfall_hours[m]),
+                'soc_floor_hits': int(month_flag_soc_floor_hits[m]),
+                'soc_ceiling_hits': int(month_flag_soc_ceiling_hits[m]),
+            },
+        ))
+
     logs = HourlyLog(
         hod=hod,
         pv_mw=pv_mw,
@@ -374,7 +525,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         discharge_mw=discharge_mw_log,
         soc_mwh=soc_log,
     )
-    return yr, logs, daily_dis_mwh
+    return yr, logs, monthly_results
 
 def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharge_hours_per_day: float) -> Tuple[float, float]:
     """Return (add_power_MW, add_energy_MWh at BOL)."""
@@ -659,6 +810,7 @@ def run_app():
 
     # Simulate years
     results: List[YearResult] = []
+    monthly_results_all: List[MonthResult] = []
     dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
     first_year_logs: Optional[HourlyLog] = None
     final_year_logs = None
@@ -667,7 +819,7 @@ def run_app():
     hod_sum_bess = np.zeros(24, dtype=float)
     hod_sum_charge = np.zeros(24, dtype=float)
     for y in range(1, cfg.years + 1):
-        yr, logs, _ = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
+        yr, logs, monthly_results = simulate_year(state, y, dod_key_override, need_logs=(y == cfg.years))
         hours = np.mod(logs.hod.astype(int), 24)
         np.add.at(hod_count, hours, 1)
         np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
@@ -677,6 +829,7 @@ def run_app():
         if y == cfg.years: final_year_logs = logs
         state.cum_cycles = yr.cum_cycles
         results.append(yr)
+        monthly_results_all.extend(monthly_results)
         add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
         if add_p > 0 or add_e > 0:
             state.current_power_mw += add_p
@@ -703,6 +856,28 @@ def run_app():
         'EOY power MW (avail-adjusted)': r.eoy_power_mw,
         'PV curtailed MWh': r.pv_curtailed_mwh,
     } for r in results])
+
+    monthly_df = pd.DataFrame([{
+        'Year': m.year_index,
+        'Month': m.month_label,
+        'Expected firm MWh': m.expected_firm_mwh,
+        'Delivered firm MWh': m.delivered_firm_mwh,
+        'Shortfall MWh': m.shortfall_mwh,
+        'Breach days (has any shortfall)': m.breach_days,
+        'Charge MWh': m.charge_mwh,
+        'Discharge MWh (from BESS)': m.discharge_mwh,
+        'PV→Contract MWh': m.pv_to_contract_mwh,
+        'BESS→Contract MWh': m.bess_to_contract_mwh,
+        'Avg RTE': m.avg_rte,
+        'Eq cycles (year)': m.eq_cycles,
+        'Cum cycles': m.cum_cycles,
+        'SOH_cycle': m.soh_cycle,
+        'SOH_calendar': m.soh_calendar,
+        'SOH_total': m.soh_total,
+        'EOY usable MWh': m.eom_usable_mwh,
+        'EOY power MW (avail-adjusted)': m.eom_power_mw,
+        'PV curtailed MWh': m.pv_curtailed_mwh,
+    } for m in monthly_results_all])
 
     # --------- KPIs ---------
     final = results[-1]
@@ -786,6 +961,26 @@ def run_app():
         'EOY power MW (avail-adjusted)': '{:,.1f}',
         'PV curtailed MWh': '{:,.1f}',
     }))
+
+    with st.expander("Monthly summary preview", expanded=False):
+        st.dataframe(monthly_df.style.format({
+            'Expected firm MWh': '{:,.1f}',
+            'Delivered firm MWh': '{:,.1f}',
+            'Shortfall MWh': '{:,.1f}',
+            'Charge MWh': '{:,.1f}',
+            'Discharge MWh (from BESS)': '{:,.1f}',
+            'PV→Contract MWh': '{:,.1f}',
+            'BESS→Contract MWh': '{:,.1f}',
+            'Avg RTE': '{:,.3f}',
+            'Eq cycles (year)': '{:,.1f}',
+            'Cum cycles': '{:,.1f}',
+            'SOH_cycle': '{:,.3f}',
+            'SOH_calendar': '{:,.3f}',
+            'SOH_total': '{:,.3f}',
+            'EOY usable MWh': '{:,.1f}',
+            'EOY power MW (avail-adjusted)': '{:,.1f}',
+            'PV curtailed MWh': '{:,.1f}',
+        }))
 
     # ---------- EOY capability vs Firm target (STACKED + LINE) ----------
     st.subheader("EOY Energy Capability vs Firm Target (per day)")
@@ -1068,6 +1263,9 @@ def run_app():
     st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
                        file_name='bess_yearly_summary.csv', mime='text/csv')
 
+    st.download_button("Download monthly summary (CSV)", monthly_df.to_csv(index=False).encode('utf-8'),
+                       file_name='bess_monthly_summary.csv', mime='text/csv')
+
     if final_year_logs is not None:
         hourly_df = pd.DataFrame({
             'hour_index': np.arange(len(final_year_logs.hod)),
@@ -1081,6 +1279,12 @@ def run_app():
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
                            file_name='final_year_hourly_logs.csv', mime='text/csv')
 
+    pdf_bytes = build_pdf_summary(cfg, results, compliance, bess_share_of_firm, charge_discharge_ratio,
+                                  pv_capture_ratio, discharge_capacity_factor,
+                                  discharge_windows_text, charge_windows_text)
+    st.download_button("Download brief PDF snapshot", pdf_bytes,
+                       file_name='bess_results_snapshot.pdf', mime='application/pdf')
+
     st.info("""
     Notes & Caveats:
     - PV-only charging is enforced; during discharge hours, PV first meets the contract, then surplus PV charges the BESS.
@@ -1088,6 +1292,51 @@ def run_app():
     - EOY capability = what the fleet can sustain per day at year-end; Delivered Split = what actually happened per day on average.
     - Design Advisor uses a conservative energy-limited view: Deliverable/day ≈ BOL usable × SOH(final) × ΔSOC × η_dis.
     """)
+
+    st.markdown("---")
+    comparison_tab = st.tabs(["Scenario comparisons"])[0]
+    with comparison_tab:
+        st.caption("Save different input sets to compare how capacity and dispatch choices affect KPIs.")
+        if "scenario_comparisons" not in st.session_state:
+            st.session_state["scenario_comparisons"] = []
+
+        default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
+        scenario_label = st.text_input("Label for this scenario", default_label)
+        if st.button("Add current scenario to table"):
+            st.session_state["scenario_comparisons"].append({
+                'Label': scenario_label or default_label,
+                'Contracted MW': cfg.contracted_mw,
+                'Power (BOL MW)': cfg.initial_power_mw,
+                'Usable (BOL MWh)': cfg.initial_usable_mwh,
+                'Discharge windows': discharge_windows_text,
+                'Charge windows': charge_windows_text if charge_windows_text else 'Any PV hour',
+                'Compliance (%)': compliance,
+                'BESS share of firm (%)': bess_share_of_firm,
+                'Charge/Discharge ratio': charge_discharge_ratio,
+                'PV capture ratio': pv_capture_ratio,
+                'Final EOY usable (MWh)': final.eoy_usable_mwh,
+                'Final EOY power (MW)': final.eoy_power_mw,
+                'Final eq cycles (year)': final.eq_cycles,
+                'Final SOH_total': final.soh_total,
+            })
+            st.success("Scenario saved. Adjust inputs and add another to compare.")
+
+        if st.session_state["scenario_comparisons"]:
+            compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
+            st.dataframe(compare_df.style.format({
+                'Compliance (%)': '{:,.2f}',
+                'BESS share of firm (%)': '{:,.1f}',
+                'Charge/Discharge ratio': '{:,.3f}',
+                'PV capture ratio': '{:,.3f}',
+                'Final EOY usable (MWh)': '{:,.1f}',
+                'Final EOY power (MW)': '{:,.2f}',
+                'Final eq cycles (year)': '{:,.1f}',
+                'Final SOH_total': '{:,.3f}',
+            }))
+            if st.button("Clear saved scenarios"):
+                st.session_state["scenario_comparisons"] = []
+        else:
+            st.info("No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'.")
 
 if __name__ == "__main__":
     run_app()
