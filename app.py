@@ -333,7 +333,7 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
 
     pdf.set_font("Helvetica", "B", 15)
     pdf.set_text_color(20, 20, 20)
-    pdf.cell(0, 10, "BESS Lab — One-page Summary", ln=1)
+    pdf.cell(0, 10, "BESS Lab - One-page Summary", ln=1)
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, f"Project life: {cfg.years} years  |  Contracted: {cfg.contracted_mw:.1f} MW  |  PV-only charging", ln=1)
     pdf.cell(0, 6, f"Discharge windows: {discharge_windows_text}  |  Charge windows: {charge_windows_text or 'Any PV hour'}", ln=1)
@@ -405,7 +405,7 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         f"Round-trip efficiency: {cfg.rte_roundtrip:.2f} | Calendar fade: {cfg.calendar_fade_rate:.3f}/yr",
         f"EOY usable: {final.eoy_usable_mwh:,.1f} MWh (Year 1: {first.eoy_usable_mwh:,.1f})",
         f"EOY power: {final.eoy_power_mw:,.2f} MW (Year 1: {first.eoy_power_mw:,.2f})",
-        f"PV→Contract: {final.pv_to_contract_mwh:,.1f} MWh/yr | BESS→Contract: {final.bess_to_contract_mwh:,.1f} MWh/yr",
+        f"PV->Contract: {final.pv_to_contract_mwh:,.1f} MWh/yr | BESS->Contract: {final.bess_to_contract_mwh:,.1f} MWh/yr",
         f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}",
     ]
     for line in param_lines:
