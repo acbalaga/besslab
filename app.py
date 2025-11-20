@@ -974,6 +974,7 @@ def run_app():
     # ---------- EOY Delivered Firm Split (per day): PV vs BESS ----------
     st.subheader("EOY Delivered Firm Split (per day) — PV vs BESS")
     target_daily_mwh = cfg.contracted_mw * dis_hours_per_day
+    years_list = [r.year_index for r in results]
     deliv_df = pd.DataFrame({
         'Year': years_list,
         'PV→Contract (MWh/day)': [r.pv_to_contract_mwh/365.0 for r in results],
