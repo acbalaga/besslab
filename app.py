@@ -840,6 +840,11 @@ def run_app():
     compliance = (actual_total / expected_total * 100.0) if expected_total > 0 else float('nan')
     total_discharge_mwh = sum(r.discharge_mwh for r in results)
     total_charge_mwh = sum(r.charge_mwh for r in results)
+    total_project_generation_mwh = actual_total
+    bess_generation_mwh = sum(r.bess_to_contract_mwh for r in results)
+    pv_generation_mwh = sum(r.pv_to_contract_mwh for r in results)
+    pv_excess_mwh = sum(r.pv_curtailed_mwh for r in results)
+    bess_losses_mwh = max(total_charge_mwh - total_discharge_mwh, 0.0)
     charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float('nan')
     bess_share_of_firm = (sum(r.bess_to_contract_mwh for r in results) / actual_total * 100.0) if actual_total > 0 else float('nan')
     pv_capture_ratio = (total_charge_mwh / (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results))) if (total_charge_mwh + sum(r.pv_curtailed_mwh for r in results)) > 0 else float('nan')
@@ -1261,6 +1266,11 @@ def run_app():
                 'BESS share of firm (%)': bess_share_of_firm,
                 'Charge/Discharge ratio': charge_discharge_ratio,
                 'PV capture ratio': pv_capture_ratio,
+                'Total project generation (MWh)': total_project_generation_mwh,
+                'BESS share of generation (MWh)': bess_generation_mwh,
+                'PV share of generation (MWh)': pv_generation_mwh,
+                'PV excess (MWh)': pv_excess_mwh,
+                'BESS losses (MWh)': bess_losses_mwh,
                 'Final EOY usable (MWh)': final.eoy_usable_mwh,
                 'Final EOY power (MW)': final.eoy_power_mw,
                 'Final eq cycles (year)': final.eq_cycles,
@@ -1275,6 +1285,11 @@ def run_app():
                 'BESS share of firm (%)': '{:,.1f}',
                 'Charge/Discharge ratio': '{:,.3f}',
                 'PV capture ratio': '{:,.3f}',
+                'Total project generation (MWh)': '{:,.1f}',
+                'BESS share of generation (MWh)': '{:,.1f}',
+                'PV share of generation (MWh)': '{:,.1f}',
+                'PV excess (MWh)': '{:,.1f}',
+                'BESS losses (MWh)': '{:,.1f}',
                 'Final EOY usable (MWh)': '{:,.1f}',
                 'Final EOY power (MW)': '{:,.2f}',
                 'Final eq cycles (year)': '{:,.1f}',
