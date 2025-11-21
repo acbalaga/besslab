@@ -898,11 +898,17 @@ def run_app():
         st.header("Data Sources")
         link_to_econ = getattr(st.sidebar, "page_link", None)
         if callable(link_to_econ):
-            link_to_econ(
-                "pages/01_Economics_Module.py",
-                label="Open economics helper page ↗",
-                icon="📄",
-            )
+            try:
+                link_to_econ(
+                    "pages/01_Economics_Module.py",
+                    label="Open economics helper page ↗",
+                    icon="📄",
+                )
+            except KeyError:
+                st.markdown(
+                    "<a href='pages/01_Economics_Module' target='_blank'>Open economics helper page ↗</a>",
+                    unsafe_allow_html=True,
+                )
         else:
             st.markdown(
                 "<a href='pages/01_Economics_Module' target='_blank'>Open economics helper page ↗</a>",
