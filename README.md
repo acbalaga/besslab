@@ -7,6 +7,9 @@ An interactive Streamlit app for exploring **battery energy storage** sizing and
 - See how performance changes with **round-trip efficiency, state-of-charge limits, availability, and degradation** settings.
 - Try optional **augmentation** strategies to keep the system on target across the project life.
 - View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, and **typical daily profiles**.
+- Save **scenario snapshots** to compare different input sets side by side.
+- Download **yearly, monthly, hourly**, and **PDF** summaries for sharing.
+- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module.
 
 ## Quick start
 ```bash
@@ -15,6 +18,8 @@ streamlit run app.py
 ```
 
 Open the provided local URL in your browser to launch the app.
+
+To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
 
 ## Using the app
 1. **Upload or use defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses included sample data.
