@@ -1340,6 +1340,9 @@ def run_app():
                         0.5 * t1 + 0.3 * t2 + 0.2 * t3
                     ) if not any(math.isnan(x) for x in [t1, t2, t3]) else float('nan')
 
+                    if math.isnan(contract_score) and math.isnan(tech_score):
+                        continue
+
                     score_rows.append({
                         'Label': run['label'],
                         'C1 (coverage)': c1,
@@ -1352,38 +1355,25 @@ def run_app():
                         'Technical robustness (T)': tech_score,
                     })
 
-                score_df = pd.DataFrame(score_rows)
-                numeric_cols = [c for c in score_df.columns if c != 'Label']
-                formatters = {col: '{:,.2f}' for col in numeric_cols}
-                st.dataframe(score_df.style.format(formatters), use_container_width=True)
+                if score_rows:
+                    score_df = pd.DataFrame(score_rows)
+                    numeric_cols = [c for c in score_df.columns if c != 'Label']
+                    formatters = {col: '{:,.2f}' for col in numeric_cols}
+                    st.dataframe(score_df.style.format(formatters), use_container_width=True)
 
-                heat_df = score_df.melt(
-                    id_vars='Label',
-                    value_vars=['Contract & grid score (C)', 'Technical robustness (T)'],
-                    var_name='Metric',
-                    value_name='Score',
-                )
-                heat_chart = alt.Chart(heat_df).mark_rect().encode(
-                    x=alt.X('Metric:N', title=''),
-                    y=alt.Y('Label:N', sort=None, title='Scenario'),
-                    color=alt.Color('Score:Q', scale=alt.Scale(domain=[1, 5], scheme='blues'), title='Score (1–5)'),
-                    tooltip=['Label', 'Metric', alt.Tooltip('Score:Q', format='.2f')],
-                ).properties(title='Scenario feasibility & reliability heatmap')
-                st.altair_chart(heat_chart, use_container_width=True)
-
-            bar_metrics = comp_df.melt(
-                id_vars='Label',
-                value_vars=['Compliance (%)', 'BESS share of firm (%)', 'Total shortfall (MWh)', 'Augmentation events'],
-                var_name='Metric',
-                value_name='Value',
-            )
-            chart = alt.Chart(bar_metrics).mark_bar().encode(
-                x=alt.X('Label:N', sort=None),
-                y=alt.Y('Value:Q'),
-                color='Metric:N',
-                column=alt.Column('Metric:N', sort=None),
-            ).properties(title="Cross-scenario KPIs")
-            st.altair_chart(chart, use_container_width=True)
+                    heat_df = score_df.melt(
+                        id_vars='Label',
+                        value_vars=['Contract & grid score (C)', 'Technical robustness (T)'],
+                        var_name='Metric',
+                        value_name='Score',
+                    ).dropna(subset=['Score'])
+                    heat_chart = alt.Chart(heat_df).mark_rect().encode(
+                        x=alt.X('Metric:N', title=''),
+                        y=alt.Y('Label:N', sort=None, title='Scenario'),
+                        color=alt.Color('Score:Q', scale=alt.Scale(domain=[1, 5], scheme='blues'), title='Score (1–5)'),
+                        tooltip=['Label', 'Metric', alt.Tooltip('Score:Q', format='.2f')],
+                    ).properties(title='Scenario feasibility & reliability heatmap')
+                    st.altair_chart(heat_chart, use_container_width=True)
 
 
     try:
