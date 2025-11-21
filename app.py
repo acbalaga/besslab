@@ -5,12 +5,25 @@
 #          multi-period daily profiles, flags, downloads
 
 # ---- Abuse protection (rate limit) ----
+import os
 import time
 import streamlit as st
 
 
-def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
-    """Simple session-based rate limit to deter abuse on open deployments."""
+def enforce_rate_limit(
+    max_runs: int = 60,
+    window_seconds: int = 600,
+    min_spacing_seconds: float = 2.0,
+) -> None:
+    """Simple session-based rate limit to deter abuse on open deployments.
+
+    The `min_spacing_seconds` guard prevents multiple Streamlit reruns triggered by
+    a single UI action (e.g., widget update + state change) from being counted as
+    separate runs, which otherwise exhausts the allowance during small batches.
+    """
+    if st.session_state.get("rate_limit_bypass", False):
+        return
+
     now = time.time()
     recent = st.session_state.get("recent_runs", [])
     recent = [t for t in recent if now - t < window_seconds]
@@ -24,12 +37,26 @@ def enforce_rate_limit(max_runs: int = 20, window_seconds: int = 300) -> None:
         )
         st.stop()
 
-    recent.append(now)
+    last_recorded = st.session_state.get("last_rate_limit_ts")
+    if last_recorded is None or now - last_recorded >= min_spacing_seconds:
+        recent.append(now)
+        st.session_state["last_rate_limit_ts"] = now
+
     st.session_state["recent_runs"] = recent
-
-
-enforce_rate_limit()
 # ---- end gate ----
+
+
+def get_rate_limit_password() -> str:
+    """Return the password used to disable rate limiting.
+
+    The lookup order is Streamlit secrets → environment variable → built-in default.
+    """
+
+    return (
+        st.secrets.get("rate_limit_password")
+        or os.environ.get("BESSLAB_RATE_LIMIT_PASSWORD")
+        or "besslab"
+    )
 
 import math
 import calendar
@@ -878,6 +905,28 @@ def run_app():
         cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
 
         st.caption("If no files are uploaded, built-in defaults are read from ./data/")
+
+        st.divider()
+        st.subheader("Rate limit override")
+        rate_limit_password = st.text_input(
+            "Remove rate limit (password)",
+            type="password",
+            help=(
+                "Enter the configured password to disable the session rate limit. "
+                "If no secret is set, use 'besslab'."
+            ),
+        )
+        expected_password = get_rate_limit_password()
+
+        if rate_limit_password:
+            if rate_limit_password == expected_password:
+                st.session_state["rate_limit_bypass"] = True
+                st.success("Rate limit disabled for this session.")
+            else:
+                st.session_state["rate_limit_bypass"] = False
+                st.error("Incorrect password. Rate limit still active.")
+        elif st.session_state.get("rate_limit_bypass", False):
+            st.caption("Rate limit disabled for this session.")
 
     st.subheader("Inputs")
 
