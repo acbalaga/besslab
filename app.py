@@ -1459,147 +1459,147 @@ def run_app():
     c4.metric("PV capture ratio", f"{pv_capture_ratio:,.3f}", help="Charged MWh ÷ (Charged MWh + Curtailed MWh).")
     c5.metric("Discharge cap. factor (final yr)", f"{discharge_capacity_factor:,.3f}", help="Final-year BESS discharge MWh ÷ (avail-adjusted MW × discharge-window hours).")
 
-    st.markdown("### Economics — LCOE / LCOS (separate module)")
-    econ_inputs_col1, econ_inputs_col2 = st.columns(2)
-    with econ_inputs_col1:
-        wacc_pct = st.number_input(
-            "WACC (%)",
-            min_value=0.0,
-            max_value=30.0,
-            value=8.0,
-            step=0.1,
-            help="Weighted-average cost of capital (nominal).",
-        )
-        inflation_pct = st.number_input(
-            "Inflation rate (%)",
-            min_value=0.0,
-            max_value=20.0,
-            value=3.0,
-            step=0.1,
-            help="Long-run inflation assumption used to derive the real discount rate.",
-        )
-        discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
-
-        capex_base_musd = st.number_input(
-            "Base/extra CAPEX (USD million)",
-            min_value=0.0,
-            value=40.0,
-            step=0.1,
-            help=(
-                "Manual CAPEX you want to include regardless of rates. If no rates are enabled, "
-                "this becomes the total CAPEX."
-            ),
-        )
-        fixed_opex_pct = (
-            st.number_input(
-                "Fixed OPEX (% of CAPEX per year)",
+    with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
+        econ_inputs_col1, econ_inputs_col2 = st.columns(2)
+        with econ_inputs_col1:
+            wacc_pct = st.number_input(
+                "WACC (%)",
+                min_value=0.0,
+                max_value=30.0,
+                value=8.0,
+                step=0.1,
+                help="Weighted-average cost of capital (nominal).",
+            )
+            inflation_pct = st.number_input(
+                "Inflation rate (%)",
                 min_value=0.0,
                 max_value=20.0,
-                value=2.0,
+                value=3.0,
                 step=0.1,
-                help="Annual fixed OPEX expressed as % of CAPEX.",
+                help="Long-run inflation assumption used to derive the real discount rate.",
             )
-            / 100.0
-        )
-    with econ_inputs_col2:
-        # Optional CAPEX builder from unit rates
-        st.caption("Optional: derive CAPEX from unit rates where available.")
-        rate_col1, rate_col2 = st.columns(2)
-        with rate_col1:
-            use_bess_rate = st.checkbox("Use BESS $/kWh", value=False)
-            bess_rate = st.number_input(
-                "BESS rate ($/kWh usable)",
+            discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+
+            capex_base_musd = st.number_input(
+                "Base/extra CAPEX (USD million)",
                 min_value=0.0,
-                value=0.0,
-                step=1.0,
-                help="Applies to initial usable BESS energy (kWh).",
-                disabled=not use_bess_rate,
-            )
-            use_pv_rate = st.checkbox("Use PV $/kWh", value=False)
-            pv_rate = st.number_input(
-                "PV rate ($/kWh delivered)",
-                min_value=0.0,
-                value=0.0,
-                step=1.0,
-                help="Applies to first-year PV energy delivered to contract (kWh).",
-                disabled=not use_pv_rate,
-            )
-        with rate_col2:
-            use_epc_rate = st.checkbox("Use EPC all-in $/kWh", value=False)
-            epc_rate = st.number_input(
-                "EPC all-in rate ($/kWh firm)",
-                min_value=0.0,
-                value=0.0,
-                step=1.0,
-                help="Applies to first-year firm energy requirement (kWh).",
-                disabled=not use_epc_rate,
-            )
-            variable_opex_usd_per_mwh = st.number_input(
-                "Variable OPEX (USD/MWh delivered)",
-                min_value=0.0,
-                value=1.0,
+                value=40.0,
                 step=0.1,
-                help="Applied to each delivered firm MWh.",
+                help=(
+                    "Manual CAPEX you want to include regardless of rates. If no rates are enabled, "
+                    "this becomes the total CAPEX."
+                ),
             )
-        fixed_opex_musd = st.number_input(
-            "Additional fixed OPEX (USD million/yr)",
-            min_value=0.0,
-            value=0.0,
-            step=0.1,
-            help="Extra fixed OPEX not tied to CAPEX percentage.",
+            fixed_opex_pct = (
+                st.number_input(
+                    "Fixed OPEX (% of CAPEX per year)",
+                    min_value=0.0,
+                    max_value=20.0,
+                    value=2.0,
+                    step=0.1,
+                    help="Annual fixed OPEX expressed as % of CAPEX.",
+                )
+                / 100.0
+            )
+        with econ_inputs_col2:
+            # Optional CAPEX builder from unit rates
+            st.caption("Optional: derive CAPEX from unit rates where available.")
+            rate_col1, rate_col2 = st.columns(2)
+            with rate_col1:
+                use_bess_rate = st.checkbox("Use BESS $/kWh", value=False)
+                bess_rate = st.number_input(
+                    "BESS rate ($/kWh usable)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Applies to initial usable BESS energy (kWh).",
+                    disabled=not use_bess_rate,
+                )
+                use_pv_rate = st.checkbox("Use PV $/kWh", value=False)
+                pv_rate = st.number_input(
+                    "PV rate ($/kWh delivered)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Applies to first-year PV energy delivered to contract (kWh).",
+                    disabled=not use_pv_rate,
+                )
+            with rate_col2:
+                use_epc_rate = st.checkbox("Use EPC all-in $/kWh", value=False)
+                epc_rate = st.number_input(
+                    "EPC all-in rate ($/kWh firm)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Applies to first-year firm energy requirement (kWh).",
+                    disabled=not use_epc_rate,
+                )
+                variable_opex_usd_per_mwh = st.number_input(
+                    "Variable OPEX (USD/MWh delivered)",
+                    min_value=0.0,
+                    value=1.0,
+                    step=0.1,
+                    help="Applied to each delivered firm MWh.",
+                )
+            fixed_opex_musd = st.number_input(
+                "Additional fixed OPEX (USD million/yr)",
+                min_value=0.0,
+                value=0.0,
+                step=0.1,
+                help="Extra fixed OPEX not tied to CAPEX percentage.",
+            )
+
+        capex_from_rates_usd = 0.0
+        if use_bess_rate:
+            capex_from_rates_usd += bess_rate * cfg.initial_usable_mwh * 1_000.0
+        if use_pv_rate and results:
+            capex_from_rates_usd += pv_rate * results[0].pv_to_contract_mwh * 1_000.0
+        if use_epc_rate and results:
+            capex_from_rates_usd += epc_rate * results[0].expected_firm_mwh * 1_000.0
+
+        capex_musd = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+        if capex_from_rates_usd > 0:
+            st.caption(
+                f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
+            )
+
+        economics_inputs = EconomicInputs(
+            capex_musd=capex_musd,
+            fixed_opex_pct_of_capex=fixed_opex_pct,
+            fixed_opex_musd=fixed_opex_musd,
+            variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+            discount_rate=discount_rate,
         )
 
-    capex_from_rates_usd = 0.0
-    if use_bess_rate:
-        capex_from_rates_usd += bess_rate * cfg.initial_usable_mwh * 1_000.0
-    if use_pv_rate and results:
-        capex_from_rates_usd += pv_rate * results[0].pv_to_contract_mwh * 1_000.0
-    if use_epc_rate and results:
-        capex_from_rates_usd += epc_rate * results[0].expected_firm_mwh * 1_000.0
+        economics_output = compute_lcoe_lcos(
+            [r.delivered_firm_mwh for r in results],
+            [r.bess_to_contract_mwh for r in results],
+            economics_inputs,
+        )
 
-    capex_musd = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
-    if capex_from_rates_usd > 0:
+        def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
+            return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
+
+        econ_c1, econ_c2, econ_c3 = st.columns(3)
+        econ_c1.metric(
+            "Discounted costs (USD million)",
+            _fmt_optional(economics_output.discounted_costs_usd, scale=1_000_000),
+            help="CAPEX at year 0 plus discounted OPEX across the project horizon.",
+        )
+        econ_c2.metric(
+            "LCOE ($/MWh delivered)",
+            _fmt_optional(economics_output.lcoe_usd_per_mwh),
+            help="Total discounted costs ÷ discounted firm energy delivered.",
+        )
+        econ_c3.metric(
+            "LCOS ($/MWh from BESS)",
+            _fmt_optional(economics_output.lcos_usd_per_mwh),
+            help="Same cost base but divided by discounted BESS contribution only.",
+        )
         st.caption(
-            f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
+            f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
+            "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
         )
-
-    economics_inputs = EconomicInputs(
-        capex_musd=capex_musd,
-        fixed_opex_pct_of_capex=fixed_opex_pct,
-        fixed_opex_musd=fixed_opex_musd,
-        variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
-        discount_rate=discount_rate,
-    )
-
-    economics_output = compute_lcoe_lcos(
-        [r.delivered_firm_mwh for r in results],
-        [r.bess_to_contract_mwh for r in results],
-        economics_inputs,
-    )
-
-    def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
-        return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
-
-    econ_c1, econ_c2, econ_c3 = st.columns(3)
-    econ_c1.metric(
-        "Discounted costs (USD million)",
-        _fmt_optional(economics_output.discounted_costs_usd, scale=1_000_000),
-        help="CAPEX at year 0 plus discounted OPEX across the project horizon.",
-    )
-    econ_c2.metric(
-        "LCOE ($/MWh delivered)",
-        _fmt_optional(economics_output.lcoe_usd_per_mwh),
-        help="Total discounted costs ÷ discounted firm energy delivered.",
-    )
-    econ_c3.metric(
-        "LCOS ($/MWh from BESS)",
-        _fmt_optional(economics_output.lcos_usd_per_mwh),
-        help="Same cost base but divided by discounted BESS contribution only.",
-    )
-    st.caption(
-        f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
-        "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
-    )
 
     # --------- KPI Traffic-lights ----------
     st.markdown("### KPI Health (traffic-light hints)")
