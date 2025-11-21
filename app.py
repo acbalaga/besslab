@@ -1340,7 +1340,9 @@ def run_app():
                     })
 
                 score_df = pd.DataFrame(score_rows)
-                st.dataframe(score_df.style.format('{:,.2f}'), use_container_width=True)
+                numeric_cols = [c for c in score_df.columns if c != 'Label']
+                formatters = {col: '{:,.2f}' for col in numeric_cols}
+                st.dataframe(score_df.style.format(formatters), use_container_width=True)
 
                 heat_df = score_df.melt(
                     id_vars='Label',
