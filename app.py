@@ -872,13 +872,18 @@ def run_app():
     2) (Optional) Upload a **cycle-model Excel** file to use your own degradation table.
     3) Set your **contracted MW** and **duration (hours)** in the sidebar.
     4) Adjust efficiency, SOC limits, availability, and augmentation if needed.
-    5) Review the summary cards and charts.
+    5) Review the summary cards and charts, then download the CSV or PDF outputs you need.
 
     ### What you will see
     - Whether the contract is met across the project life.
     - How much energy comes from **PV directly** vs. **the BESS**.
     - End-of-year capability bars and typical daily profiles.
     - Friendly suggestions from the **Design Advisor** when performance slips.
+    - A **scenario table** for saving and comparing different input sets.
+
+    ### Handy extras
+    - Use the sidebar link to open the **economics helper** page (LCOE/LCOS) and download the module.
+    - Turn off the **rate limit** by entering the password in the sidebar (default: `besslab`).
 
     ### If results look off
     - Shortfalls? Try widening the SOC window, improving efficiency, or enabling augmentation.
