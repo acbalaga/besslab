@@ -66,7 +66,8 @@ def compute_lcoe_lcos(
     discounted_costs = inputs.capex_musd * 1_000_000
     discounted_energy = 0.0
     discounted_bess_energy = 0.0
-    fixed_opex_from_capex = inputs.capex_musd * inputs.fixed_opex_pct_of_capex
+    # fixed_opex_pct_of_capex is expressed as a percent (e.g., 2.5 = 2.5%)
+    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])

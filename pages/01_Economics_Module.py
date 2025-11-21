@@ -25,8 +25,8 @@ inputs = EconomicInputs(
     discount_rate=0.05,
 )
 outputs = compute_lcoe_lcos(
-    delivered_mwh_by_year=[120_000, 118_000, 117_000],
-    bess_mwh_by_year=[60_000, 58_000, 57_000],
+    annual_delivered_mwh=[120_000, 118_000, 117_000],
+    annual_bess_mwh=[60_000, 58_000, 57_000],
     inputs=inputs,
 )
 print(outputs.lcoe_usd_per_mwh, outputs.lcos_usd_per_mwh)
