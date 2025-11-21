@@ -1,0 +1,92 @@
+"""Economic metrics for BESSLab simulations.
+
+This module stays free of Streamlit/UI dependencies so it can be reused
+from notebooks or other entrypoints. Provide annual energy series and
+high-level cost assumptions to calculate LCOE/LCOS values.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+
+def _discount_factor(discount_rate: float, year_index: int) -> float:
+    """Return the discount factor for a given year index (1-indexed)."""
+
+    return 1.0 / ((1.0 + discount_rate) ** year_index)
+
+
+@dataclass
+class EconomicInputs:
+    """High-level project economics.
+
+    All monetary values are expressed in USD to avoid mixing units. CAPEX and
+    fixed OPEX can be entered in millions to keep UI inputs compact.
+    """
+
+    capex_musd: float
+    fixed_opex_pct_of_capex: float
+    fixed_opex_musd: float
+    variable_opex_usd_per_mwh: float
+    discount_rate: float
+
+
+@dataclass
+class EconomicOutputs:
+    """Discounted cost and energy aggregates plus derived LCOE/LCOS."""
+
+    discounted_costs_usd: float
+    discounted_energy_mwh: float
+    discounted_bess_energy_mwh: float
+    lcoe_usd_per_mwh: float
+    lcos_usd_per_mwh: float
+
+
+def compute_lcoe_lcos(
+    annual_delivered_mwh: Sequence[float],
+    annual_bess_mwh: Sequence[float],
+    inputs: EconomicInputs,
+) -> EconomicOutputs:
+    """Compute LCOE and LCOS using discounted cash-flow style math.
+
+    Parameters
+    ----------
+    annual_delivered_mwh
+        Total firm energy delivered each project year (AC-side).
+    annual_bess_mwh
+        Portion of firm energy that came from the BESS each year (AC-side).
+    inputs
+        Economic assumptions such as CAPEX, OPEX, and discount rate.
+    """
+
+    years = min(len(annual_delivered_mwh), len(annual_bess_mwh))
+    if years == 0:
+        return EconomicOutputs(float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
+
+    discounted_costs = inputs.capex_musd * 1_000_000
+    discounted_energy = 0.0
+    discounted_bess_energy = 0.0
+    # fixed_opex_pct_of_capex is expressed as a percent (e.g., 2.5 = 2.5%)
+    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+
+    for year_idx in range(1, years + 1):
+        firm_mwh = float(annual_delivered_mwh[year_idx - 1])
+        bess_mwh = float(annual_bess_mwh[year_idx - 1])
+        factor = _discount_factor(inputs.discount_rate, year_idx)
+
+        annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+        variable_opex = inputs.variable_opex_usd_per_mwh * firm_mwh
+        discounted_costs += (annual_fixed_opex + variable_opex) * factor
+        discounted_energy += firm_mwh * factor
+        discounted_bess_energy += bess_mwh * factor
+
+    lcoe = discounted_costs / discounted_energy if discounted_energy > 0 else float("nan")
+    lcos = discounted_costs / discounted_bess_energy if discounted_bess_energy > 0 else float("nan")
+
+    return EconomicOutputs(
+        discounted_costs_usd=discounted_costs,
+        discounted_energy_mwh=discounted_energy,
+        discounted_bess_energy_mwh=discounted_bess_energy,
+        lcoe_usd_per_mwh=lcoe,
+        lcos_usd_per_mwh=lcos,
+    )
