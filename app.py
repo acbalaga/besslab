@@ -52,11 +52,12 @@ def get_rate_limit_password() -> str:
     The lookup order is Streamlit secrets → environment variable → built-in default.
     """
 
-    return (
-        st.secrets.get("rate_limit_password")
-        or os.environ.get("BESSLAB_RATE_LIMIT_PASSWORD")
-        or "besslab"
-    )
+    try:
+        secret_password = st.secrets.get("rate_limit_password")
+    except StreamlitSecretNotFoundError:
+        secret_password = None
+
+    return secret_password or os.environ.get("BESSLAB_RATE_LIMIT_PASSWORD") or "besslab"
 
 import math
 import calendar
@@ -70,6 +71,7 @@ from pathlib import Path
 import altair as alt
 from fpdf import FPDF
 from economics import EconomicInputs, compute_lcoe_lcos
+from streamlit.errors import StreamlitSecretNotFoundError
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -1578,9 +1580,14 @@ def run_app():
                     cfg.initial_usable_mwh * 1_000.0
                 )
 
-        augmentation_energy_added = getattr(
-            sim_output, "augmentation_energy_added_mwh", [0.0 for _ in range(len(results))]
+        augmentation_energy_added = list(
+            getattr(sim_output, "augmentation_energy_added_mwh", [])
         )
+        if len(augmentation_energy_added) < len(results):
+            augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
+        elif len(augmentation_energy_added) > len(results):
+            augmentation_energy_added = augmentation_energy_added[: len(results)]
+
         augmentation_costs_usd = [
             add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
             for add_e in augmentation_energy_added
