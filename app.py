@@ -71,6 +71,7 @@ from pathlib import Path
 import altair as alt
 from fpdf import FPDF
 from economics import EconomicInputs, compute_lcoe_lcos
+from economics_helpers import compute_lcoe_lcos_with_augmentation_fallback
 from streamlit.errors import StreamlitSecretNotFoundError
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -1601,7 +1602,7 @@ def run_app():
             discount_rate=discount_rate,
         )
 
-        economics_output = compute_lcoe_lcos(
+        economics_output = compute_lcoe_lcos_with_augmentation_fallback(
             [r.delivered_firm_mwh for r in results],
             [r.bess_to_contract_mwh for r in results],
             economics_inputs,
