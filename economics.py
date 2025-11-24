@@ -6,6 +6,7 @@ high-level cost assumptions to calculate LCOE/LCOS values.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -14,6 +15,39 @@ def _discount_factor(discount_rate: float, year_index: int) -> float:
     """Return the discount factor for a given year index (1-indexed)."""
 
     return 1.0 / ((1.0 + discount_rate) ** year_index)
+
+
+def _ensure_non_negative_finite(value: float, name: str) -> None:
+    """Raise ValueError when a numeric value is negative or non-finite."""
+
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+
+
+def _validate_inputs(
+    annual_delivered_mwh: Sequence[float],
+    annual_bess_mwh: Sequence[float],
+    inputs: EconomicInputs,
+) -> None:
+    """Validate energy series lengths and economic inputs before computing outputs."""
+
+    if len(annual_delivered_mwh) != len(annual_bess_mwh):
+        raise ValueError(
+            "annual_delivered_mwh and annual_bess_mwh must have the same number of years"
+        )
+
+    for idx, value in enumerate(annual_delivered_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_delivered_mwh[{idx}]")
+    for idx, value in enumerate(annual_bess_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_bess_mwh[{idx}]")
+
+    _ensure_non_negative_finite(inputs.capex_musd, "capex_musd")
+    _ensure_non_negative_finite(inputs.fixed_opex_pct_of_capex, "fixed_opex_pct_of_capex")
+    _ensure_non_negative_finite(inputs.fixed_opex_musd, "fixed_opex_musd")
+    _ensure_non_negative_finite(inputs.variable_opex_usd_per_mwh, "variable_opex_usd_per_mwh")
+    _ensure_non_negative_finite(inputs.discount_rate, "discount_rate")
 
 
 @dataclass
@@ -59,7 +93,9 @@ def compute_lcoe_lcos(
         Economic assumptions such as CAPEX, OPEX, and discount rate.
     """
 
-    years = min(len(annual_delivered_mwh), len(annual_bess_mwh))
+    _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
+
+    years = len(annual_delivered_mwh)
     if years == 0:
         return EconomicOutputs(float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
 

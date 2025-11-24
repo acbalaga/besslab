@@ -40,6 +40,39 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertTrue(math.isnan(outputs.lcoe_usd_per_mwh))
         self.assertTrue(math.isnan(outputs.lcos_usd_per_mwh))
 
+    def test_mismatched_lengths_raise(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            variable_opex_usd_per_mwh=0.0,
+            discount_rate=0.0,
+        )
+        with self.assertRaises(ValueError):
+            compute_lcoe_lcos([1.0, 2.0], [1.0], inputs)
+
+    def test_invalid_energy_values_raise(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            variable_opex_usd_per_mwh=0.0,
+            discount_rate=0.0,
+        )
+        with self.assertRaises(ValueError):
+            compute_lcoe_lcos([1.0, -1.0], [1.0, 1.0], inputs)
+
+    def test_invalid_financial_values_raise(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=-1.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            variable_opex_usd_per_mwh=0.0,
+            discount_rate=0.0,
+        )
+        with self.assertRaises(ValueError):
+            compute_lcoe_lcos([1.0], [1.0], inputs)
+
 
 if __name__ == "__main__":
     unittest.main()
