@@ -73,6 +73,27 @@ class EconomicModuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compute_lcoe_lcos([1.0], [1.0], inputs)
 
+    def test_augmentation_costs_are_discounted_and_added(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            variable_opex_usd_per_mwh=0.0,
+            discount_rate=0.10,
+        )
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0, 100.0],
+            annual_bess_mwh=[100.0, 100.0],
+            inputs=inputs,
+            augmentation_costs_usd=[1_000_000.0, 0.0],
+        )
+
+        expected_discounted_aug_costs = 1_000_000.0 / 1.1
+        self.assertAlmostEqual(outputs.discounted_augmentation_costs_usd, expected_discounted_aug_costs)
+        self.assertAlmostEqual(outputs.discounted_costs_usd, expected_discounted_aug_costs)
+        expected_discounted_energy = (100.0 / 1.1) + (100.0 / (1.1**2))
+        self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, expected_discounted_aug_costs / expected_discounted_energy)
+
 
 if __name__ == "__main__":
     unittest.main()
