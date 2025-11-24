@@ -859,6 +859,15 @@ def run_app():
 
 
     st.set_page_config(page_title="BESSLab by ACB", layout="wide")
+    st.markdown(
+        """
+        <style>
+        /* Hide default Streamlit sidebar navigation to declutter the layout */
+        [data-testid="stSidebarNav"] {display: none;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     st.title("BESS LAB — PV-only charging, AC-coupled")
 
     # README / Help
@@ -901,24 +910,6 @@ def run_app():
 
     with st.sidebar:
         st.header("Data Sources")
-        link_to_econ = getattr(st.sidebar, "page_link", None)
-        if callable(link_to_econ):
-            try:
-                link_to_econ(
-                    "pages/01_Economics_Module.py",
-                    label="Open economics helper page ↗",
-                    icon="📄",
-                )
-            except KeyError:
-                st.markdown(
-                    "<a href='pages/01_Economics_Module' target='_blank'>Open economics helper page ↗</a>",
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.markdown(
-                "<a href='pages/01_Economics_Module' target='_blank'>Open economics helper page ↗</a>",
-                unsafe_allow_html=True,
-            )
         default_pv_paths = [str(BASE_DIR / 'data' / 'PV_8760_MW.csv')]
         default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
 
