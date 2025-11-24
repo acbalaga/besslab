@@ -70,6 +70,7 @@ class EconomicOutputs:
     """Discounted cost and energy aggregates plus derived LCOE/LCOS."""
 
     discounted_costs_usd: float
+    discounted_augmentation_costs_usd: float
     discounted_energy_mwh: float
     discounted_bess_energy_mwh: float
     lcoe_usd_per_mwh: float
@@ -80,6 +81,7 @@ def compute_lcoe_lcos(
     annual_delivered_mwh: Sequence[float],
     annual_bess_mwh: Sequence[float],
     inputs: EconomicInputs,
+    augmentation_costs_usd: Sequence[float] | None = None,
 ) -> EconomicOutputs:
     """Compute LCOE and LCOS using discounted cash-flow style math.
 
@@ -91,15 +93,28 @@ def compute_lcoe_lcos(
         Portion of firm energy that came from the BESS each year (AC-side).
     inputs
         Economic assumptions such as CAPEX, OPEX, and discount rate.
+    augmentation_costs_usd
+        Optional per-year augmentation CAPEX (USD, undiscounted) to include in the cash flows.
     """
 
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
 
+    if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("augmentation_costs_usd must match number of years")
+    if augmentation_costs_usd is not None:
+        for idx, value in enumerate(augmentation_costs_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
     years = len(annual_delivered_mwh)
     if years == 0:
-        return EconomicOutputs(float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
+        return EconomicOutputs(
+            float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+        )
 
     discounted_costs = inputs.capex_musd * 1_000_000
+    discounted_augmentation_costs = 0.0
     discounted_energy = 0.0
     discounted_bess_energy = 0.0
     # fixed_opex_pct_of_capex is expressed as a percent (e.g., 2.5 = 2.5%)
@@ -112,7 +127,12 @@ def compute_lcoe_lcos(
 
         annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
         variable_opex = inputs.variable_opex_usd_per_mwh * firm_mwh
-        discounted_costs += (annual_fixed_opex + variable_opex) * factor
+        augmentation_cost = 0.0
+        if augmentation_costs_usd is not None:
+            augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
+
+        discounted_augmentation_costs += augmentation_cost * factor
+        discounted_costs += (annual_fixed_opex + variable_opex + augmentation_cost) * factor
         discounted_energy += firm_mwh * factor
         discounted_bess_energy += bess_mwh * factor
 
@@ -121,6 +141,7 @@ def compute_lcoe_lcos(
 
     return EconomicOutputs(
         discounted_costs_usd=discounted_costs,
+        discounted_augmentation_costs_usd=discounted_augmentation_costs,
         discounted_energy_mwh=discounted_energy,
         discounted_bess_energy_mwh=discounted_bess_energy,
         lcoe_usd_per_mwh=lcoe,

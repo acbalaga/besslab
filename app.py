@@ -287,6 +287,7 @@ class SimulationOutput:
     hod_sum_pv: np.ndarray
     hod_sum_bess: np.ndarray
     hod_sum_charge: np.ndarray
+    augmentation_energy_added_mwh: List[float]
     augmentation_events: int
 
 
@@ -768,6 +769,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
     )
 
     results: List[YearResult] = []
+    augmentation_energy_added: List[float] = [0.0 for _ in range(cfg.years)]
     monthly_results_all: List[MonthResult] = []
     dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
     first_year_logs: Optional[HourlyLog] = None
@@ -795,6 +797,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
         if add_p > 0 or add_e > 0:
             augmentation_events += 1
+            augmentation_energy_added[y - 1] += add_e
             state.current_power_mw += add_p
             state.current_usable_mwh_bolref += add_e
 
@@ -809,6 +812,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         hod_sum_pv=hod_sum_pv,
         hod_sum_bess=hod_sum_bess,
         hod_sum_charge=hod_sum_charge,
+        augmentation_energy_added_mwh=augmentation_energy_added,
         augmentation_events=augmentation_events,
     )
 
@@ -1565,6 +1569,23 @@ def run_app():
                 f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
             )
 
+        augmentation_unit_rate_usd_per_kwh = 0.0
+        if cfg.initial_usable_mwh > 0:
+            if use_bess_rate:
+                augmentation_unit_rate_usd_per_kwh = bess_rate
+            elif capex_musd > 0:
+                augmentation_unit_rate_usd_per_kwh = (capex_musd * 1_000_000.0) / (
+                    cfg.initial_usable_mwh * 1_000.0
+                )
+
+        augmentation_energy_added = getattr(
+            sim_output, "augmentation_energy_added_mwh", [0.0 for _ in range(len(results))]
+        )
+        augmentation_costs_usd = [
+            add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
+            for add_e in augmentation_energy_added
+        ]
+
         economics_inputs = EconomicInputs(
             capex_musd=capex_musd,
             fixed_opex_pct_of_capex=fixed_opex_pct,
@@ -1577,6 +1598,7 @@ def run_app():
             [r.delivered_firm_mwh for r in results],
             [r.bess_to_contract_mwh for r in results],
             economics_inputs,
+            augmentation_costs_usd=augmentation_costs_usd,
         )
 
         def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
@@ -1598,6 +1620,12 @@ def run_app():
             _fmt_optional(economics_output.lcos_usd_per_mwh),
             help="Same cost base but divided by discounted BESS contribution only.",
         )
+        if sum(augmentation_costs_usd) > 0:
+            st.caption(
+                "Augmentation CAPEX included "
+                f"(discounted: ${economics_output.discounted_augmentation_costs_usd / 1_000_000:,.2f}M; "
+                f"unit cost ${augmentation_unit_rate_usd_per_kwh:,.0f}/kWh)."
+            )
         st.caption(
             f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
             "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
