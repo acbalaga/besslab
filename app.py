@@ -1529,13 +1529,33 @@ def run_app():
     bess_losses_mwh = summary.bess_losses_mwh
     avg_eq_cycles_per_year = summary.avg_eq_cycles_per_year
     cap_ratio_final = summary.cap_ratio_final
+    expected_total_mwh = sum(r.expected_firm_mwh for r in results)
+    coverage_by_year = [
+        (r.delivered_firm_mwh / r.expected_firm_mwh) if r.expected_firm_mwh > 0 else float('nan')
+        for r in results
+    ]
+    min_yearly_coverage = float(np.nanmin(coverage_by_year)) if coverage_by_year else float('nan')
+    final_soh_pct = final.soh_total * 100.0
+    eoy_capacity_margin_pct = cap_ratio_final * 100.0
+    augmentation_events = sim_output.augmentation_events
+    augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
+
+    def _fmt_percent(value: float, as_fraction: bool = False) -> str:
+        if math.isnan(value):
+            return "—"
+        pct_value = value * 100.0 if as_fraction else value
+        return f"{pct_value:,.2f}%"
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Delivery compliance (%)", f"{compliance:,.2f}")
-    c2.metric("BESS share of firm (%)", f"{bess_share_of_firm:,.1f}", help="Portion of contracted energy supplied by BESS vs PV.")
-    c3.metric("Charge/Discharge ratio", f"{charge_discharge_ratio:,.3f}", help="AC charged MWh ÷ AC discharged MWh.")
-    c4.metric("PV capture ratio", f"{pv_capture_ratio:,.3f}", help="Charged MWh ÷ (Charged MWh + Curtailed MWh).")
-    c5.metric("Discharge cap. factor (final yr)", f"{discharge_capacity_factor:,.3f}", help="Final-year BESS discharge MWh ÷ (avail-adjusted MW × discharge-window hours).")
+    c1.metric("Delivery compliance", _fmt_percent(compliance), help="Total firm energy delivered vs contracted across project life.")
+    c2.metric("Worst-year coverage", _fmt_percent(min_yearly_coverage, as_fraction=True), help="Lowest annual delivery vs contract shows weakest year.")
+    c3.metric("Final SOH_total", _fmt_percent(final_soh_pct, as_fraction=False), help="End-of-life usable fraction after cycle + calendar fade.")
+    c4.metric("EOY deliverable vs contract", _fmt_percent(eoy_capacity_margin_pct, as_fraction=False), help="Final-year daily deliverable vs target day (MW×h window).")
+    c5.metric(
+        "Augmentations triggered",
+        f"{augmentation_events} events",
+        help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
+    )
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
         econ_inputs_col1, econ_inputs_col2 = st.columns(2)
@@ -1709,42 +1729,37 @@ def run_app():
         )
 
     # --------- KPI Traffic-lights ----------
-    st.markdown("### KPI Health (traffic-light hints)")
+    st.markdown("### KPI Health")
     def light_icon(color: str) -> str:
-        return {"green":"🟢", "yellow":"🟡", "red":"🔴"}[color]
+        return {"green": "🟢", "yellow": "🟡", "red": "🔴"}[color]
 
-    def eval_rte(rte_single: float) -> str:
-        return "green" if rte_single >= 0.85 else ("yellow" if rte_single >= 0.80 else "red")
+    def eval_coverage(x: float) -> str:
+        if math.isnan(x):
+            return "red"
+        return "green" if x >= 0.90 else ("yellow" if x >= 0.85 else "red")
 
-    def eval_avail(av: float) -> str:
-        return "green" if av >= 0.98 else ("yellow" if av >= 0.97 else "red")
+    def eval_final_soh(pct: float) -> str:
+        if math.isnan(pct):
+            return "red"
+        return "green" if pct >= 75.0 else ("yellow" if pct >= 65.0 else "red")
 
-    def eval_capture(x: float) -> str:
-        return "green" if x >= 0.60 else ("yellow" if x >= 0.50 else "red")
-
-    def eval_cf(x: float) -> str:
-        # mid-merit 4–6h typical band
-        return "green" if 0.35 <= x <= 0.60 else ("yellow" if 0.30 <= x < 0.35 or 0.60 < x <= 0.70 else "red")
-
-    def eval_cycles_per_year(e):  # vendor guardrail ~300–400 EFC/yr
+    def eval_cycles_per_year(e: float) -> str:  # vendor guardrail ~300–400 EFC/yr
+        if math.isnan(e):
+            return "red"
         return "green" if e <= 300 else ("yellow" if e <= 400 else "red")
 
-    def eval_final_cap_margin(cap_ratio: float) -> str:
-        return "green" if cap_ratio >= 1.05 else ("yellow" if cap_ratio >= 1.00 else "red")
+    def eval_augmentations(count: int) -> str:
+        return "green" if count <= 1 else ("yellow" if count <= 3 else "red")
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.markdown(f"{light_icon(eval_rte(cfg.rte_roundtrip))} **RTE (single)**: {cfg.rte_roundtrip:.2f}")
-    k1.caption("≥0.85 green · 0.80–0.85 yellow")
-    k2.markdown(f"{light_icon(eval_avail(cfg.bess_availability))} **BESS availability**: {cfg.bess_availability:.2f}")
-    k2.caption("≥0.98 green · 0.97–0.98 yellow")
-    k3.markdown(f"{light_icon(eval_capture(pv_capture_ratio))} **PV capture**: {pv_capture_ratio:.3f}")
-    k3.caption("≥0.60 green · 0.50–0.60 yellow")
-    k4.markdown(f"{light_icon(eval_cf(discharge_capacity_factor))} **Discharge CF (final)**: {discharge_capacity_factor:.3f}")
-    k4.caption("0.35–0.60 green for 4–6h mid-merit")
-    k5.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
-    k5.caption("≤300 green · 300–400 yellow")
-    k6.markdown(f"{light_icon(eval_final_cap_margin(cap_ratio_final))} **EOY cap / target**: {cap_ratio_final:.3f}")
-    k6.caption("≥1.05 green · 1.00–1.05 yellow")
+    k1, k2, k3, k4 = st.columns(4)
+    k1.markdown(f"{light_icon(eval_coverage(min_yearly_coverage))} **Worst-year coverage**: {_fmt_percent(min_yearly_coverage, as_fraction=True)}")
+    k1.caption("≥90% green · 85–90% yellow")
+    k2.markdown(f"{light_icon(eval_final_soh(final_soh_pct))} **Final SOH_total**: {_fmt_percent(final_soh_pct, as_fraction=False)}")
+    k2.caption("≥75% green · 65–74% yellow")
+    k3.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
+    k3.caption("≤300 green · 300–400 yellow")
+    k4.markdown(f"{light_icon(eval_augmentations(augmentation_events))} **Augmentation count**: {augmentation_events}")
+    k4.caption("0–1 green · 2–3 yellow")
 
     st.markdown("---")
     st.subheader("Yearly Summary")
