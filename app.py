@@ -1535,7 +1535,6 @@ def run_app():
         for r in results
     ]
     min_yearly_coverage = float(np.nanmin(coverage_by_year)) if coverage_by_year else float('nan')
-    shortfall_pct = (summary.total_shortfall_mwh / expected_total_mwh) if expected_total_mwh > 0 else float('nan')
     final_soh_pct = final.soh_total * 100.0
     eoy_capacity_margin_pct = cap_ratio_final * 100.0
     augmentation_events = sim_output.augmentation_events
@@ -1547,17 +1546,12 @@ def run_app():
         pct_value = value * 100.0 if as_fraction else value
         return f"{pct_value:,.2f}%"
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Delivery compliance", _fmt_percent(compliance), help="Total firm energy delivered vs contracted across project life.")
     c2.metric("Worst-year coverage", _fmt_percent(min_yearly_coverage, as_fraction=True), help="Lowest annual delivery vs contract shows weakest year.")
-    c3.metric(
-        "Shortfall energy",
-        "—" if math.isnan(shortfall_pct) else f"{summary.total_shortfall_mwh:,.0f} MWh ({_fmt_percent(shortfall_pct, as_fraction=True)})",
-        help="Total contracted MWh missed across all years.",
-    )
-    c4.metric("Final SOH_total", _fmt_percent(final_soh_pct, as_fraction=False), help="End-of-life usable fraction after cycle + calendar fade.")
-    c5.metric("EOY deliverable vs contract", _fmt_percent(eoy_capacity_margin_pct, as_fraction=False), help="Final-year daily deliverable vs target day (MW×h window).")
-    c6.metric(
+    c3.metric("Final SOH_total", _fmt_percent(final_soh_pct, as_fraction=False), help="End-of-life usable fraction after cycle + calendar fade.")
+    c4.metric("EOY deliverable vs contract", _fmt_percent(eoy_capacity_margin_pct, as_fraction=False), help="Final-year daily deliverable vs target day (MW×h window).")
+    c5.metric(
         "Augmentations triggered",
         f"{augmentation_events} events",
         help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
@@ -1735,7 +1729,7 @@ def run_app():
         )
 
     # --------- KPI Traffic-lights ----------
-    st.markdown("### KPI Health (traffic-light hints)")
+    st.markdown("### KPI Health")
     def light_icon(color: str) -> str:
         return {"green": "🟢", "yellow": "🟡", "red": "🔴"}[color]
 
@@ -1743,16 +1737,6 @@ def run_app():
         if math.isnan(x):
             return "red"
         return "green" if x >= 0.90 else ("yellow" if x >= 0.85 else "red")
-
-    def eval_shortfall(pct: float) -> str:
-        if math.isnan(pct):
-            return "red"
-        return "green" if pct <= 0.10 else ("yellow" if pct <= 0.15 else "red")
-
-    def eval_cap_margin(cap_ratio: float) -> str:
-        if math.isnan(cap_ratio):
-            return "red"
-        return "green" if cap_ratio >= 1.05 else ("yellow" if cap_ratio >= 1.00 else "red")
 
     def eval_final_soh(pct: float) -> str:
         if math.isnan(pct):
@@ -1767,19 +1751,15 @@ def run_app():
     def eval_augmentations(count: int) -> str:
         return "green" if count <= 1 else ("yellow" if count <= 3 else "red")
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1, k2, k3, k4 = st.columns(4)
     k1.markdown(f"{light_icon(eval_coverage(min_yearly_coverage))} **Worst-year coverage**: {_fmt_percent(min_yearly_coverage, as_fraction=True)}")
     k1.caption("≥90% green · 85–90% yellow")
-    k2.markdown(f"{light_icon(eval_shortfall(shortfall_pct))} **Shortfall vs contract**: {_fmt_percent(shortfall_pct, as_fraction=True)}")
-    k2.caption("≤10% green · 10–15% yellow of project energy")
-    k3.markdown(f"{light_icon(eval_cap_margin(cap_ratio_final))} **EOY cap / target-day**: {_fmt_percent(eoy_capacity_margin_pct, as_fraction=False)}")
-    k3.caption("≥105% green · 100–105% yellow")
-    k4.markdown(f"{light_icon(eval_final_soh(final_soh_pct))} **Final SOH_total**: {_fmt_percent(final_soh_pct, as_fraction=False)}")
-    k4.caption("≥75% green · 65–74% yellow")
-    k5.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
-    k5.caption("≤300 green · 300–400 yellow")
-    k6.markdown(f"{light_icon(eval_augmentations(augmentation_events))} **Augmentation count**: {augmentation_events}")
-    k6.caption("0–1 green · 2–3 yellow")
+    k2.markdown(f"{light_icon(eval_final_soh(final_soh_pct))} **Final SOH_total**: {_fmt_percent(final_soh_pct, as_fraction=False)}")
+    k2.caption("≥75% green · 65–74% yellow")
+    k3.markdown(f"{light_icon(eval_cycles_per_year(avg_eq_cycles_per_year))} **EqCycles/yr (avg)**: {avg_eq_cycles_per_year:.1f}")
+    k3.caption("≤300 green · 300–400 yellow")
+    k4.markdown(f"{light_icon(eval_augmentations(augmentation_events))} **Augmentation count**: {augmentation_events}")
+    k4.caption("0–1 green · 2–3 yellow")
 
     st.markdown("---")
     st.subheader("Yearly Summary")
