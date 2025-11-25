@@ -70,7 +70,7 @@ import pandas as pd
 from pathlib import Path
 import altair as alt
 from fpdf import FPDF
-from economics import EconomicInputs, compute_lcoe_lcos
+from economics import EconomicInputs, EconomicOutputs, compute_lcoe_lcos
 from economics_helpers import compute_lcoe_lcos_with_augmentation_fallback
 from streamlit.errors import StreamlitSecretNotFoundError
 
@@ -1814,131 +1814,138 @@ def run_app():
         )
 
         st.markdown("---")
-        st.markdown("#### LCOE vs. initial BESS capacity")
+        st.markdown("#### LCOE & LCOS sensitivity (±20%)")
         st.caption(
-            "Sweep initial usable BESS energy, rerun the simulation for each point, and recompute "
-            "LCOE using the same cost assumptions. The lowest point is highlighted as the sweet "
-            "spot."
+            "Adjust each cost lever by ±20% while holding other assumptions constant to see how "
+            "LCOE and LCOS respond."
         )
 
-        default_min = max(10.0, cfg.initial_usable_mwh * 0.5)
-        default_max = max(default_min + 10.0, cfg.initial_usable_mwh * 1.5)
-        sweep_c1, sweep_c2, sweep_c3 = st.columns(3)
-        with sweep_c1:
-            sweep_min = st.number_input(
-                "Sweep minimum (MWh)",
-                min_value=1.0,
-                value=float(round(default_min, 1)),
-                step=1.0,
-                help="Lowest initial usable BESS energy to test.",
-            )
-        with sweep_c2:
-            sweep_max = st.number_input(
-                "Sweep maximum (MWh)",
-                min_value=sweep_min + 1.0,
-                value=float(round(default_max, 1)),
-                step=1.0,
-                help="Highest initial usable BESS energy to test.",
-            )
-        with sweep_c3:
-            sweep_step = st.number_input(
-                "Sweep step (MWh)",
-                min_value=1.0,
-                value=float(max(1.0, (sweep_max - sweep_min) / 8)),
-                step=1.0,
-                help="Increment between capacities. Smaller steps run more simulations.",
+        annual_delivered_mwh = [r.delivered_firm_mwh for r in results_for_run]
+        annual_bess_mwh = [r.bess_to_contract_mwh for r in results_for_run]
+
+        def _recompute_economics(
+            capex_musd_override: float,
+            fixed_opex_pct_override: float,
+            fixed_opex_musd_override: float,
+            variable_opex_override: float,
+            discount_rate_override: float,
+        ) -> EconomicOutputs:
+            """Return LCOE and LCOS after applying the provided economics inputs."""
+
+            updated_inputs = EconomicInputs(
+                capex_musd=capex_musd_override,
+                fixed_opex_pct_of_capex=fixed_opex_pct_override,
+                fixed_opex_musd=fixed_opex_musd_override,
+                variable_opex_usd_per_mwh=variable_opex_override,
+                discount_rate=discount_rate_override,
             )
 
-        chart_container = st.container()
-        if sweep_step <= 0:
-            chart_container.error("Sweep step must be positive.")
+            return compute_lcoe_lcos_with_augmentation_fallback(
+                annual_delivered_mwh,
+                annual_bess_mwh,
+                updated_inputs,
+                augmentation_costs_usd=augmentation_costs_usd,
+            )
+
+        lever_definitions = [
+            ("CAPEX (USD million)", "capex_musd", capex_musd),
+            ("Fixed OPEX (% of CAPEX)", "fixed_opex_pct", fixed_opex_pct),
+            ("Fixed OPEX (USD million/yr)", "fixed_opex_musd", fixed_opex_musd),
+            (
+                "Variable OPEX ($/MWh delivered)",
+                "variable_opex_usd_per_mwh",
+                variable_opex_usd_per_mwh,
+            ),
+            ("Discount rate", "discount_rate", discount_rate),
+        ]
+
+        sensitivity_rows: List[Dict[str, Any]] = []
+        factors = [-0.2, 0.0, 0.2]
+        change_labels = {factor: f"{factor:+.0%}" for factor in factors}
+
+        with st.spinner("Computing sensitivity heatmaps..."):
+            for lever_label, lever_key, base_value in lever_definitions:
+                if base_value < 0:
+                    continue
+
+                for factor in factors:
+                    capex_test = capex_musd
+                    fixed_pct_test = fixed_opex_pct
+                    fixed_musd_test = fixed_opex_musd
+                    variable_opex_test = variable_opex_usd_per_mwh
+                    discount_rate_test = discount_rate
+
+                    scaled_value = max(0.0, base_value * (1.0 + factor))
+
+                    if lever_key == "capex_musd":
+                        capex_test = scaled_value
+                    elif lever_key == "fixed_opex_pct":
+                        fixed_pct_test = scaled_value
+                    elif lever_key == "fixed_opex_musd":
+                        fixed_musd_test = scaled_value
+                    elif lever_key == "variable_opex_usd_per_mwh":
+                        variable_opex_test = scaled_value
+                    elif lever_key == "discount_rate":
+                        discount_rate_test = scaled_value
+
+                    economics_outputs = _recompute_economics(
+                        capex_test,
+                        fixed_pct_test,
+                        fixed_musd_test,
+                        variable_opex_test,
+                        discount_rate_test,
+                    )
+
+                    sensitivity_rows.append(
+                        {
+                            "Lever": lever_label,
+                            "Change": change_labels[factor],
+                            "order": factor,
+                            "lcoe_usd_per_mwh": economics_outputs.lcoe_usd_per_mwh,
+                            "lcos_usd_per_mwh": economics_outputs.lcos_usd_per_mwh,
+                        }
+                    )
+
+        sensitivity_df = pd.DataFrame(sensitivity_rows)
+        if sensitivity_df.empty:
+            st.info("Unable to compute sensitivity results with the current inputs.")
         else:
-            sweep_capacities = np.arange(sweep_min, sweep_max + 0.001, sweep_step)
-            sweep_rows = []
-            sweep_errors: List[str] = []
+            change_order = [change_labels[f] for f in factors]
+            lever_order = [lever_label for lever_label, _, _ in lever_definitions]
 
-            with st.spinner("Running sensitivity sweep..."):
-                for cap in sweep_capacities:
-                    candidate_cfg = replace(cfg, initial_usable_mwh=float(cap))
-                    try:
-                        sweep_output = simulate_project(
-                            candidate_cfg, pv_df, cycle_df, dod_override, need_logs=False
-                        )
-                    except ValueError as exc:  # noqa: BLE001
-                        sweep_errors.append(f"{cap:,.0f} MWh: {exc}")
-                        continue
+            for metric_col, title in [
+                ("lcoe_usd_per_mwh", "LCOE sensitivity ($/MWh delivered)"),
+                ("lcos_usd_per_mwh", "LCOS sensitivity ($/MWh from BESS)"),
+            ]:
+                metric_df = sensitivity_df.dropna(subset=[metric_col])
+                if metric_df.empty:
+                    st.warning(f"No data available to plot {title} heatmap.")
+                    continue
 
-                    (
-                        _,
-                        _,
-                        _,
-                        _,
-                        sweep_econ,
-                    ) = build_economics_output_for_run(sweep_output, candidate_cfg)
+                base_chart = alt.Chart(metric_df).encode(
+                    x=alt.X("Change:N", sort=change_order, title="Lever adjustment"),
+                    y=alt.Y("Lever:N", sort=lever_order, title=""),
+                    color=alt.Color(
+                        f"{metric_col}:Q",
+                        title=title,
+                        scale=alt.Scale(scheme="blues"),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Lever", title="Lever"),
+                        alt.Tooltip("Change", title="Adjustment"),
+                        alt.Tooltip(metric_col, title=title, format=".1f"),
+                    ],
+                ).properties(title=title, height=220)
 
-                    if math.isnan(sweep_econ.lcoe_usd_per_mwh):
-                        sweep_errors.append(f"{cap:,.0f} MWh: LCOE not available (no delivered energy)")
-                        continue
+                text_layer = base_chart.mark_text(baseline="middle", color="black").encode(
+                    text=alt.Text(f"{metric_col}:Q", format=".1f")
+                )
 
-                    sweep_rows.append(
-                        {
-                            "bess_mwh": float(cap),
-                            "lcoe_usd_per_mwh": sweep_econ.lcoe_usd_per_mwh,
-                        }
-                    )
+                st.altair_chart(base_chart.mark_rect() + text_layer, use_container_width=True)
 
-            lcoe_df = (
-                pd.DataFrame(sweep_rows)
-                .dropna(subset=["bess_mwh", "lcoe_usd_per_mwh"])
-                .sort_values("bess_mwh")
+            st.caption(
+                "Each cell recomputes LCOE/LCOS by scaling one lever ±20% and keeping all other assumptions fixed."
             )
-
-            if sweep_errors:
-                chart_container.warning(
-                    "Some sweep points were skipped: " + "; ".join(sorted(set(sweep_errors)))
-                )
-
-            if lcoe_df.empty:
-                chart_container.info("No valid sweep points to plot. Adjust the range or inputs.")
-            else:
-                sweet_spot = lcoe_df.loc[lcoe_df["lcoe_usd_per_mwh"].idxmin()]
-                sweet_capacity = sweet_spot["bess_mwh"]
-                sweet_lcoe = sweet_spot["lcoe_usd_per_mwh"]
-
-                chart_container.metric(
-                    "Sweet spot",
-                    f"{sweet_capacity:,.0f} MWh",
-                    help="Capacity with the lowest recomputed LCOE across the sweep.",
-                )
-
-                base_chart = alt.Chart(lcoe_df).encode(
-                    x=alt.X("bess_mwh", title="Initial BESS capacity (MWh)"),
-                    y=alt.Y("lcoe_usd_per_mwh", title="LCOE ($/MWh)"),
-                )
-
-                line = base_chart.mark_line(color="#d62728").interactive()
-                points = base_chart.mark_circle(color="#d62728", size=80)
-                sweet_rule = alt.Chart(
-                    pd.DataFrame(
-                        {
-                            "bess_mwh": [sweet_capacity],
-                            "lcoe_usd_per_mwh": [sweet_lcoe],
-                            "label": [f"Sweet spot: {sweet_capacity:,.0f} MWh"],
-                        }
-                    )
-                ).encode(
-                    x="bess_mwh",
-                    y="lcoe_usd_per_mwh",
-                    tooltip=["bess_mwh", "lcoe_usd_per_mwh"],
-                    text="label",
-                ).mark_text(dy=-10, color="#d62728")
-
-                chart = (line + points + sweet_rule).properties(height=320)
-                chart_container.altair_chart(chart, use_container_width=True)
-
-                chart_container.caption(
-                    "Each point reruns the simulation with the specified starting energy and applies the same cost inputs."
-                )
 
     # --------- KPI Traffic-lights ----------
     st.markdown("### KPI Health")
