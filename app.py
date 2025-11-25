@@ -227,19 +227,6 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
     )
 
 
-# --------- Economics helpers ---------
-
-
-def parse_lcoe_series(raw_text: str) -> pd.DataFrame:
-    """Return a clean DataFrame for plotting the LCOE sensitivity chart."""
-
-    cleaned_text = raw_text.strip()
-    if not cleaned_text:
-        return pd.DataFrame(columns=["bess_mwh", "lcoe_usd_per_mwh"])
-
-    return pd.read_csv(StringIO(cleaned_text))
-
-
 def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
     """Read cycle model Excel with column pairs DoD*_Cycles / DoD*_Ret(%)."""
     last_err = None
@@ -1722,56 +1709,79 @@ def run_app():
                 help="Extra fixed OPEX not tied to CAPEX percentage.",
             )
 
-        capex_from_rates_usd = 0.0
-        if use_bess_rate:
-            capex_from_rates_usd += bess_rate * cfg.initial_usable_mwh * 1_000.0
-        if use_pv_rate and results:
-            capex_from_rates_usd += pv_rate * results[0].pv_to_contract_mwh * 1_000.0
-        if use_epc_rate and results:
-            capex_from_rates_usd += epc_rate * results[0].expected_firm_mwh * 1_000.0
+        def build_economics_output_for_run(
+            sim_output: SimulationOutput, cfg_for_run: SimConfig
+        ) -> Tuple[float, float, float, List[float], Any]:
+            """Compute economics for a simulation using current discount and cost inputs."""
 
-        capex_musd = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+            capex_from_rates_usd = 0.0
+            results_for_run = sim_output.results
+            if use_bess_rate:
+                capex_from_rates_usd += bess_rate * cfg_for_run.initial_usable_mwh * 1_000.0
+            if use_pv_rate and results_for_run:
+                capex_from_rates_usd += pv_rate * results_for_run[0].pv_to_contract_mwh * 1_000.0
+            if use_epc_rate and results_for_run:
+                capex_from_rates_usd += epc_rate * results_for_run[0].expected_firm_mwh * 1_000.0
+
+            capex_musd_run = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+
+            augmentation_unit_rate_usd_per_kwh = 0.0
+            if cfg_for_run.initial_usable_mwh > 0:
+                if use_bess_rate:
+                    augmentation_unit_rate_usd_per_kwh = bess_rate
+                elif capex_musd_run > 0:
+                    augmentation_unit_rate_usd_per_kwh = (capex_musd_run * 1_000_000.0) / (
+                        cfg_for_run.initial_usable_mwh * 1_000.0
+                    )
+
+            augmentation_energy_added = list(
+                getattr(sim_output, "augmentation_energy_added_mwh", [])
+            )
+            if len(augmentation_energy_added) < len(results_for_run):
+                augmentation_energy_added.extend([0.0] * (len(results_for_run) - len(augmentation_energy_added)))
+            elif len(augmentation_energy_added) > len(results_for_run):
+                augmentation_energy_added = augmentation_energy_added[: len(results_for_run)]
+
+            augmentation_costs_usd = [
+                add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
+                for add_e in augmentation_energy_added
+            ]
+
+            economics_inputs = EconomicInputs(
+                capex_musd=capex_musd_run,
+                fixed_opex_pct_of_capex=fixed_opex_pct,
+                fixed_opex_musd=fixed_opex_musd,
+                variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+                discount_rate=discount_rate,
+            )
+
+            economics_output_run = compute_lcoe_lcos_with_augmentation_fallback(
+                [r.delivered_firm_mwh for r in results_for_run],
+                [r.bess_to_contract_mwh for r in results_for_run],
+                economics_inputs,
+                augmentation_costs_usd=augmentation_costs_usd,
+            )
+
+            return (
+                capex_musd_run,
+                capex_from_rates_usd,
+                augmentation_unit_rate_usd_per_kwh,
+                augmentation_costs_usd,
+                economics_output_run,
+            )
+
+        (
+            capex_musd,
+            capex_from_rates_usd,
+            augmentation_unit_rate_usd_per_kwh,
+            augmentation_costs_usd,
+            economics_output,
+        ) = build_economics_output_for_run(sim_output, cfg)
+
         if capex_from_rates_usd > 0:
             st.caption(
                 f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
             )
-
-        augmentation_unit_rate_usd_per_kwh = 0.0
-        if cfg.initial_usable_mwh > 0:
-            if use_bess_rate:
-                augmentation_unit_rate_usd_per_kwh = bess_rate
-            elif capex_musd > 0:
-                augmentation_unit_rate_usd_per_kwh = (capex_musd * 1_000_000.0) / (
-                    cfg.initial_usable_mwh * 1_000.0
-                )
-
-        augmentation_energy_added = list(
-            getattr(sim_output, "augmentation_energy_added_mwh", [])
-        )
-        if len(augmentation_energy_added) < len(results):
-            augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
-        elif len(augmentation_energy_added) > len(results):
-            augmentation_energy_added = augmentation_energy_added[: len(results)]
-
-        augmentation_costs_usd = [
-            add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
-            for add_e in augmentation_energy_added
-        ]
-
-        economics_inputs = EconomicInputs(
-            capex_musd=capex_musd,
-            fixed_opex_pct_of_capex=fixed_opex_pct,
-            fixed_opex_musd=fixed_opex_musd,
-            variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
-            discount_rate=discount_rate,
-        )
-
-        economics_output = compute_lcoe_lcos_with_augmentation_fallback(
-            [r.delivered_firm_mwh for r in results],
-            [r.bess_to_contract_mwh for r in results],
-            economics_inputs,
-            augmentation_costs_usd=augmentation_costs_usd,
-        )
 
         def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
             return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
@@ -1806,46 +1816,90 @@ def run_app():
         st.markdown("---")
         st.markdown("#### LCOE vs. initial BESS capacity")
         st.caption(
-            "Paste quick what-if data to visualize how levelized cost shifts with initial usable "
-            "BESS energy. The lowest point is highlighted as the \"sweet spot.\""
+            "Sweep initial usable BESS energy, rerun the simulation for each point, and recompute "
+            "LCOE using the same cost assumptions. The lowest point is highlighted as the sweet "
+            "spot."
         )
 
-        default_lcoe_series = """bess_mwh,lcoe_usd_per_mwh
-80,65.0
-120,64.5
-160,65.3
-200,67.2
-240,72.1
-"""
-
-        data_text = st.text_area(
-            "BESS capacity (MWh) and LCOE ($/MWh)",
-            value=default_lcoe_series,
-            help=(
-                "Provide two columns named 'bess_mwh' and 'lcoe_usd_per_mwh'."
-                " Values can be comma- or tab-separated."
-            ),
-            height=180,
-        )
+        default_min = max(10.0, cfg.initial_usable_mwh * 0.5)
+        default_max = max(default_min + 10.0, cfg.initial_usable_mwh * 1.5)
+        sweep_c1, sweep_c2, sweep_c3 = st.columns(3)
+        with sweep_c1:
+            sweep_min = st.number_input(
+                "Sweep minimum (MWh)",
+                min_value=1.0,
+                value=float(round(default_min, 1)),
+                step=1.0,
+                help="Lowest initial usable BESS energy to test.",
+            )
+        with sweep_c2:
+            sweep_max = st.number_input(
+                "Sweep maximum (MWh)",
+                min_value=sweep_min + 1.0,
+                value=float(round(default_max, 1)),
+                step=1.0,
+                help="Highest initial usable BESS energy to test.",
+            )
+        with sweep_c3:
+            sweep_step = st.number_input(
+                "Sweep step (MWh)",
+                min_value=1.0,
+                value=float(max(1.0, (sweep_max - sweep_min) / 8)),
+                step=1.0,
+                help="Increment between capacities. Smaller steps run more simulations.",
+            )
 
         chart_container = st.container()
-        try:
-            lcoe_df = parse_lcoe_series(data_text)
-            lcoe_df["bess_mwh"] = pd.to_numeric(lcoe_df["bess_mwh"], errors="coerce")
-            lcoe_df["lcoe_usd_per_mwh"] = pd.to_numeric(
-                lcoe_df["lcoe_usd_per_mwh"], errors="coerce"
-            )
-            lcoe_df = lcoe_df.dropna(subset=["bess_mwh", "lcoe_usd_per_mwh"]).sort_values(
-                "bess_mwh"
-            )
-        except Exception as exc:  # pragma: no cover - defensive around free-form input
-            chart_container.error(
-                "Could not parse the provided series. Ensure the headers are present and numeric values "
-                f"are valid (details: {exc})."
-            )
+        if sweep_step <= 0:
+            chart_container.error("Sweep step must be positive.")
         else:
+            sweep_capacities = np.arange(sweep_min, sweep_max + 0.001, sweep_step)
+            sweep_rows = []
+            sweep_errors: List[str] = []
+
+            with st.spinner("Running sensitivity sweep..."):
+                for cap in sweep_capacities:
+                    candidate_cfg = replace(cfg, initial_usable_mwh=float(cap))
+                    try:
+                        sweep_output = simulate_project(
+                            candidate_cfg, pv_df, cycle_df, dod_override, need_logs=False
+                        )
+                    except ValueError as exc:  # noqa: BLE001
+                        sweep_errors.append(f"{cap:,.0f} MWh: {exc}")
+                        continue
+
+                    (
+                        _,
+                        _,
+                        _,
+                        _,
+                        sweep_econ,
+                    ) = build_economics_output_for_run(sweep_output, candidate_cfg)
+
+                    if math.isnan(sweep_econ.lcoe_usd_per_mwh):
+                        sweep_errors.append(f"{cap:,.0f} MWh: LCOE not available (no delivered energy)")
+                        continue
+
+                    sweep_rows.append(
+                        {
+                            "bess_mwh": float(cap),
+                            "lcoe_usd_per_mwh": sweep_econ.lcoe_usd_per_mwh,
+                        }
+                    )
+
+            lcoe_df = (
+                pd.DataFrame(sweep_rows)
+                .dropna(subset=["bess_mwh", "lcoe_usd_per_mwh"])
+                .sort_values("bess_mwh")
+            )
+
+            if sweep_errors:
+                chart_container.warning(
+                    "Some sweep points were skipped: " + "; ".join(sorted(set(sweep_errors)))
+                )
+
             if lcoe_df.empty:
-                chart_container.info("Provide at least one row to plot the sensitivity curve.")
+                chart_container.info("No valid sweep points to plot. Adjust the range or inputs.")
             else:
                 sweet_spot = lcoe_df.loc[lcoe_df["lcoe_usd_per_mwh"].idxmin()]
                 sweet_capacity = sweet_spot["bess_mwh"]
@@ -1854,7 +1908,7 @@ def run_app():
                 chart_container.metric(
                     "Sweet spot",
                     f"{sweet_capacity:,.0f} MWh",
-                    help="The capacity with the lowest LCOE in the provided series.",
+                    help="Capacity with the lowest recomputed LCOE across the sweep.",
                 )
 
                 base_chart = alt.Chart(lcoe_df).encode(
@@ -1883,7 +1937,7 @@ def run_app():
                 chart_container.altair_chart(chart, use_container_width=True)
 
                 chart_container.caption(
-                    "Data is treated as-is; no interpolation or unit conversions are applied."
+                    "Each point reruns the simulation with the specified starting energy and applies the same cost inputs."
                 )
 
     # --------- KPI Traffic-lights ----------
