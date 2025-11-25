@@ -2031,11 +2031,15 @@ def run_app():
         else:
             opts.append(f"- **Option B (ΔSOC + RTE)**: RTE already at limit for this option (current {eta_rt_now*100:.1f}%, cap {RTE_RT_MAX*100:.0f}%).")
 
-        # OPTION C — Energy at BOL to close the gap (with adopted ΔSOC & RTE)
+        # OPTION C — Energy/contract levers when ΔSOC + RTE still fall short
         if ebol_delta > 1e-6:
-            opts.append(f"- **Option C (Energy)**: Increase BOL usable by **{ebol_delta:,.1f} MWh** (to **{ebol_req:,.1f} MWh**).")
+            contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
+            opts.append(
+                f"- **Option C (Energy/contract)**: Need ~+{ebol_delta:,.1f} MWh usable (to {ebol_req:,.1f} MWh) to hit the full target. "
+                f"If adding that at BOL is impractical, consider **staged Threshold/SOH augmentation** or **right-size the contract to ~{contract_with_current_energy:,.2f} MW** under the proposed ΔSOC/RTE."
+            )
         else:
-            opts.append(f"- **Option C (Energy)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
+            opts.append(f"- **Option C (Energy/contract)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
 
         st.markdown("**Bounded recommendations:**")
         st.markdown("\n".join(opts))
@@ -2051,8 +2055,9 @@ def run_app():
                 f"**Improve roundtrip RTE** to **{rte_rt_adopt*100:,.1f}%** → delivers ~{deliverable_soc_rte:,.1f} MWh/day."
             )
         if ebol_delta > 1e-6:
+            contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
             action_ladder.append(
-                f"**Add usable energy at BOL** by **{ebol_delta:,.1f} MWh** (targets ~{deliverable_full:,.1f} MWh/day)."
+                f"**Close remaining energy gap**: either plan staged augmentation (~+{ebol_delta:,.1f} MWh usable over life) or resize contract toward **{contract_with_current_energy:,.2f} MW** so ΔSOC/RTE improvements can carry the final year."
             )
         if charge_deficit_day > 1e-3:
             action_ladder.append(
