@@ -1778,6 +1778,9 @@ def run_app():
             economics_output,
         ) = build_economics_output_for_run(sim_output, cfg)
 
+        # Reuse simulation-year outputs for downstream economics sensitivity charts.
+        results_for_run = sim_output.results
+
         if capex_from_rates_usd > 0:
             st.caption(
                 f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
