@@ -70,7 +70,7 @@ import pandas as pd
 from pathlib import Path
 import altair as alt
 from fpdf import FPDF
-from economics import EconomicInputs, compute_lcoe_lcos
+from economics import EconomicInputs, EconomicOutputs, compute_lcoe_lcos
 from economics_helpers import compute_lcoe_lcos_with_augmentation_fallback
 from streamlit.errors import StreamlitSecretNotFoundError
 
@@ -225,6 +225,7 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         "Failed to read PV profile. "
         f"Looked for: {path_candidates}. Last error: {last_err}"
     )
+
 
 def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
     """Read cycle model Excel with column pairs DoD*_Cycles / DoD*_Ret(%)."""
@@ -1708,56 +1709,82 @@ def run_app():
                 help="Extra fixed OPEX not tied to CAPEX percentage.",
             )
 
-        capex_from_rates_usd = 0.0
-        if use_bess_rate:
-            capex_from_rates_usd += bess_rate * cfg.initial_usable_mwh * 1_000.0
-        if use_pv_rate and results:
-            capex_from_rates_usd += pv_rate * results[0].pv_to_contract_mwh * 1_000.0
-        if use_epc_rate and results:
-            capex_from_rates_usd += epc_rate * results[0].expected_firm_mwh * 1_000.0
+        def build_economics_output_for_run(
+            sim_output: SimulationOutput, cfg_for_run: SimConfig
+        ) -> Tuple[float, float, float, List[float], Any]:
+            """Compute economics for a simulation using current discount and cost inputs."""
 
-        capex_musd = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+            capex_from_rates_usd = 0.0
+            results_for_run = sim_output.results
+            if use_bess_rate:
+                capex_from_rates_usd += bess_rate * cfg_for_run.initial_usable_mwh * 1_000.0
+            if use_pv_rate and results_for_run:
+                capex_from_rates_usd += pv_rate * results_for_run[0].pv_to_contract_mwh * 1_000.0
+            if use_epc_rate and results_for_run:
+                capex_from_rates_usd += epc_rate * results_for_run[0].expected_firm_mwh * 1_000.0
+
+            capex_musd_run = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+
+            augmentation_unit_rate_usd_per_kwh = 0.0
+            if cfg_for_run.initial_usable_mwh > 0:
+                if use_bess_rate:
+                    augmentation_unit_rate_usd_per_kwh = bess_rate
+                elif capex_musd_run > 0:
+                    augmentation_unit_rate_usd_per_kwh = (capex_musd_run * 1_000_000.0) / (
+                        cfg_for_run.initial_usable_mwh * 1_000.0
+                    )
+
+            augmentation_energy_added = list(
+                getattr(sim_output, "augmentation_energy_added_mwh", [])
+            )
+            if len(augmentation_energy_added) < len(results_for_run):
+                augmentation_energy_added.extend([0.0] * (len(results_for_run) - len(augmentation_energy_added)))
+            elif len(augmentation_energy_added) > len(results_for_run):
+                augmentation_energy_added = augmentation_energy_added[: len(results_for_run)]
+
+            augmentation_costs_usd = [
+                add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
+                for add_e in augmentation_energy_added
+            ]
+
+            economics_inputs = EconomicInputs(
+                capex_musd=capex_musd_run,
+                fixed_opex_pct_of_capex=fixed_opex_pct,
+                fixed_opex_musd=fixed_opex_musd,
+                variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+                discount_rate=discount_rate,
+            )
+
+            economics_output_run = compute_lcoe_lcos_with_augmentation_fallback(
+                [r.delivered_firm_mwh for r in results_for_run],
+                [r.bess_to_contract_mwh for r in results_for_run],
+                economics_inputs,
+                augmentation_costs_usd=augmentation_costs_usd,
+            )
+
+            return (
+                capex_musd_run,
+                capex_from_rates_usd,
+                augmentation_unit_rate_usd_per_kwh,
+                augmentation_costs_usd,
+                economics_output_run,
+            )
+
+        (
+            capex_musd,
+            capex_from_rates_usd,
+            augmentation_unit_rate_usd_per_kwh,
+            augmentation_costs_usd,
+            economics_output,
+        ) = build_economics_output_for_run(sim_output, cfg)
+
+        # Reuse simulation-year outputs for downstream economics sensitivity charts.
+        results_for_run = sim_output.results
+
         if capex_from_rates_usd > 0:
             st.caption(
                 f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
             )
-
-        augmentation_unit_rate_usd_per_kwh = 0.0
-        if cfg.initial_usable_mwh > 0:
-            if use_bess_rate:
-                augmentation_unit_rate_usd_per_kwh = bess_rate
-            elif capex_musd > 0:
-                augmentation_unit_rate_usd_per_kwh = (capex_musd * 1_000_000.0) / (
-                    cfg.initial_usable_mwh * 1_000.0
-                )
-
-        augmentation_energy_added = list(
-            getattr(sim_output, "augmentation_energy_added_mwh", [])
-        )
-        if len(augmentation_energy_added) < len(results):
-            augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
-        elif len(augmentation_energy_added) > len(results):
-            augmentation_energy_added = augmentation_energy_added[: len(results)]
-
-        augmentation_costs_usd = [
-            add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh
-            for add_e in augmentation_energy_added
-        ]
-
-        economics_inputs = EconomicInputs(
-            capex_musd=capex_musd,
-            fixed_opex_pct_of_capex=fixed_opex_pct,
-            fixed_opex_musd=fixed_opex_musd,
-            variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
-            discount_rate=discount_rate,
-        )
-
-        economics_output = compute_lcoe_lcos_with_augmentation_fallback(
-            [r.delivered_firm_mwh for r in results],
-            [r.bess_to_contract_mwh for r in results],
-            economics_inputs,
-            augmentation_costs_usd=augmentation_costs_usd,
-        )
 
         def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
             return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
@@ -1788,6 +1815,140 @@ def run_app():
             f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
             "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
         )
+
+        st.markdown("---")
+        st.markdown("#### LCOE & LCOS sensitivity (±20%)")
+        st.caption(
+            "Adjust each cost lever by ±20% while holding other assumptions constant to see how "
+            "LCOE and LCOS respond."
+        )
+
+        annual_delivered_mwh = [r.delivered_firm_mwh for r in results_for_run]
+        annual_bess_mwh = [r.bess_to_contract_mwh for r in results_for_run]
+
+        def _recompute_economics(
+            capex_musd_override: float,
+            fixed_opex_pct_override: float,
+            fixed_opex_musd_override: float,
+            variable_opex_override: float,
+            discount_rate_override: float,
+        ) -> EconomicOutputs:
+            """Return LCOE and LCOS after applying the provided economics inputs."""
+
+            updated_inputs = EconomicInputs(
+                capex_musd=capex_musd_override,
+                fixed_opex_pct_of_capex=fixed_opex_pct_override,
+                fixed_opex_musd=fixed_opex_musd_override,
+                variable_opex_usd_per_mwh=variable_opex_override,
+                discount_rate=discount_rate_override,
+            )
+
+            return compute_lcoe_lcos_with_augmentation_fallback(
+                annual_delivered_mwh,
+                annual_bess_mwh,
+                updated_inputs,
+                augmentation_costs_usd=augmentation_costs_usd,
+            )
+
+        lever_definitions = [
+            ("CAPEX (USD million)", "capex_musd", capex_musd),
+            ("Fixed OPEX (% of CAPEX)", "fixed_opex_pct", fixed_opex_pct),
+            ("Fixed OPEX (USD million/yr)", "fixed_opex_musd", fixed_opex_musd),
+            (
+                "Variable OPEX ($/MWh delivered)",
+                "variable_opex_usd_per_mwh",
+                variable_opex_usd_per_mwh,
+            ),
+            ("Discount rate", "discount_rate", discount_rate),
+        ]
+
+        sensitivity_rows: List[Dict[str, Any]] = []
+        factors = [-0.2, 0.0, 0.2]
+        change_labels = {factor: f"{factor:+.0%}" for factor in factors}
+
+        with st.spinner("Computing sensitivity heatmaps..."):
+            for lever_label, lever_key, base_value in lever_definitions:
+                if base_value < 0:
+                    continue
+
+                for factor in factors:
+                    capex_test = capex_musd
+                    fixed_pct_test = fixed_opex_pct
+                    fixed_musd_test = fixed_opex_musd
+                    variable_opex_test = variable_opex_usd_per_mwh
+                    discount_rate_test = discount_rate
+
+                    scaled_value = max(0.0, base_value * (1.0 + factor))
+
+                    if lever_key == "capex_musd":
+                        capex_test = scaled_value
+                    elif lever_key == "fixed_opex_pct":
+                        fixed_pct_test = scaled_value
+                    elif lever_key == "fixed_opex_musd":
+                        fixed_musd_test = scaled_value
+                    elif lever_key == "variable_opex_usd_per_mwh":
+                        variable_opex_test = scaled_value
+                    elif lever_key == "discount_rate":
+                        discount_rate_test = scaled_value
+
+                    economics_outputs = _recompute_economics(
+                        capex_test,
+                        fixed_pct_test,
+                        fixed_musd_test,
+                        variable_opex_test,
+                        discount_rate_test,
+                    )
+
+                    sensitivity_rows.append(
+                        {
+                            "Lever": lever_label,
+                            "Change": change_labels[factor],
+                            "order": factor,
+                            "lcoe_usd_per_mwh": economics_outputs.lcoe_usd_per_mwh,
+                            "lcos_usd_per_mwh": economics_outputs.lcos_usd_per_mwh,
+                        }
+                    )
+
+        sensitivity_df = pd.DataFrame(sensitivity_rows)
+        if sensitivity_df.empty:
+            st.info("Unable to compute sensitivity results with the current inputs.")
+        else:
+            change_order = [change_labels[f] for f in factors]
+            lever_order = [lever_label for lever_label, _, _ in lever_definitions]
+
+            for metric_col, title in [
+                ("lcoe_usd_per_mwh", "LCOE sensitivity ($/MWh delivered)"),
+                ("lcos_usd_per_mwh", "LCOS sensitivity ($/MWh from BESS)"),
+            ]:
+                metric_df = sensitivity_df.dropna(subset=[metric_col])
+                if metric_df.empty:
+                    st.warning(f"No data available to plot {title} heatmap.")
+                    continue
+
+                base_chart = alt.Chart(metric_df).encode(
+                    x=alt.X("Change:N", sort=change_order, title="Lever adjustment"),
+                    y=alt.Y("Lever:N", sort=lever_order, title=""),
+                    color=alt.Color(
+                        f"{metric_col}:Q",
+                        title=title,
+                        scale=alt.Scale(scheme="blues"),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("Lever", title="Lever"),
+                        alt.Tooltip("Change", title="Adjustment"),
+                        alt.Tooltip(metric_col, title=title, format=".1f"),
+                    ],
+                ).properties(title=title, height=220)
+
+                text_layer = base_chart.mark_text(baseline="middle", color="black").encode(
+                    text=alt.Text(f"{metric_col}:Q", format=".1f")
+                )
+
+                st.altair_chart(base_chart.mark_rect() + text_layer, use_container_width=True)
+
+            st.caption(
+                "Each cell recomputes LCOE/LCOS by scaling one lever ±20% and keeping all other assumptions fixed."
+            )
 
     # --------- KPI Traffic-lights ----------
     st.markdown("### KPI Health")
