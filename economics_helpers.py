@@ -49,7 +49,13 @@ def compute_lcoe_lcos_with_augmentation_fallback(
             inputs,
             augmentation_costs_usd=augmentation_costs_usd,
         )
-    except TypeError:
+    except TypeError as exc:
+        # Only fall back when the TypeError indicates the compute function rejected the
+        # augmentation keyword argument. Re-raise other TypeErrors (e.g., input validation)
+        # so calling code is not masked.
+        if "augmentation_costs_usd" not in str(exc):
+            raise
+
         discounted_augmentation_costs = _discount_augmentation_costs(
             augmentation_costs_usd, inputs.discount_rate
         )
