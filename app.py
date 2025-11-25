@@ -1941,6 +1941,15 @@ def run_app():
     colD.metric("EOY power avail (final)", f"{final.eoy_power_mw:,.2f} MW",
                 help="Availability-adjusted final-year power capability.")
 
+    # Quick severity read: give a nudge before diving into options
+    gap_ratio = shortfall_day_now / target_day if target_day else 0.0
+    if shortfall_day_now <= 0.05:  # effectively on target
+        st.success("Final-year deliverable meets the target within rounding noise.")
+    elif gap_ratio <= 0.10:
+        st.info("Minor gap: adjust one knob below to clear a small shortfall.")
+    else:
+        st.warning("Material gap: use the action ladder below to close the deficit.")
+
     # --- 1) Power vs Energy limiter ---
     if final.eoy_power_mw + 1e-9 < cfg.contracted_mw:
         st.error(
@@ -1978,6 +1987,11 @@ def run_app():
             floor_needed = max(SOC_FLOOR_MIN, cfg.soc_ceiling - delta_soc_goal)
             return (f"(e.g., keep floor at {cfg.soc_floor*100:.0f}% → raise ceiling to **{ceil_needed*100:.0f}%**, "
                     f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
+
+        # How far each knob alone would push deliverable/day
+        deliverable_soc_only = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * (eta_rt_now ** 0.5)
+        deliverable_soc_rte = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5)
+        deliverable_full = ebol_req * soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5)
 
         # --- 3) PV charge sufficiency check under the adopted RTE ---
         pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
@@ -2026,6 +2040,30 @@ def run_app():
         st.markdown("**Bounded recommendations:**")
         st.markdown("\n".join(opts))
 
+        # --- 5b) Action ladder (fastest wins first) ---
+        action_ladder: List[str] = []
+        if delta_soc_adopt > delta_soc_now + 1e-9:
+            action_ladder.append(
+                f"**Widen ΔSOC** to **{delta_soc_adopt*100:,.1f}%** → delivers ~{deliverable_soc_only:,.1f} MWh/day."
+            )
+        if rte_rt_adopt > eta_rt_now + 1e-9:
+            action_ladder.append(
+                f"**Improve roundtrip RTE** to **{rte_rt_adopt*100:,.1f}%** → delivers ~{deliverable_soc_rte:,.1f} MWh/day."
+            )
+        if ebol_delta > 1e-6:
+            action_ladder.append(
+                f"**Add usable energy at BOL** by **{ebol_delta:,.1f} MWh** (targets ~{deliverable_full:,.1f} MWh/day)."
+            )
+        if charge_deficit_day > 1e-3:
+            action_ladder.append(
+                f"**Widen charge window** by **+{extra_charge_hours_day:,.2f} h/day** or create shoulder headroom to absorb PV."
+            )
+        if not action_ladder:
+            action_ladder.append("All knobs already at bounds for the target—consider reducing the contract or shifting delivery windows.")
+
+        st.markdown("**Action ladder (work down the list):**")
+        st.markdown("\n".join(f"- {idx}) {item}" for idx, item in enumerate(action_ladder, start=1)))
+
         # --- 6) PV charge sufficiency + charge-hours hint ---
         st.caption(
             f"PV charge required/day for BESS share ≈ **{pv_charge_req_day:,.1f} MWh** "
@@ -2041,16 +2079,21 @@ def run_app():
         else:
             st.success("PV charge looks sufficient at the proposed settings.")
 
-        # --- 7) Cycles guardrail hint ---
+        # --- 7) Implied EFC guardrail
         if efc_year_prop > EFC_YR_YELLOW:
             st.error(
-                f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}): exceeds typical guardrails. "
+                f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}%): exceeds typical guardrails. "
                 "Prefer **augmentation** (Threshold/SOH) or reduce ΔSOC."
             )
         elif efc_year_prop > EFC_YR_GREEN:
-            st.warning(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}**: near vendor guardrail; consider augmentation.")
+            st.warning(
+                f"Implied cycles ≈ **{efc_year_prop:,.0f} EFC/yr** at proposed settings; check warranty guardrails "
+                f"(soft limit {EFC_YR_GREEN:.0f}, hard {EFC_YR_YELLOW:.0f})."
+            )
         else:
-            st.info(f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** under proposed ΔSOC/Ebol looks reasonable.")
+            st.caption(
+                f"Implied cycles ≈ {efc_year_prop:,.0f} EFC/yr at the proposed ΔSOC bucket ({dod_key_prop}%)."
+            )
 
     st.markdown("---")
 
