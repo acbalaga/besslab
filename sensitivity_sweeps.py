@@ -102,6 +102,8 @@ def run_sensitivity_grid(
                         "compliance_pct": summary.compliance,
                         "bess_share_pct": summary.bess_share_of_firm,
                         "shortfall_mwh": summary.total_shortfall_mwh,
+                        "charge_discharge_ratio": summary.charge_discharge_ratio,
+                        "pv_capture_ratio": summary.pv_capture_ratio,
                     }
                 )
 

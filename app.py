@@ -1622,8 +1622,8 @@ def run_app():
 
     with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
         st.caption(
-            "Pick quick ranges and automatically run combinations without blocking the main "
-            "simulation."
+            "Run quick grids of PV/SOC/RTE combos without blocking the main simulation, then "
+            "surface the most promising settings."
         )
 
         sweep_col1, sweep_col2, sweep_col3 = st.columns(3)
@@ -1717,27 +1717,86 @@ def run_app():
             if sweep_df.empty:
                 st.info("No sweep results generated; adjust ranges and retry.")
             else:
+                base_compliance = summary.compliance
+                base_shortfall = summary.total_shortfall_mwh
+
+                sweep_df = sweep_df.assign(
+                    compliance_delta_pct=sweep_df["compliance_pct"] - base_compliance,
+                    shortfall_delta_mwh=base_shortfall - sweep_df["shortfall_mwh"],
+                )
+
+                ranked_df = sweep_df.sort_values(
+                    ["compliance_pct", "shortfall_mwh"], ascending=[False, True]
+                )
+                top_rows = ranked_df.head(5)
+                st.markdown("**Top sweep picks (sorted by delivery, then shortfall)**")
                 st.dataframe(
-                    sweep_df.round(
+                    top_rows.round(
                         {
                             "compliance_pct": 2,
                             "bess_share_pct": 2,
                             "shortfall_mwh": 1,
+                            "compliance_delta_pct": 2,
+                            "shortfall_delta_mwh": 1,
                         }
                     ),
                     hide_index=True,
                     use_container_width=True,
                 )
 
+                pv_span = (
+                    sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().max()
+                    - sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().min()
+                )
+                rte_span = (
+                    sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().max()
+                    - sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().min()
+                )
+                st.caption(
+                    "PV oversize swing across tested points: "
+                    f"{pv_span:,.2f} compliance points. "
+                    "RTE swing: "
+                    f"{rte_span:,.2f} compliance points."
+                )
+
+                metric_options = {
+                    "Delivery compliance (%)": {
+                        "field": "compliance_pct",
+                        "format": ".1f",
+                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=100),
+                        "title": "Delivery compliance (%)",
+                        "higher_is_better": True,
+                    },
+                    "Shortfall (MWh)": {
+                        "field": "shortfall_mwh",
+                        "format": ",.0f",
+                        "scale": alt.Scale(scheme="blues", reverse=True),
+                        "title": "Total shortfall (MWh)",
+                        "higher_is_better": False,
+                    },
+                }
+
+                selected_metric = st.radio(
+                    "Heatmap focus",
+                    list(metric_options.keys()),
+                    horizontal=True,
+                    index=0,
+                )
+                metric_cfg = metric_options[selected_metric]
+                metric_field = metric_cfg["field"]
+
+                st.markdown(
+                    "**Heatmaps by SOC window — scan for the darkest tiles to find better settings.**"
+                )
                 for (floor, ceiling), group in sweep_df.groupby(["soc_floor", "soc_ceiling"]):
                     st.markdown(f"**SOC window {floor:.2f}–{ceiling:.2f}**")
                     base_chart = alt.Chart(group).encode(
                         x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
                         y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
                         color=alt.Color(
-                            "compliance_pct:Q",
-                            title="Delivery compliance (%)",
-                            scale=alt.Scale(scheme="greens"),
+                            f"{metric_field}:Q",
+                            title=metric_cfg["title"],
+                            scale=metric_cfg["scale"],
                         ),
                         tooltip=[
                             alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
@@ -1749,10 +1808,20 @@ def run_app():
                     )
 
                     text_layer = base_chart.mark_text(color="black").encode(
-                        text=alt.Text("compliance_pct:Q", format=".1f")
+                        text=alt.Text(f"{metric_field}:Q", format=metric_cfg["format"])
                     )
+
+                    best_row = (
+                        group.sort_values(metric_field, ascending=not metric_cfg["higher_is_better"])
+                        .iloc[0]
+                    )
+                    best_point = alt.Chart(pd.DataFrame([best_row])).mark_point(
+                        shape="star", size=120, color="black"
+                    ).encode(x="rte_roundtrip:Q", y="pv_oversize_factor:Q")
+
                     st.altair_chart(
-                        base_chart.mark_rect() + text_layer, use_container_width=True
+                        base_chart.mark_rect() + text_layer + best_point,
+                        use_container_width=True,
                     )
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
