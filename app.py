@@ -1699,6 +1699,9 @@ def run_app():
             "Run sensitivity sweeps", use_container_width=True, disabled=not soc_windows
         )
 
+        if "sensitivity_sweep_results" not in st.session_state:
+            st.session_state["sensitivity_sweep_results"] = None
+
         if run_sweeps:
             enforce_rate_limit()
             with st.spinner("Running sensitivity sweep grid..."):
@@ -1716,6 +1719,7 @@ def run_app():
 
             if sweep_df.empty:
                 st.info("No sweep results generated; adjust ranges and retry.")
+                st.session_state["sensitivity_sweep_results"] = None
             else:
                 base_compliance = summary.compliance
                 base_shortfall = summary.total_shortfall_mwh
@@ -1724,148 +1728,154 @@ def run_app():
                     compliance_delta_pct=sweep_df["compliance_pct"] - base_compliance,
                     shortfall_delta_mwh=base_shortfall - sweep_df["shortfall_mwh"],
                 )
+                st.session_state["sensitivity_sweep_results"] = sweep_df
 
-                ranked_df = sweep_df.sort_values(
-                    ["compliance_pct", "shortfall_mwh"], ascending=[False, True]
+        sweep_df = st.session_state.get("sensitivity_sweep_results")
+
+        if sweep_df is not None:
+            ranked_df = sweep_df.sort_values(
+                ["compliance_pct", "shortfall_mwh"], ascending=[False, True]
+            )
+            top_rows = ranked_df.head(5)
+            st.markdown("**Top sweep picks (sorted by delivery, then shortfall)**")
+            st.dataframe(
+                top_rows.round(
+                    {
+                        "compliance_pct": 2,
+                        "bess_share_pct": 2,
+                        "shortfall_mwh": 1,
+                        "compliance_delta_pct": 2,
+                        "shortfall_delta_mwh": 1,
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            pv_span = (
+                sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().max()
+                - sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().min()
+            )
+            rte_span = (
+                sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().max()
+                - sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().min()
+            )
+            st.caption(
+                "PV oversize swing across tested points: "
+                f"{pv_span:,.2f} compliance points. "
+                "RTE swing: "
+                f"{rte_span:,.2f} compliance points."
+            )
+
+            metric_options = {
+                "Compliance delta vs base (pct-pts)": {
+                    "field": "compliance_delta_pct",
+                    "format": ".2f",
+                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                    "title": "Δ compliance (pct-pts)",
+                    "higher_is_better": True,
+                    "is_delta": True,
+                },
+                "Total shortfall (MWh)": {
+                    "field": "shortfall_mwh",
+                    "format": ",.0f",
+                    "scale": alt.Scale(scheme="blues", reverse=True),
+                    "title": "Total shortfall (MWh)",
+                    "higher_is_better": False,
+                    "is_delta": False,
+                },
+                "Shortfall delta vs base (MWh)": {
+                    "field": "shortfall_delta_mwh",
+                    "format": ",.0f",
+                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                    "title": "Δ shortfall (MWh)",
+                    "higher_is_better": True,
+                    "is_delta": True,
+                },
+                "BESS share of firm (%)": {
+                    "field": "bess_share_pct",
+                    "format": ".2f",
+                    "scale": alt.Scale(scheme="greens"),
+                    "title": "BESS share of firm (%)",
+                    "higher_is_better": True,
+                    "is_delta": False,
+                },
+            }
+
+            selected_metric = st.radio(
+                "Heatmap focus",
+                list(metric_options.keys()),
+                horizontal=True,
+                index=0,
+            )
+            metric_cfg = metric_options[selected_metric]
+            metric_field = metric_cfg["field"]
+
+            soc_options = {
+                f"{floor:.2f}–{ceiling:.2f}": (floor, ceiling)
+                for floor, ceiling in sorted(
+                    sweep_df[["soc_floor", "soc_ceiling"]].drop_duplicates().itertuples(
+                        index=False, name=None
+                    )
                 )
-                top_rows = ranked_df.head(5)
-                st.markdown("**Top sweep picks (sorted by delivery, then shortfall)**")
-                st.dataframe(
-                    top_rows.round(
-                        {
-                            "compliance_pct": 2,
-                            "bess_share_pct": 2,
-                            "shortfall_mwh": 1,
-                            "compliance_delta_pct": 2,
-                            "shortfall_delta_mwh": 1,
-                        }
+            }
+            selected_soc_label = st.selectbox(
+                "SOC window shown in heatmap", list(soc_options.keys()), index=0
+            )
+            selected_floor, selected_ceiling = soc_options[selected_soc_label]
+
+            st.markdown(
+                "**Heatmap (PV oversize × RTE) for the selected SOC window, following the LCOE/LCOS style.**"
+            )
+            group = sweep_df[
+                (sweep_df["soc_floor"] == selected_floor)
+                & (sweep_df["soc_ceiling"] == selected_ceiling)
+            ]
+            if group.empty:
+                st.info("No sweep points available for the selected SOC window.")
+            else:
+                base_chart = alt.Chart(group).encode(
+                    x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
+                    y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
+                    color=alt.Color(
+                        f"{metric_field}:Q",
+                        title=metric_cfg["title"],
+                        scale=metric_cfg["scale"],
                     ),
-                    hide_index=True,
+                    tooltip=[
+                        alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
+                        alt.Tooltip("pv_oversize_factor", title="PV oversize", format=".2f"),
+                        alt.Tooltip("compliance_pct", title="Compliance %", format=".2f"),
+                        alt.Tooltip("bess_share_pct", title="BESS share %", format=".2f"),
+                        alt.Tooltip("shortfall_mwh", title="Shortfall (MWh)", format=",.1f"),
+                        alt.Tooltip("compliance_delta_pct", title="Δ compliance", format=".2f"),
+                        alt.Tooltip("shortfall_delta_mwh", title="Δ shortfall", format=",.0f"),
+                    ],
+                )
+
+                text_layer = base_chart.mark_text(color="black").encode(
+                    text=alt.Text(f"{metric_field}:Q", format=metric_cfg["format"])
+                )
+
+                best_row = (
+                    group.sort_values(metric_field, ascending=not metric_cfg["higher_is_better"])
+                    .iloc[0]
+                )
+                best_point = alt.Chart(pd.DataFrame([best_row])).mark_point(
+                    shape="star", size=120, color="black"
+                ).encode(x="rte_roundtrip:Q", y="pv_oversize_factor:Q")
+
+                st.altair_chart(
+                    base_chart.mark_rect() + text_layer + best_point,
                     use_container_width=True,
                 )
 
-                pv_span = (
-                    sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().max()
-                    - sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().min()
-                )
-                rte_span = (
-                    sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().max()
-                    - sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().min()
-                )
                 st.caption(
-                    "PV oversize swing across tested points: "
-                    f"{pv_span:,.2f} compliance points. "
-                    "RTE swing: "
-                    f"{rte_span:,.2f} compliance points."
+                    "Deltas are measured against the base run and the chart mirrors the LCOE/LCOS heatmap layout "
+                    "for faster scanning."
                 )
-
-                metric_options = {
-                    "Compliance delta vs base (pct-pts)": {
-                        "field": "compliance_delta_pct",
-                        "format": ".2f",
-                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
-                        "title": "Δ compliance (pct-pts)",
-                        "higher_is_better": True,
-                        "is_delta": True,
-                    },
-                    "Total shortfall (MWh)": {
-                        "field": "shortfall_mwh",
-                        "format": ",.0f",
-                        "scale": alt.Scale(scheme="blues", reverse=True),
-                        "title": "Total shortfall (MWh)",
-                        "higher_is_better": False,
-                        "is_delta": False,
-                    },
-                    "Shortfall delta vs base (MWh)": {
-                        "field": "shortfall_delta_mwh",
-                        "format": ",.0f",
-                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
-                        "title": "Δ shortfall (MWh)",
-                        "higher_is_better": True,
-                        "is_delta": True,
-                    },
-                    "BESS share of firm (%)": {
-                        "field": "bess_share_pct",
-                        "format": ".2f",
-                        "scale": alt.Scale(scheme="greens"),
-                        "title": "BESS share of firm (%)",
-                        "higher_is_better": True,
-                        "is_delta": False,
-                    },
-                }
-
-                selected_metric = st.radio(
-                    "Heatmap focus",
-                    list(metric_options.keys()),
-                    horizontal=True,
-                    index=0,
-                )
-                metric_cfg = metric_options[selected_metric]
-                metric_field = metric_cfg["field"]
-
-                soc_options = {
-                    f"{floor:.2f}–{ceiling:.2f}": (floor, ceiling)
-                    for floor, ceiling in sorted(
-                        sweep_df[["soc_floor", "soc_ceiling"]].drop_duplicates().itertuples(
-                            index=False, name=None
-                        )
-                    )
-                }
-                selected_soc_label = st.selectbox(
-                    "SOC window shown in heatmap", list(soc_options.keys()), index=0
-                )
-                selected_floor, selected_ceiling = soc_options[selected_soc_label]
-
-                st.markdown(
-                    "**Heatmap (PV oversize × RTE) for the selected SOC window, following the LCOE/LCOS style.**"
-                )
-                group = sweep_df[
-                    (sweep_df["soc_floor"] == selected_floor)
-                    & (sweep_df["soc_ceiling"] == selected_ceiling)
-                ]
-                if group.empty:
-                    st.info("No sweep points available for the selected SOC window.")
-                else:
-                    base_chart = alt.Chart(group).encode(
-                        x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
-                        y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
-                        color=alt.Color(
-                            f"{metric_field}:Q",
-                            title=metric_cfg["title"],
-                            scale=metric_cfg["scale"],
-                        ),
-                        tooltip=[
-                            alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
-                            alt.Tooltip("pv_oversize_factor", title="PV oversize", format=".2f"),
-                            alt.Tooltip("compliance_pct", title="Compliance %", format=".2f"),
-                            alt.Tooltip("bess_share_pct", title="BESS share %", format=".2f"),
-                            alt.Tooltip("shortfall_mwh", title="Shortfall (MWh)", format=",.1f"),
-                            alt.Tooltip("compliance_delta_pct", title="Δ compliance", format=".2f"),
-                            alt.Tooltip("shortfall_delta_mwh", title="Δ shortfall", format=",.0f"),
-                        ],
-                    )
-
-                    text_layer = base_chart.mark_text(color="black").encode(
-                        text=alt.Text(f"{metric_field}:Q", format=metric_cfg["format"])
-                    )
-
-                    best_row = (
-                        group.sort_values(metric_field, ascending=not metric_cfg["higher_is_better"])
-                        .iloc[0]
-                    )
-                    best_point = alt.Chart(pd.DataFrame([best_row])).mark_point(
-                        shape="star", size=120, color="black"
-                    ).encode(x="rte_roundtrip:Q", y="pv_oversize_factor:Q")
-
-                    st.altair_chart(
-                        base_chart.mark_rect() + text_layer + best_point,
-                        use_container_width=True,
-                    )
-
-                    st.caption(
-                        "Deltas are measured against the base run and the chart mirrors the LCOE/LCOS heatmap layout "
-                        "for faster scanning."
-                    )
+        else:
+            st.info("Run the sensitivity sweeps to populate the heatmap and ranking table.")
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
         econ_inputs_col1, econ_inputs_col2 = st.columns(2)
