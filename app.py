@@ -1760,19 +1760,37 @@ def run_app():
                 )
 
                 metric_options = {
-                    "Delivery compliance (%)": {
-                        "field": "compliance_pct",
-                        "format": ".1f",
-                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=100),
-                        "title": "Delivery compliance (%)",
+                    "Compliance delta vs base (pct-pts)": {
+                        "field": "compliance_delta_pct",
+                        "format": ".2f",
+                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                        "title": "Δ compliance (pct-pts)",
                         "higher_is_better": True,
+                        "is_delta": True,
                     },
-                    "Shortfall (MWh)": {
+                    "Total shortfall (MWh)": {
                         "field": "shortfall_mwh",
                         "format": ",.0f",
                         "scale": alt.Scale(scheme="blues", reverse=True),
                         "title": "Total shortfall (MWh)",
                         "higher_is_better": False,
+                        "is_delta": False,
+                    },
+                    "Shortfall delta vs base (MWh)": {
+                        "field": "shortfall_delta_mwh",
+                        "format": ",.0f",
+                        "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                        "title": "Δ shortfall (MWh)",
+                        "higher_is_better": True,
+                        "is_delta": True,
+                    },
+                    "BESS share of firm (%)": {
+                        "field": "bess_share_pct",
+                        "format": ".2f",
+                        "scale": alt.Scale(scheme="greens"),
+                        "title": "BESS share of firm (%)",
+                        "higher_is_better": True,
+                        "is_delta": False,
                     },
                 }
 
@@ -1785,11 +1803,29 @@ def run_app():
                 metric_cfg = metric_options[selected_metric]
                 metric_field = metric_cfg["field"]
 
-                st.markdown(
-                    "**Heatmaps by SOC window — scan for the darkest tiles to find better settings.**"
+                soc_options = {
+                    f"{floor:.2f}–{ceiling:.2f}": (floor, ceiling)
+                    for floor, ceiling in sorted(
+                        sweep_df[["soc_floor", "soc_ceiling"]].drop_duplicates().itertuples(
+                            index=False, name=None
+                        )
+                    )
+                }
+                selected_soc_label = st.selectbox(
+                    "SOC window shown in heatmap", list(soc_options.keys()), index=0
                 )
-                for (floor, ceiling), group in sweep_df.groupby(["soc_floor", "soc_ceiling"]):
-                    st.markdown(f"**SOC window {floor:.2f}–{ceiling:.2f}**")
+                selected_floor, selected_ceiling = soc_options[selected_soc_label]
+
+                st.markdown(
+                    "**Heatmap (PV oversize × RTE) for the selected SOC window, following the LCOE/LCOS style.**"
+                )
+                group = sweep_df[
+                    (sweep_df["soc_floor"] == selected_floor)
+                    & (sweep_df["soc_ceiling"] == selected_ceiling)
+                ]
+                if group.empty:
+                    st.info("No sweep points available for the selected SOC window.")
+                else:
                     base_chart = alt.Chart(group).encode(
                         x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
                         y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
@@ -1804,6 +1840,8 @@ def run_app():
                             alt.Tooltip("compliance_pct", title="Compliance %", format=".2f"),
                             alt.Tooltip("bess_share_pct", title="BESS share %", format=".2f"),
                             alt.Tooltip("shortfall_mwh", title="Shortfall (MWh)", format=",.1f"),
+                            alt.Tooltip("compliance_delta_pct", title="Δ compliance", format=".2f"),
+                            alt.Tooltip("shortfall_delta_mwh", title="Δ shortfall", format=",.0f"),
                         ],
                     )
 
@@ -1822,6 +1860,11 @@ def run_app():
                     st.altair_chart(
                         base_chart.mark_rect() + text_layer + best_point,
                         use_container_width=True,
+                    )
+
+                    st.caption(
+                        "Deltas are measured against the base run and the chart mirrors the LCOE/LCOS heatmap layout "
+                        "for faster scanning."
                     )
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
