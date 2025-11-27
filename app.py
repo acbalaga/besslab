@@ -1918,13 +1918,6 @@ def run_app():
                 )
                 / 100.0
             )
-            variable_opex_usd_per_mwh = st.number_input(
-                "Variable OPEX (USD/MWh delivered)",
-                min_value=0.0,
-                value=1.0,
-                step=0.1,
-                help="Applied to each delivered firm MWh.",
-            )
             fixed_opex_musd = st.number_input(
                 "Additional fixed OPEX (USD million/yr)",
                 min_value=0.0,
@@ -1964,7 +1957,7 @@ def run_app():
                 capex_musd=capex_musd_run,
                 fixed_opex_pct_of_capex=fixed_opex_pct,
                 fixed_opex_musd=fixed_opex_musd,
-                variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+                inflation_rate=inflation_pct / 100.0,
                 discount_rate=discount_rate,
             )
 
@@ -2004,18 +1997,7 @@ def run_app():
             blended = _usd_per_mwh_to_php_per_kwh(econ_output.lcoe_usd_per_mwh)
             bess_rate = _usd_per_mwh_to_php_per_kwh(econ_output.lcos_usd_per_mwh)
 
-            pv_discounted_mwh = econ_output.discounted_energy_mwh - econ_output.discounted_bess_energy_mwh
-            pv_rate_usd = float("nan")
-            if pv_discounted_mwh > 0 and math.isfinite(econ_output.lcos_usd_per_mwh):
-                bess_revenue = econ_output.lcos_usd_per_mwh * econ_output.discounted_bess_energy_mwh
-                remaining_cost = max(0.0, econ_output.discounted_costs_usd - bess_revenue)
-                pv_rate_usd = remaining_cost / pv_discounted_mwh
-
-            return {
-                "blended_php_per_kwh": blended,
-                "pv_php_per_kwh": _usd_per_mwh_to_php_per_kwh(pv_rate_usd),
-                "bess_php_per_kwh": bess_rate,
-            }
+            return {"blended_php_per_kwh": blended, "bess_php_per_kwh": bess_rate}
 
         break_even_rates = _compute_break_even_rates(economics_output)
 
@@ -2047,21 +2029,13 @@ def run_app():
         )
 
         st.markdown("**Break-even selling rates (PHP/kWh @ 58 PHP/USD)**")
-        rate_c1, rate_c2, rate_c3 = st.columns(3)
+        rate_c1, rate_c2 = st.columns(2)
         rate_c1.metric(
             "Blended effective rate",
             _fmt_optional(break_even_rates["blended_php_per_kwh"], prefix="₱"),
             help="LCOE converted to PHP/kWh using the specified exchange rate.",
         )
         rate_c2.metric(
-            "PV selling rate",
-            _fmt_optional(break_even_rates["pv_php_per_kwh"], prefix="₱"),
-            help=(
-                "Assumes BESS energy is sold at LCOS; remaining discounted cost is recovered "
-                "from PV-to-contract energy only."
-            ),
-        )
-        rate_c3.metric(
             "BESS selling rate",
             _fmt_optional(break_even_rates["bess_php_per_kwh"], prefix="₱"),
             help="LCOS converted to PHP/kWh for BESS-originated energy.",
@@ -2081,7 +2055,6 @@ def run_app():
             capex_musd_override: float,
             fixed_opex_pct_override: float,
             fixed_opex_musd_override: float,
-            variable_opex_override: float,
             discount_rate_override: float,
         ) -> EconomicOutputs:
             """Return LCOE and LCOS after applying the provided economics inputs."""
@@ -2090,7 +2063,7 @@ def run_app():
                 capex_musd=capex_musd_override,
                 fixed_opex_pct_of_capex=fixed_opex_pct_override,
                 fixed_opex_musd=fixed_opex_musd_override,
-                variable_opex_usd_per_mwh=variable_opex_override,
+                inflation_rate=inflation_pct / 100.0,
                 discount_rate=discount_rate_override,
             )
 
@@ -2105,11 +2078,6 @@ def run_app():
             ("CAPEX (USD million)", "capex_musd", capex_musd),
             ("Fixed OPEX (% of CAPEX)", "fixed_opex_pct", fixed_opex_pct),
             ("Fixed OPEX (USD million/yr)", "fixed_opex_musd", fixed_opex_musd),
-            (
-                "Variable OPEX ($/MWh delivered)",
-                "variable_opex_usd_per_mwh",
-                variable_opex_usd_per_mwh,
-            ),
             ("Discount rate", "discount_rate", discount_rate),
         ]
 
@@ -2126,7 +2094,6 @@ def run_app():
                     capex_test = capex_musd
                     fixed_pct_test = fixed_opex_pct
                     fixed_musd_test = fixed_opex_musd
-                    variable_opex_test = variable_opex_usd_per_mwh
                     discount_rate_test = discount_rate
 
                     scaled_value = max(0.0, base_value * (1.0 + factor))
@@ -2137,8 +2104,6 @@ def run_app():
                         fixed_pct_test = scaled_value
                     elif lever_key == "fixed_opex_musd":
                         fixed_musd_test = scaled_value
-                    elif lever_key == "variable_opex_usd_per_mwh":
-                        variable_opex_test = scaled_value
                     elif lever_key == "discount_rate":
                         discount_rate_test = scaled_value
 
@@ -2146,7 +2111,6 @@ def run_app():
                         capex_test,
                         fixed_pct_test,
                         fixed_musd_test,
-                        variable_opex_test,
                         discount_rate_test,
                     )
 
