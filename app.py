@@ -344,6 +344,10 @@ class SimConfig:
     aug_soh_add_frac_initial: float = 0.10  # SOH mode: add % of initial BOL energy
     aug_periodic_every_years: int = 5
     aug_periodic_add_frac_of_bol: float = 0.10
+    aug_add_mode: str = "Percent"  # 'Percent'|'Fixed'
+    aug_fixed_energy_mwh: float = 0.0  # fixed augmentation size when aug_add_mode='Fixed'
+    aug_retire_old_cohort: bool = False
+    aug_retire_soh_pct: float = 0.60
 
 
 @dataclass
@@ -469,6 +473,7 @@ class SimState:
     initial_bol_power_mw: float
     cum_cycles: float = 0.0
     cohorts: List[BatteryCohort] = field(default_factory=list)
+    last_dod_key: Optional[int] = None
 
 def calc_calendar_soh(year_idx: int, rate: float, exp_model: bool) -> float:
     return max(0.0, (1.0 - rate) ** year_idx) if exp_model else max(0.0, 1.0 - rate * year_idx)
@@ -520,6 +525,23 @@ def compute_fleet_soh(
         weighted_calendar / total_energy,
         weighted_total / total_energy,
     )
+
+
+def compute_cohort_total_soh(
+    cohort: BatteryCohort,
+    cycle_df: pd.DataFrame,
+    dod_key: int,
+    years_elapsed: float,
+    calendar_rate: float,
+    use_calendar_exp_model: bool,
+) -> float:
+    """Return total SOH (cycle × calendar) for a single cohort."""
+
+    cycle_soh = cycle_retention_lookup(cycle_df, dod_key, cohort.cum_cycles)
+    calendar_soh = calc_calendar_soh_fraction(
+        cohort.age_years(years_elapsed), calendar_rate, use_calendar_exp_model
+    )
+    return max(0.0, cycle_soh * calendar_soh)
 
 
 def _draw_metric_card(pdf: FPDF, x: float, y: float, w: float, h: float, title: str, value: str, subtitle: str,
@@ -822,6 +844,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     avg_rte = (discharged_mwh / charged_mwh) if charged_mwh > 0 else np.nan
 
     dod_key_eff = dod_key if dod_key is not None else infer_dod_bucket(daily_dis_mwh, state.current_usable_mwh_bolref)
+    state.last_dod_key = dod_key_eff
     dod_frac = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}[dod_key_eff]
     usable_for_cycles = max(1e-9, state.current_usable_mwh_bolref * dod_frac)
     eq_cycles_year = discharged_mwh / usable_for_cycles
@@ -933,6 +956,48 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     )
     return yr, logs, monthly_results
 
+
+def retire_cohorts_if_needed(state: SimState, cfg: SimConfig, year_idx: int) -> float:
+    """Retire cohorts whose SOH is below the configured threshold.
+
+    Returns
+    -------
+    float
+        Total BOL energy (MWh) removed from service.
+    """
+
+    if not cfg.aug_retire_old_cohort:
+        return 0.0
+
+    dod_key = state.last_dod_key or 80
+    c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
+
+    remaining_cohorts: List[BatteryCohort] = []
+    retired_energy_bol = 0.0
+
+    for cohort in state.cohorts:
+        total_soh = compute_cohort_total_soh(
+            cohort,
+            state.cycle_df,
+            dod_key,
+            years_elapsed=year_idx,
+            calendar_rate=cfg.calendar_fade_rate,
+            use_calendar_exp_model=cfg.use_calendar_exp_model,
+        )
+        if total_soh <= cfg.aug_retire_soh_pct + 1e-9:
+            retired_energy_bol += cohort.energy_mwh_bol
+        else:
+            remaining_cohorts.append(cohort)
+
+    if retired_energy_bol <= 0:
+        return 0.0
+
+    state.cohorts = remaining_cohorts
+    state.current_usable_mwh_bolref = max(0.0, state.current_usable_mwh_bolref - retired_energy_bol)
+    state.current_power_mw = max(0.0, state.current_power_mw - retired_energy_bol / c_hours)
+    return retired_energy_bol
+
+
 def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharge_hours_per_day: float) -> Tuple[float, float]:
     """Return (add_power_MW, add_energy_MWh at BOL)."""
     if cfg.augmentation == 'None':
@@ -943,9 +1008,10 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
         eoy_cap_per_day = min(yr.eoy_usable_mwh, yr.eoy_power_mw * discharge_hours_per_day)
         if eoy_cap_per_day + 1e-6 < target_energy_per_day * (1.0 - cfg.aug_threshold_margin):
             short_mwh = target_energy_per_day * (1.0 + cfg.aug_topup_margin) - eoy_cap_per_day
-            short_mwh = max(0.0, short_mwh)
+            add_energy_bol = max(0.0, short_mwh)
+            if cfg.aug_add_mode == 'Fixed' and cfg.aug_fixed_energy_mwh > 0:
+                add_energy_bol = cfg.aug_fixed_energy_mwh
             c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
-            add_energy_bol = short_mwh
             add_power = add_energy_bol / c_hours
             return float(add_power), float(add_energy_bol)
         return 0.0, 0.0
@@ -953,6 +1019,8 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
     if cfg.augmentation == 'Threshold' and cfg.aug_trigger_type == 'SOH':
         if yr.soh_total <= cfg.aug_soh_trigger_pct + 1e-9:
             add_energy_bol = cfg.aug_soh_add_frac_initial * state.initial_bol_energy_mwh
+            if cfg.aug_add_mode == 'Fixed' and cfg.aug_fixed_energy_mwh > 0:
+                add_energy_bol = cfg.aug_fixed_energy_mwh
             c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
             add_power = add_energy_bol / c_hours
             return float(add_power), float(add_energy_bol)
@@ -961,6 +1029,8 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
     if cfg.augmentation == 'Periodic':
         if (yr.year_index % max(1, cfg.aug_periodic_every_years)) == 0:
             add_energy_bol = cfg.aug_periodic_add_frac_of_bol * state.current_usable_mwh_bolref
+            if cfg.aug_add_mode == 'Fixed' and cfg.aug_fixed_energy_mwh > 0:
+                add_energy_bol = cfg.aug_fixed_energy_mwh
             c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
             add_power = add_energy_bol / c_hours
             return float(add_power), float(add_energy_bol)
@@ -1015,6 +1085,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         state.cum_cycles = yr.cum_cycles
         results.append(yr)
         monthly_results_all.extend(monthly_results)
+        retire_cohorts_if_needed(state, cfg, y)
         add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
         if add_p > 0 or add_e > 0:
             augmentation_events += 1
@@ -1237,6 +1308,11 @@ def run_app():
     # Augmentation (conditional, with explainers)
     with st.expander("Augmentation strategy", expanded=False):
         aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic"], index=0)
+
+        aug_size_mode = "Percent"
+        aug_fixed_energy = 0.0
+        retire_enabled = False
+        retire_soh = 0.60
         if aug_mode == "Threshold":
             trigger = st.selectbox("Trigger type", ["Capability", "SOH"], index=0,
                 help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.")
@@ -1279,6 +1355,37 @@ def run_app():
             aug_trigger_type = "Capability"
             aug_soh_trig = 0.80; aug_soh_add = 0.10
 
+        if aug_mode != "None":
+            aug_size_mode = st.selectbox(
+                "Augmentation sizing",
+                ["Percent", "Fixed"],
+                format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
+                help="Choose whether to size augmentation as a percent or a fixed MWh add.",
+            )
+            if aug_size_mode == "Fixed":
+                aug_fixed_energy = st.number_input(
+                    "Fixed energy added per event (MWh, BOL basis)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
+                )
+
+            retire_enabled = st.checkbox(
+                "Retire low-SOH cohorts when augmenting",
+                value=False,
+                help="Remove cohorts once their SOH falls below the retirement threshold.",
+            )
+            if retire_enabled:
+                retire_soh = st.number_input(
+                    "Retirement SOH threshold (%)",
+                    min_value=0.0,
+                    max_value=100.0,
+                    value=60.0,
+                    step=1.0,
+                    help="Cohorts at or below this SOH are retired before applying augmentation.",
+                ) / 100.0
+
     with st.expander("Scenario set", expanded=False):
         st.caption("Capture different BESS specs/dispatch/augmentation combinations for later reuse.")
 
@@ -1305,6 +1412,10 @@ def run_app():
                     "soh_add_frac_initial": float(aug_soh_add),
                     "periodic_every_years": int(aug_every),
                     "periodic_add_frac_of_bol": float(aug_frac),
+                    "add_mode": aug_size_mode,
+                    "fixed_energy_mwh": float(aug_fixed_energy),
+                    "retire_old_cohort": bool(retire_enabled),
+                    "retire_soh_pct": float(retire_soh),
                 },
             )
 
@@ -1385,6 +1496,10 @@ def run_app():
         aug_soh_add_frac_initial=float(aug_soh_add),
         aug_periodic_every_years=int(aug_every),
         aug_periodic_add_frac_of_bol=float(aug_frac),
+        aug_add_mode=aug_size_mode,
+        aug_fixed_energy_mwh=float(aug_fixed_energy),
+        aug_retire_old_cohort=bool(retire_enabled),
+        aug_retire_soh_pct=float(retire_soh),
     )
 
     scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
@@ -1422,6 +1537,10 @@ def run_app():
                     aug_soh_add_frac_initial=float(sc.augmentation.get("soh_add_frac_initial", cfg.aug_soh_add_frac_initial)),
                     aug_periodic_every_years=int(sc.augmentation.get("periodic_every_years", cfg.aug_periodic_every_years)),
                     aug_periodic_add_frac_of_bol=float(sc.augmentation.get("periodic_add_frac_of_bol", cfg.aug_periodic_add_frac_of_bol)),
+                    aug_add_mode=sc.augmentation.get("add_mode", cfg.aug_add_mode),
+                    aug_fixed_energy_mwh=float(sc.augmentation.get("fixed_energy_mwh", cfg.aug_fixed_energy_mwh)),
+                    aug_retire_old_cohort=bool(sc.augmentation.get("retire_old_cohort", cfg.aug_retire_old_cohort)),
+                    aug_retire_soh_pct=float(sc.augmentation.get("retire_soh_pct", cfg.aug_retire_soh_pct)),
                 )
                 try:
                     scenario_output = simulate_project(
