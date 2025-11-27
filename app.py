@@ -442,6 +442,20 @@ class SimulationSummary:
     avg_eq_cycles_per_year: float
     cap_ratio_final: float
 
+
+@dataclass
+class BatteryCohort:
+    """Represents a tranche of capacity with its own degradation history."""
+
+    energy_mwh_bol: float
+    start_year: int
+    cum_cycles: float = 0.0
+
+    def age_years(self, years_elapsed: float) -> float:
+        """Return cohort age in years at a given simulation timestamp."""
+        return max(0.0, years_elapsed - self.start_year)
+
+
 @dataclass
 class SimState:
     pv_df: pd.DataFrame
@@ -453,6 +467,7 @@ class SimState:
     initial_bol_energy_mwh: float
     initial_bol_power_mw: float
     cum_cycles: float = 0.0
+    cohorts: List[BatteryCohort] = field(default_factory=list)
 
 def calc_calendar_soh(year_idx: int, rate: float, exp_model: bool) -> float:
     return max(0.0, (1.0 - rate) ** year_idx) if exp_model else max(0.0, 1.0 - rate * year_idx)
@@ -460,6 +475,50 @@ def calc_calendar_soh(year_idx: int, rate: float, exp_model: bool) -> float:
 
 def calc_calendar_soh_fraction(years_elapsed: float, rate: float, exp_model: bool) -> float:
     return max(0.0, (1.0 - rate) ** years_elapsed) if exp_model else max(0.0, 1.0 - rate * years_elapsed)
+
+
+def compute_fleet_soh(
+    cohorts: List[BatteryCohort],
+    cycle_df: pd.DataFrame,
+    dod_key: int,
+    years_elapsed: float,
+    calendar_rate: float,
+    use_calendar_exp_model: bool,
+    cycles_at_point: Optional[List[float]] = None,
+) -> Tuple[float, float, float]:
+    """Return energy-weighted (cycle, calendar, total) SOH for the fleet.
+
+    cycles_at_point lets callers supply cohort-specific cumulative cycles at a
+    particular timestep (e.g., inside the monthly loop) without mutating the
+    stored cohort state. Defaults to using the cohort.cum_cycles values.
+    """
+
+    total_energy = sum(c.energy_mwh_bol for c in cohorts)
+    if total_energy <= 0:
+        return 1.0, 1.0, 1.0
+
+    if cycles_at_point is None:
+        cycles_at_point = [c.cum_cycles for c in cohorts]
+
+    weighted_cycle = 0.0
+    weighted_calendar = 0.0
+    weighted_total = 0.0
+
+    for cohort, cycles in zip(cohorts, cycles_at_point):
+        cohort_cycle_soh = cycle_retention_lookup(cycle_df, dod_key, cycles)
+        cohort_calendar_soh = calc_calendar_soh_fraction(
+            cohort.age_years(years_elapsed), calendar_rate, use_calendar_exp_model
+        )
+        cohort_total_soh = cohort_cycle_soh * cohort_calendar_soh
+        weighted_cycle += cohort_cycle_soh * cohort.energy_mwh_bol
+        weighted_calendar += cohort_calendar_soh * cohort.energy_mwh_bol
+        weighted_total += cohort_total_soh * cohort.energy_mwh_bol
+
+    return (
+        weighted_cycle / total_energy,
+        weighted_calendar / total_energy,
+        weighted_total / total_energy,
+    )
 
 
 def _draw_metric_card(pdf: FPDF, x: float, y: float, w: float, h: float, title: str, value: str, subtitle: str,
@@ -647,8 +706,6 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     pv_mw = state.pv_df['pv_mw'].to_numpy(float) * pv_scale * cfg.pv_availability
 
     pow_cap_mw = state.current_power_mw * cfg.bess_availability
-    soh_cal_start = calc_calendar_soh(max(year_idx - 1, 0), cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
-    soh_cal_eoy = calc_calendar_soh(year_idx, cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
 
     eta_rt = max(0.05, min(cfg.rte_roundtrip, 0.9999))
     eta_ch = eta_rt ** 0.5; eta_dis = eta_rt ** 0.5
@@ -657,8 +714,15 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     dis_windows = cfg.discharge_windows
 
     dod_for_lookup = dod_key if dod_key else 100
-    soh_cycle_pre = cycle_retention_lookup(state.cycle_df, dod_for_lookup, state.cum_cycles)
-    usable_mwh_start = state.current_usable_mwh_bolref * soh_cal_start * soh_cycle_pre
+    soh_cycle_start, soh_calendar_start, soh_total_start = compute_fleet_soh(
+        state.cohorts,
+        state.cycle_df,
+        dod_for_lookup,
+        years_elapsed=max(year_idx - 1, 0),
+        calendar_rate=cfg.calendar_fade_rate,
+        use_calendar_exp_model=cfg.use_calendar_exp_model,
+    )
+    usable_mwh_start = state.current_usable_mwh_bolref * soh_total_start
 
     soc_mwh = usable_mwh_start * 0.5
     soc_min = usable_mwh_start * cfg.soc_floor
@@ -761,8 +825,17 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     usable_for_cycles = max(1e-9, state.current_usable_mwh_bolref * dod_frac)
     eq_cycles_year = discharged_mwh / usable_for_cycles
     cum_cycles_new = state.cum_cycles + eq_cycles_year
-    soh_cycle = cycle_retention_lookup(state.cycle_df, dod_key_eff, cum_cycles_new)
-    soh_total = soh_cal_eoy * soh_cycle
+
+    cohort_cycles_eoy = [c.cum_cycles + eq_cycles_year for c in state.cohorts]
+    soh_cycle, soh_calendar, soh_total = compute_fleet_soh(
+        state.cohorts,
+        state.cycle_df,
+        dod_key_eff,
+        years_elapsed=year_idx,
+        calendar_rate=cfg.calendar_fade_rate,
+        use_calendar_exp_model=cfg.use_calendar_exp_model,
+        cycles_at_point=cohort_cycles_eoy,
+    )
 
     eoy_usable_mwh = state.current_usable_mwh_bolref * soh_total
     eoy_power_mw = pow_cap_mw
@@ -785,7 +858,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         eq_cycles=float(eq_cycles_year),
         cum_cycles=float(cum_cycles_new),
         soh_cycle=float(soh_cycle),
-        soh_calendar=float(soh_cal_eoy),
+        soh_calendar=float(soh_calendar),
         soh_total=float(soh_total),
         eoy_usable_mwh=float(eoy_usable_mwh),
         eoy_power_mw=float(eoy_power_mw),
@@ -802,13 +875,21 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     monthly_results: List[MonthResult] = []
     cum_cycles_running = state.cum_cycles
+    cohort_cycles_running = [c.cum_cycles for c in state.cohorts]
     for m in range(12):
         eq_cycles_month = month_discharge[m] / usable_for_cycles
         cum_cycles_running += eq_cycles_month
-        soh_cycle_month = cycle_retention_lookup(state.cycle_df, dod_key_eff, cum_cycles_running)
+        cohort_cycles_running = [c + eq_cycles_month for c in cohort_cycles_running]
         years_elapsed = year_idx - 1 + (m + 1) / 12.0
-        soh_calendar_month = calc_calendar_soh_fraction(years_elapsed, cfg.calendar_fade_rate, cfg.use_calendar_exp_model)
-        soh_total_month = soh_calendar_month * soh_cycle_month
+        soh_cycle_month, soh_calendar_month, soh_total_month = compute_fleet_soh(
+            state.cohorts,
+            state.cycle_df,
+            dod_key_eff,
+            years_elapsed=years_elapsed,
+            calendar_rate=cfg.calendar_fade_rate,
+            use_calendar_exp_model=cfg.use_calendar_exp_model,
+            cycles_at_point=cohort_cycles_running,
+        )
         monthly_results.append(MonthResult(
             year_index=year_idx,
             month_index=m + 1,
@@ -836,6 +917,9 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
                 'soc_ceiling_hits': int(month_flag_soc_ceiling_hits[m]),
             },
         ))
+
+    for idx, cohort in enumerate(state.cohorts):
+        cohort.cum_cycles = cohort_cycles_eoy[idx]
 
     logs = HourlyLog(
         hod=hod,
@@ -901,6 +985,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         current_usable_mwh_bolref=cfg.initial_usable_mwh,
         initial_bol_energy_mwh=cfg.initial_usable_mwh,
         initial_bol_power_mw=cfg.initial_power_mw,
+        cohorts=[BatteryCohort(energy_mwh_bol=cfg.initial_usable_mwh, start_year=0)],
     )
 
     results: List[YearResult] = []
@@ -935,6 +1020,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
             augmentation_energy_added[y - 1] += add_e
             state.current_power_mw += add_p
             state.current_usable_mwh_bolref += add_e
+            state.cohorts.append(BatteryCohort(energy_mwh_bol=add_e, start_year=y))
 
     return SimulationOutput(
         cfg=cfg,
