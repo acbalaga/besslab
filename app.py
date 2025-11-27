@@ -76,6 +76,7 @@ from streamlit.errors import StreamlitSecretNotFoundError
 from sensitivity_sweeps import build_soc_windows, generate_values, run_sensitivity_grid
 
 BASE_DIR = Path(__file__).resolve().parent
+USD_TO_PHP = 58.0
 
 # --------- Flag metadata ---------
 FLAG_DEFINITIONS: Dict[str, Dict[str, str]] = {
@@ -1898,16 +1899,14 @@ def run_app():
             )
             discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
 
-            capex_base_musd = st.number_input(
-                "Base/extra CAPEX (USD million)",
+            capex_musd = st.number_input(
+                "Total CAPEX (USD million)",
                 min_value=0.0,
                 value=40.0,
                 step=0.1,
-                help=(
-                    "Manual CAPEX you want to include regardless of rates. If no rates are enabled, "
-                    "this becomes the total CAPEX."
-                ),
+                help="All-in CAPEX for the project. Expressed in USD millions for compact entry.",
             )
+        with econ_inputs_col2:
             fixed_opex_pct = (
                 st.number_input(
                     "Fixed OPEX (% of CAPEX per year)",
@@ -1919,46 +1918,13 @@ def run_app():
                 )
                 / 100.0
             )
-        with econ_inputs_col2:
-            # Optional CAPEX builder from unit rates
-            st.caption("Optional: derive CAPEX from unit rates where available.")
-            rate_col1, rate_col2 = st.columns(2)
-            with rate_col1:
-                use_bess_rate = st.checkbox("Use BESS $/kWh", value=False)
-                bess_rate = st.number_input(
-                    "BESS rate ($/kWh usable)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
-                    help="Applies to initial usable BESS energy (kWh).",
-                    disabled=not use_bess_rate,
-                )
-                use_pv_rate = st.checkbox("Use PV $/kWh", value=False)
-                pv_rate = st.number_input(
-                    "PV rate ($/kWh delivered)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
-                    help="Applies to first-year PV energy delivered to contract (kWh).",
-                    disabled=not use_pv_rate,
-                )
-            with rate_col2:
-                use_epc_rate = st.checkbox("Use EPC all-in $/kWh", value=False)
-                epc_rate = st.number_input(
-                    "EPC all-in rate ($/kWh firm)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
-                    help="Applies to first-year firm energy requirement (kWh).",
-                    disabled=not use_epc_rate,
-                )
-                variable_opex_usd_per_mwh = st.number_input(
-                    "Variable OPEX (USD/MWh delivered)",
-                    min_value=0.0,
-                    value=1.0,
-                    step=0.1,
-                    help="Applied to each delivered firm MWh.",
-                )
+            variable_opex_usd_per_mwh = st.number_input(
+                "Variable OPEX (USD/MWh delivered)",
+                min_value=0.0,
+                value=1.0,
+                step=0.1,
+                help="Applied to each delivered firm MWh.",
+            )
             fixed_opex_musd = st.number_input(
                 "Additional fixed OPEX (USD million/yr)",
                 min_value=0.0,
@@ -1969,28 +1935,17 @@ def run_app():
 
         def build_economics_output_for_run(
             sim_output: SimulationOutput, cfg_for_run: SimConfig
-        ) -> Tuple[float, float, float, List[float], Any]:
+        ) -> Tuple[float, float, List[float], Any]:
             """Compute economics for a simulation using current discount and cost inputs."""
 
-            capex_from_rates_usd = 0.0
             results_for_run = sim_output.results
-            if use_bess_rate:
-                capex_from_rates_usd += bess_rate * cfg_for_run.initial_usable_mwh * 1_000.0
-            if use_pv_rate and results_for_run:
-                capex_from_rates_usd += pv_rate * results_for_run[0].pv_to_contract_mwh * 1_000.0
-            if use_epc_rate and results_for_run:
-                capex_from_rates_usd += epc_rate * results_for_run[0].expected_firm_mwh * 1_000.0
-
-            capex_musd_run = (capex_from_rates_usd / 1_000_000.0) + capex_base_musd
+            capex_musd_run = capex_musd
 
             augmentation_unit_rate_usd_per_kwh = 0.0
-            if cfg_for_run.initial_usable_mwh > 0:
-                if use_bess_rate:
-                    augmentation_unit_rate_usd_per_kwh = bess_rate
-                elif capex_musd_run > 0:
-                    augmentation_unit_rate_usd_per_kwh = (capex_musd_run * 1_000_000.0) / (
-                        cfg_for_run.initial_usable_mwh * 1_000.0
-                    )
+            if cfg_for_run.initial_usable_mwh > 0 and capex_musd_run > 0:
+                augmentation_unit_rate_usd_per_kwh = (capex_musd_run * 1_000_000.0) / (
+                    cfg_for_run.initial_usable_mwh * 1_000.0
+                )
 
             augmentation_energy_added = list(
                 getattr(sim_output, "augmentation_energy_added_mwh", [])
@@ -2022,7 +1977,6 @@ def run_app():
 
             return (
                 capex_musd_run,
-                capex_from_rates_usd,
                 augmentation_unit_rate_usd_per_kwh,
                 augmentation_costs_usd,
                 economics_output_run,
@@ -2030,7 +1984,6 @@ def run_app():
 
         (
             capex_musd,
-            capex_from_rates_usd,
             augmentation_unit_rate_usd_per_kwh,
             augmentation_costs_usd,
             economics_output,
@@ -2039,13 +1992,32 @@ def run_app():
         # Reuse simulation-year outputs for downstream economics sensitivity charts.
         results_for_run = sim_output.results
 
-        if capex_from_rates_usd > 0:
-            st.caption(
-                f"Rate-derived CAPEX adds ${capex_from_rates_usd / 1_000_000.0:,.2f}M. Total CAPEX = ${capex_musd:,.2f}M."
-            )
-
         def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
             return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
+
+        def _usd_per_mwh_to_php_per_kwh(value: float) -> float:
+            if not math.isfinite(value):
+                return float("nan")
+            return value * USD_TO_PHP / 1000.0
+
+        def _compute_break_even_rates(econ_output: EconomicOutputs) -> Dict[str, float]:
+            blended = _usd_per_mwh_to_php_per_kwh(econ_output.lcoe_usd_per_mwh)
+            bess_rate = _usd_per_mwh_to_php_per_kwh(econ_output.lcos_usd_per_mwh)
+
+            pv_discounted_mwh = econ_output.discounted_energy_mwh - econ_output.discounted_bess_energy_mwh
+            pv_rate_usd = float("nan")
+            if pv_discounted_mwh > 0 and math.isfinite(econ_output.lcos_usd_per_mwh):
+                bess_revenue = econ_output.lcos_usd_per_mwh * econ_output.discounted_bess_energy_mwh
+                remaining_cost = max(0.0, econ_output.discounted_costs_usd - bess_revenue)
+                pv_rate_usd = remaining_cost / pv_discounted_mwh
+
+            return {
+                "blended_php_per_kwh": blended,
+                "pv_php_per_kwh": _usd_per_mwh_to_php_per_kwh(pv_rate_usd),
+                "bess_php_per_kwh": bess_rate,
+            }
+
+        break_even_rates = _compute_break_even_rates(economics_output)
 
         econ_c1, econ_c2, econ_c3 = st.columns(3)
         econ_c1.metric(
@@ -2072,6 +2044,27 @@ def run_app():
         st.caption(
             f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
             "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
+        )
+
+        st.markdown("**Break-even selling rates (PHP/kWh @ 58 PHP/USD)**")
+        rate_c1, rate_c2, rate_c3 = st.columns(3)
+        rate_c1.metric(
+            "Blended effective rate",
+            _fmt_optional(break_even_rates["blended_php_per_kwh"], prefix="₱"),
+            help="LCOE converted to PHP/kWh using the specified exchange rate.",
+        )
+        rate_c2.metric(
+            "PV selling rate",
+            _fmt_optional(break_even_rates["pv_php_per_kwh"], prefix="₱"),
+            help=(
+                "Assumes BESS energy is sold at LCOS; remaining discounted cost is recovered "
+                "from PV-to-contract energy only."
+            ),
+        )
+        rate_c3.metric(
+            "BESS selling rate",
+            _fmt_optional(break_even_rates["bess_php_per_kwh"], prefix="₱"),
+            help="LCOS converted to PHP/kWh for BESS-originated energy.",
         )
 
         st.markdown("---")
