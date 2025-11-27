@@ -41,7 +41,7 @@ class EconomicsHelperTests(unittest.TestCase):
             capex_musd=0.0,
             fixed_opex_pct_of_capex=0.0,
             fixed_opex_musd=0.0,
-            variable_opex_usd_per_mwh=0.0,
+            inflation_rate=0.0,
             discount_rate=0.05,
         )
 
@@ -77,7 +77,7 @@ class EconomicsHelperTests(unittest.TestCase):
             capex_musd=0.0,
             fixed_opex_pct_of_capex=0.0,
             fixed_opex_musd=0.0,
-            variable_opex_usd_per_mwh=0.0,
+            inflation_rate=0.0,
             discount_rate=0.10,
         )
 
@@ -123,7 +123,7 @@ class EconomicsHelperTests(unittest.TestCase):
             capex_musd=0.0,
             fixed_opex_pct_of_capex=0.0,
             fixed_opex_musd=0.0,
-            variable_opex_usd_per_mwh=0.0,
+            inflation_rate=0.0,
             discount_rate=0.10,
         )
 

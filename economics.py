@@ -46,7 +46,7 @@ def _validate_inputs(
     _ensure_non_negative_finite(inputs.capex_musd, "capex_musd")
     _ensure_non_negative_finite(inputs.fixed_opex_pct_of_capex, "fixed_opex_pct_of_capex")
     _ensure_non_negative_finite(inputs.fixed_opex_musd, "fixed_opex_musd")
-    _ensure_non_negative_finite(inputs.variable_opex_usd_per_mwh, "variable_opex_usd_per_mwh")
+    _ensure_non_negative_finite(inputs.inflation_rate, "inflation_rate")
     _ensure_non_negative_finite(inputs.discount_rate, "discount_rate")
 
 
@@ -55,13 +55,15 @@ class EconomicInputs:
     """High-level project economics.
 
     All monetary values are expressed in USD to avoid mixing units. CAPEX and
-    fixed OPEX can be entered in millions to keep UI inputs compact.
+    fixed OPEX can be entered in millions to keep UI inputs compact. The
+    inflation_rate is applied as an annual escalator to fixed OPEX before
+    discounting.
     """
 
     capex_musd: float
     fixed_opex_pct_of_capex: float
     fixed_opex_musd: float
-    variable_opex_usd_per_mwh: float
+    inflation_rate: float
     discount_rate: float
 
 
@@ -125,14 +127,16 @@ def compute_lcoe_lcos(
         bess_mwh = float(annual_bess_mwh[year_idx - 1])
         factor = _discount_factor(inputs.discount_rate, year_idx)
 
+        # Escalate fixed OPEX annually by the assumed inflation rate.
+        inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
         annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
-        variable_opex = inputs.variable_opex_usd_per_mwh * firm_mwh
+        annual_fixed_opex *= inflation_multiplier
         augmentation_cost = 0.0
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
         discounted_augmentation_costs += augmentation_cost * factor
-        discounted_costs += (annual_fixed_opex + variable_opex + augmentation_cost) * factor
+        discounted_costs += (annual_fixed_opex + augmentation_cost) * factor
         discounted_energy += firm_mwh * factor
         discounted_bess_energy += bess_mwh * factor
 
