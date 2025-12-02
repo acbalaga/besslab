@@ -1900,6 +1900,24 @@ def run_app():
                     st.altair_chart(heat_chart, use_container_width=True)
 
 
+    run_cols = st.columns([2, 1])
+    with run_cols[0]:
+        run_clicked = st.button(
+            "Run simulation",
+            use_container_width=True,
+            help="Prevents auto-reruns while you adjust inputs; click to compute results.",
+        )
+    with run_cols[1]:
+        st.caption(
+            "Edit parameters freely, then run when ready. Scenarios can still be batch-run above."
+        )
+
+    if not run_clicked:
+        st.info("Click 'Run simulation' to generate results after updating inputs.")
+        st.stop()
+
+    enforce_rate_limit()
+
     try:
         sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
     except ValueError as exc:  # noqa: BLE001
