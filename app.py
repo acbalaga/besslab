@@ -451,6 +451,7 @@ class SimulationOutput:
     hod_sum_bess: np.ndarray
     hod_sum_charge: np.ndarray
     augmentation_energy_added_mwh: List[float]
+    augmentation_retired_energy_mwh: List[float]
     augmentation_events: int
 
 
@@ -1179,6 +1180,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
 
     results: List[YearResult] = []
     augmentation_energy_added: List[float] = [0.0 for _ in range(cfg.years)]
+    augmentation_retired_energy: List[float] = [0.0 for _ in range(cfg.years)]
     monthly_results_all: List[MonthResult] = []
     dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip('%'))
     first_year_logs: Optional[HourlyLog] = None
@@ -1203,7 +1205,8 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         state.cum_cycles = yr.cum_cycles
         results.append(yr)
         monthly_results_all.extend(monthly_results)
-        retire_cohorts_if_needed(state, cfg, y)
+        retired_energy = retire_cohorts_if_needed(state, cfg, y)
+        augmentation_retired_energy[y - 1] = retired_energy
         add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
         if add_p > 0 or add_e > 0:
             augmentation_events += 1
@@ -1224,6 +1227,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         hod_sum_bess=hod_sum_bess,
         hod_sum_charge=hod_sum_charge,
         augmentation_energy_added_mwh=augmentation_energy_added,
+        augmentation_retired_energy_mwh=augmentation_retired_energy,
         augmentation_events=augmentation_events,
     )
 
@@ -1997,6 +2001,75 @@ def run_app():
         f"{augmentation_events} events",
         help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
     )
+
+    st.markdown("#### Augmentation impact trace")
+    augmentation_retired = getattr(
+        sim_output, "augmentation_retired_energy_mwh", [0.0 for _ in sim_output.augmentation_energy_added_mwh]
+    )
+    if len(augmentation_retired) < len(sim_output.augmentation_energy_added_mwh):
+        augmentation_retired.extend([0.0] * (len(sim_output.augmentation_energy_added_mwh) - len(augmentation_retired)))
+    elif len(augmentation_retired) > len(sim_output.augmentation_energy_added_mwh):
+        augmentation_retired = augmentation_retired[: len(sim_output.augmentation_energy_added_mwh)]
+
+    coverage_pct_by_year = [
+        (r.delivered_firm_mwh / r.expected_firm_mwh * 100.0) if r.expected_firm_mwh > 0 else float('nan')
+        for r in results
+    ]
+    delivered_by_year = [r.delivered_firm_mwh for r in results]
+
+    aug_rows: List[Dict[str, Any]] = []
+    for idx, add_e in enumerate(sim_output.augmentation_energy_added_mwh):
+        retired_e = augmentation_retired[idx] if idx < len(augmentation_retired) else 0.0
+        if add_e <= 0.0 and retired_e <= 0.0:
+            continue
+
+        coverage_pct = coverage_pct_by_year[idx]
+        coverage_delta = coverage_pct_by_year[idx] - coverage_pct_by_year[idx - 1] if idx > 0 else float('nan')
+        gen_delta = delivered_by_year[idx] - delivered_by_year[idx - 1] if idx > 0 else float('nan')
+        add_pct_bol = (add_e / cfg.initial_usable_mwh * 100.0) if cfg.initial_usable_mwh > 0 else float('nan')
+
+        aug_rows.append({
+            "Year": idx + 1,
+            "Added (MWh BOL)": add_e,
+            "Added vs BOL (%)": add_pct_bol,
+            "Retired cohorts (MWh BOL)": retired_e,
+            "Coverage (%)": coverage_pct,
+            "Coverage Δ (pp)": coverage_delta,
+            "Generation Δ (MWh)": gen_delta,
+        })
+
+    if aug_rows:
+        aug_df = pd.DataFrame(aug_rows)
+        st.caption("Per-event summary combines augmentation size, cohort retirements, and year-over-year shifts in compliance and delivered energy.")
+        st.dataframe(
+            aug_df.style.format({
+                "Added (MWh BOL)": "{:.1f}",
+                "Added vs BOL (%)": "{:.2f}",
+                "Retired cohorts (MWh BOL)": "{:.1f}",
+                "Coverage (%)": "{:.2f}",
+                "Coverage Δ (pp)": "{:.2f}",
+                "Generation Δ (MWh)": "{:.1f}",
+            }),
+            use_container_width=True,
+        )
+
+        delta_df = aug_df.melt(
+            id_vars=["Year"],
+            value_vars=["Coverage Δ (pp)", "Generation Δ (MWh)"],
+            var_name="Metric",
+            value_name="Delta",
+        ).dropna(subset=["Delta"])
+
+        if not delta_df.empty:
+            delta_chart = alt.Chart(delta_df).mark_bar().encode(
+                x=alt.X("Year:O", title="Augmentation year"),
+                y=alt.Y("Delta:Q", title="Annual change"),
+                color=alt.Color("Metric:N", title=""),
+                tooltip=["Year", "Metric", alt.Tooltip("Delta:Q", format=".2f")],
+            ).properties(title="Year-over-year shifts at augmentation points")
+            st.altair_chart(delta_chart, use_container_width=True)
+    else:
+        st.info("No augmentation or retirement events were triggered in this run.")
 
     with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
         st.caption(
