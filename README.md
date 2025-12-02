@@ -3,13 +3,14 @@
 An interactive Streamlit app for exploring **battery energy storage** sizing and behavior when it charges only from **PV** and delivers through an **AC-coupled** point of interconnection.
 
 ## What you can do
-- Test whether a chosen **contracted MW × duration** can be served using PV first and the BESS for any shortfall.
-- See how performance changes with **round-trip efficiency, state-of-charge limits, availability, and degradation** settings.
-- Try optional **augmentation** strategies to keep the system on target across the project life.
-- View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, and **typical daily profiles**.
+- Validate whether a chosen **contracted MW × duration** can be met using PV first and the BESS for any shortfall.
+- Explore how performance changes with **round-trip efficiency, state-of-charge limits, availability, degradation**, and **calendar/cycle fade**.
+- Toggle **augmentation strategies** (threshold- or SOH-based) to keep discharge capability on target across the project life.
+- Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows.
+- View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, **typical daily profiles**, and **economics sensitivities**.
 - Save **scenario snapshots** to compare different input sets side by side.
-- Download **yearly, monthly, hourly**, and **PDF** summaries for sharing.
-- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module.
+- Download **yearly, monthly, hourly**, and **PDF** summaries for sharing, along with sensitivity tables where applicable.
+- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module for offline use.
 
 ## Quick start
 ```bash
@@ -21,16 +22,28 @@ Open the provided local URL in your browser to launch the app.
 
 To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
 
+## Inputs
+- **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). The app auto-aligns a 1-based index and drops out-of-range values.
+- **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
+- **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser.
+- **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and design-advisor bounds.
+
+If no files are uploaded, the app uses the sample data in `./data/`.
+
 ## Using the app
 1. **Upload or use defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses included sample data.
 2. **Set your target.** Enter the contracted power (MW) and desired duration (hours).
 3. **Adjust assumptions.** Use sidebar controls for efficiency, state-of-charge limits, availability, and augmentation options.
 4. **Review results.** Check the compliance summary, flags, and charts to see how well the setup holds over time.
+5. **Run sensitivities.** Generate SOC-window sweeps and LCOE/LCOS sensitivity heatmaps to see which levers matter most.
+6. **Save & export.** Capture scenarios, download CSV/PDF summaries, and share results with your team.
 
 ## Tips for best results
 - Keep `hour_index` consecutive (0–8759 or 1–8760); the app auto-corrects the starting index.
 - If you see frequent shortfalls, try widening the SOC range, improving efficiency, or enabling augmentation.
 - Use the Design Advisor panel for quick, bounded suggestions when the system struggles to meet the contract.
+- Minutes in window strings (e.g., `05:30-09:00`) are supported and parsed into fractional hours.
+- The economics helper and sensitivity heatmaps assume positive cost/price inputs; double-check units before running sweeps.
 
 ## Feedback
 This tool originated from studies at **Emerging Power Inc. (EPI)**. Feedback and improvement ideas are welcome—please reach out with suggestions or issues.
