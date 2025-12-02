@@ -61,7 +61,8 @@ def get_rate_limit_password() -> str:
 
 import math
 import calendar
-from dataclasses import dataclass, field, replace
+import json
+from dataclasses import dataclass, field, replace, asdict
 from io import BytesIO, StringIO
 from typing import Any, List, Tuple, Optional, Dict
 
@@ -257,6 +258,26 @@ class Window:
             return self.start <= hod < self.end
         return hod >= self.start or hod < self.end
 
+
+@dataclass
+class AugmentationScheduleEntry:
+    """Explicit augmentation action for a given project year."""
+
+    year: int
+    basis: str  # Percent of BOL, percent of current, fixed energy, or fixed power
+    value: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"year": self.year, "basis": self.basis, "value": self.value}
+
+
+AUGMENTATION_SCHEDULE_BASIS = [
+    "Percent of BOL energy",
+    "Percent of current BOL-ref energy",
+    "Fixed energy (MWh)",
+    "Fixed power (MW)",
+]
+
 def parse_windows(text: str) -> List[Window]:
     if not text.strip():
         return []
@@ -348,6 +369,7 @@ class SimConfig:
     aug_fixed_energy_mwh: float = 0.0  # fixed augmentation size when aug_add_mode='Fixed'
     aug_retire_old_cohort: bool = False
     aug_retire_soh_pct: float = 0.60
+    augmentation_schedule: List[AugmentationScheduleEntry] = field(default_factory=list)
 
 
 @dataclass
@@ -356,6 +378,7 @@ class ScenarioConfig:
     bess_specs: Dict[str, Any]
     dispatch: Dict[str, Any]
     augmentation: Dict[str, Any]
+    augmentation_schedule: List[AugmentationScheduleEntry] = field(default_factory=list)
 
 @dataclass
 class YearResult:
@@ -707,6 +730,9 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}",
     ]
 
+    if cfg.augmentation_schedule:
+        param_lines.insert(2, f"Manual augmentation schedule: {describe_schedule(cfg.augmentation_schedule)}")
+
     pdf.set_x(margin)
     for line in param_lines:
         pdf.multi_cell(usable_width, 5, line)
@@ -998,8 +1024,100 @@ def retire_cohorts_if_needed(state: SimState, cfg: SimConfig, year_idx: int) -> 
     return retired_energy_bol
 
 
+def _find_manual_schedule_entry(
+    schedule: List[AugmentationScheduleEntry], year_idx: int
+) -> Optional[AugmentationScheduleEntry]:
+    for entry in schedule:
+        if entry.year == year_idx:
+            return entry
+    return None
+
+
+def _compute_manual_augmentation(
+    entry: AugmentationScheduleEntry, state: SimState
+) -> Tuple[float, float]:
+    c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
+    basis = entry.basis or AUGMENTATION_SCHEDULE_BASIS[0]
+    value = max(0.0, float(entry.value))
+
+    if basis == "Percent of BOL energy":
+        add_energy_bol = state.initial_bol_energy_mwh * value / 100.0
+        add_power = add_energy_bol / c_hours
+    elif basis == "Percent of current BOL-ref energy":
+        add_energy_bol = state.current_usable_mwh_bolref * value / 100.0
+        add_power = add_energy_bol / c_hours
+    elif basis == "Fixed power (MW)":
+        add_power = value
+        add_energy_bol = add_power * c_hours
+    else:  # Fixed energy (MWh) or fallback
+        add_energy_bol = value
+        add_power = add_energy_bol / c_hours
+
+    return float(add_power), float(add_energy_bol)
+
+
+def describe_schedule(entries: List[AugmentationScheduleEntry]) -> str:
+    if not entries:
+        return "None"
+
+    parts = [
+        f"Y{entry.year}: {entry.value:g} ({entry.basis})"
+        for entry in sorted(entries, key=lambda e: e.year)
+    ]
+    return "; ".join(parts)
+
+
+def build_schedule_from_editor(df: pd.DataFrame, max_years: int) -> Tuple[List[AugmentationScheduleEntry], List[str]]:
+    """Convert schedule table rows into validated augmentation entries."""
+
+    if df is None or df.empty:
+        return [], []
+
+    entries: List[AugmentationScheduleEntry] = []
+    errors: List[str] = []
+    seen_years: set[int] = set()
+
+    for idx, row in df.iterrows():
+        year_val = row.get("Year")
+        amount_val = row.get("Amount")
+        basis_val = row.get("Basis") or AUGMENTATION_SCHEDULE_BASIS[0]
+
+        if pd.isna(year_val) and pd.isna(amount_val):
+            continue
+        if pd.isna(year_val) or pd.isna(amount_val):
+            errors.append(f"Row {idx + 1}: please provide both a Year and Amount.")
+            continue
+
+        try:
+            year = int(year_val)
+        except (TypeError, ValueError):
+            errors.append(f"Row {idx + 1}: Year must be an integer.")
+            continue
+
+        if year < 1 or year > max_years:
+            errors.append(f"Row {idx + 1}: Year must be between 1 and {max_years}.")
+            continue
+        if year in seen_years:
+            errors.append(f"Duplicate year {year} detected; each year can only appear once.")
+            continue
+
+        seen_years.add(year)
+        entries.append(
+            AugmentationScheduleEntry(
+                year=year, basis=str(basis_val), value=float(amount_val)
+            )
+        )
+
+    entries.sort(key=lambda e: e.year)
+    return entries, errors
+
+
 def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharge_hours_per_day: float) -> Tuple[float, float]:
     """Return (add_power_MW, add_energy_MWh at BOL)."""
+    scheduled_entry = _find_manual_schedule_entry(cfg.augmentation_schedule, yr.year_index)
+    if scheduled_entry is not None:
+        return _compute_manual_augmentation(scheduled_entry, state)
+
     if cfg.augmentation == 'None':
         return 0.0, 0.0
 
@@ -1305,15 +1423,57 @@ def run_app():
                 ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
                 help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.")
 
+    manual_schedule_df = st.session_state.setdefault(
+        "manual_aug_schedule_df",
+        pd.DataFrame(
+            [
+                {"Year": 5, "Basis": AUGMENTATION_SCHEDULE_BASIS[0], "Amount": 10.0}
+            ]
+        ),
+    )
+    manual_schedule_entries: List[AugmentationScheduleEntry] = []
+    manual_schedule_errors: List[str] = []
+
     # Augmentation (conditional, with explainers)
     with st.expander("Augmentation strategy", expanded=False):
-        aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic"], index=0)
+        aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic", "Manual"], index=0)
 
         aug_size_mode = "Percent"
         aug_fixed_energy = 0.0
         retire_enabled = False
         retire_soh = 0.60
-        if aug_mode == "Threshold":
+
+        if aug_mode == "Manual":
+            st.caption(
+                "Define explicit augmentation events by year. Each row adds capacity before other augmentation logic runs."
+            )
+            manual_schedule_df = st.data_editor(
+                manual_schedule_df,
+                key="manual_aug_schedule_df",
+                column_config={
+                    "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
+                    "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
+                    "Amount": st.column_config.NumberColumn(
+                        "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
+                    ),
+                },
+                num_rows="dynamic",
+                hide_index=True,
+                use_container_width=True,
+            )
+            manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(
+                manual_schedule_df, int(years)
+            )
+            if manual_schedule_errors:
+                for err in manual_schedule_errors:
+                    st.error(err)
+            elif not manual_schedule_entries:
+                st.warning("Add at least one row to run a manual augmentation schedule.")
+            aug_thr_margin = 0.0; aug_topup = 0.0
+            aug_every = 5; aug_frac = 0.10
+            aug_trigger_type = "Capability"
+            aug_soh_trig = 0.80; aug_soh_add = 0.10
+        elif aug_mode == "Threshold":
             trigger = st.selectbox("Trigger type", ["Capability", "SOH"], index=0,
                 help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.")
             if trigger == "Capability":
@@ -1355,7 +1515,7 @@ def run_app():
             aug_trigger_type = "Capability"
             aug_soh_trig = 0.80; aug_soh_add = 0.10
 
-        if aug_mode != "None":
+        if aug_mode not in ["None", "Manual"]:
             aug_size_mode = st.selectbox(
                 "Augmentation sizing",
                 ["Percent", "Fixed"],
@@ -1371,6 +1531,7 @@ def run_app():
                     help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
                 )
 
+        if aug_mode != "None":
             retire_enabled = st.checkbox(
                 "Retire low-SOH cohorts when augmenting",
                 value=False,
@@ -1417,6 +1578,7 @@ def run_app():
                     "retire_old_cohort": bool(retire_enabled),
                     "retire_soh_pct": float(retire_soh),
                 },
+                augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
             )
 
         scenarios: List[ScenarioConfig] = st.session_state.setdefault("scenarios", [])
@@ -1424,10 +1586,13 @@ def run_app():
         new_label = st.text_input("Scenario label", value=default_label)
 
         add_cols = st.columns([1, 1])
+        add_disabled = bool(aug_mode == "Manual" and (manual_schedule_errors or not manual_schedule_entries))
         with add_cols[0]:
-            if st.button("Add current inputs", use_container_width=True):
+            if st.button("Add current inputs", use_container_width=True, disabled=add_disabled):
                 scenarios.append(build_scenario(new_label or default_label))
                 st.success("Scenario added to the session set.")
+            elif add_disabled:
+                st.info("Resolve schedule validation issues before saving a manual augmentation scenario.")
 
         if scenarios:
             scenario_options = {f"{i + 1}. {sc.label}": i for i, sc in enumerate(scenarios)}
@@ -1460,6 +1625,7 @@ def run_app():
                     "Charge windows": sc.dispatch.get("charge_windows_text") or "Any PV hour",
                     "Aug strategy": sc.augmentation.get("mode"),
                     "Aug trigger": sc.augmentation.get("trigger_type"),
+                    "Aug schedule": describe_schedule(sc.augmentation_schedule),
                 })
 
             st.data_editor(
@@ -1470,6 +1636,10 @@ def run_app():
             )
         else:
             st.info("No scenarios saved yet. Use 'Add current inputs' to capture this configuration.")
+
+    if aug_mode == "Manual" and (manual_schedule_errors or not manual_schedule_entries):
+        st.error("Manual augmentation requires at least one valid year and no duplicate years.")
+        st.stop()
 
     # Build config
     cfg = SimConfig(
@@ -1500,6 +1670,7 @@ def run_app():
         aug_fixed_energy_mwh=float(aug_fixed_energy),
         aug_retire_old_cohort=bool(retire_enabled),
         aug_retire_soh_pct=float(retire_soh),
+        augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
 
     scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
@@ -1541,6 +1712,7 @@ def run_app():
                     aug_fixed_energy_mwh=float(sc.augmentation.get("fixed_energy_mwh", cfg.aug_fixed_energy_mwh)),
                     aug_retire_old_cohort=bool(sc.augmentation.get("retire_old_cohort", cfg.aug_retire_old_cohort)),
                     aug_retire_soh_pct=float(sc.augmentation.get("retire_soh_pct", cfg.aug_retire_soh_pct)),
+                    augmentation_schedule=list(sc.augmentation_schedule),
                 )
                 try:
                     scenario_output = simulate_project(
@@ -2768,6 +2940,13 @@ def run_app():
 
     # ---------- Downloads ----------
     st.subheader("Downloads")
+    cfg_download = json.dumps(asdict(cfg), indent=2)
+    st.download_button(
+        "Download simulation config (JSON)",
+        cfg_download.encode("utf-8"),
+        file_name="bess_config.json",
+        mime="application/json",
+    )
     st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
                        file_name='bess_yearly_summary.csv', mime='text/csv')
 
