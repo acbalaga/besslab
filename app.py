@@ -1904,6 +1904,47 @@ def run_app():
                     st.altair_chart(heat_chart, use_container_width=True)
 
 
+    st.markdown("---")
+    comparison_tab = st.tabs(["Scenario comparisons"])[0]
+    with comparison_tab:
+        st.caption("Save different input sets to compare how capacity and dispatch choices affect KPIs.")
+        if "scenario_comparisons" not in st.session_state:
+            st.session_state["scenario_comparisons"] = []
+
+        scenario_snapshot = st.session_state.get("latest_scenario_snapshot")
+        default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
+        scenario_label = st.text_input("Label for this scenario", default_label)
+
+        if scenario_snapshot is None:
+            st.info("Run the simulation to populate metrics before saving a scenario.")
+
+        if st.button("Add current scenario to table", disabled=scenario_snapshot is None):
+            scenario_entry = {"Label": scenario_label or default_label, **scenario_snapshot}
+            st.session_state["scenario_comparisons"].append(scenario_entry)
+            st.success("Scenario saved. Adjust inputs and add another to compare.")
+
+        if st.session_state["scenario_comparisons"]:
+            compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
+            st.dataframe(compare_df.style.format({
+                'Compliance (%)': '{:,.2f}',
+                'BESS share of firm (%)': '{:,.1f}',
+                'Charge/Discharge ratio': '{:,.3f}',
+                'PV capture ratio': '{:,.3f}',
+                'Total project generation (MWh)': '{:,.1f}',
+                'BESS share of generation (MWh)': '{:,.1f}',
+                'PV share of generation (MWh)': '{:,.1f}',
+                'PV excess (MWh)': '{:,.1f}',
+                'BESS losses (MWh)': '{:,.1f}',
+                'Final EOY usable (MWh)': '{:,.1f}',
+                'Final EOY power (MW)': '{:,.2f}',
+                'Final eq cycles (year)': '{:,.1f}',
+                'Final SOH_total': '{:,.3f}',
+            }))
+            if st.button("Clear saved scenarios"):
+                st.session_state["scenario_comparisons"] = []
+        else:
+            st.info("No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'.")
+
     run_cols = st.columns([2, 1])
     with run_cols[0]:
         run_clicked = st.button(
@@ -2007,6 +2048,27 @@ def run_app():
     eoy_capacity_margin_pct = cap_ratio_final * 100.0
     augmentation_events = sim_output.augmentation_events
     augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
+
+    st.session_state["latest_scenario_snapshot"] = {
+        'Contracted MW': cfg.contracted_mw,
+        'Power (BOL MW)': cfg.initial_power_mw,
+        'Usable (BOL MWh)': cfg.initial_usable_mwh,
+        'Discharge windows': discharge_windows_text,
+        'Charge windows': charge_windows_text if charge_windows_text else 'Any PV hour',
+        'Compliance (%)': compliance,
+        'BESS share of firm (%)': bess_share_of_firm,
+        'Charge/Discharge ratio': charge_discharge_ratio,
+        'PV capture ratio': pv_capture_ratio,
+        'Total project generation (MWh)': total_project_generation_mwh,
+        'BESS share of generation (MWh)': bess_generation_mwh,
+        'PV share of generation (MWh)': pv_generation_mwh,
+        'PV excess (MWh)': pv_excess_mwh,
+        'BESS losses (MWh)': bess_losses_mwh,
+        'Final EOY usable (MWh)': final.eoy_usable_mwh,
+        'Final EOY power (MW)': final.eoy_power_mw,
+        'Final eq cycles (year)': final.eq_cycles,
+        'Final SOH_total': final.soh_total,
+    }
 
     def _fmt_percent(value: float, as_fraction: bool = False) -> str:
         if math.isnan(value):
@@ -3083,61 +3145,6 @@ def run_app():
     - EOY capability = what the fleet can sustain per day at year-end; Delivered Split = what actually happened per day on average.
     - Design Advisor uses a conservative energy-limited view: Deliverable/day ≈ BOL usable × SOH(final) × ΔSOC × η_dis.
     """)
-
-    st.markdown("---")
-    comparison_tab = st.tabs(["Scenario comparisons"])[0]
-    with comparison_tab:
-        st.caption("Save different input sets to compare how capacity and dispatch choices affect KPIs.")
-        if "scenario_comparisons" not in st.session_state:
-            st.session_state["scenario_comparisons"] = []
-
-        default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
-        scenario_label = st.text_input("Label for this scenario", default_label)
-        if st.button("Add current scenario to table"):
-            st.session_state["scenario_comparisons"].append({
-                'Label': scenario_label or default_label,
-                'Contracted MW': cfg.contracted_mw,
-                'Power (BOL MW)': cfg.initial_power_mw,
-                'Usable (BOL MWh)': cfg.initial_usable_mwh,
-                'Discharge windows': discharge_windows_text,
-                'Charge windows': charge_windows_text if charge_windows_text else 'Any PV hour',
-                'Compliance (%)': compliance,
-                'BESS share of firm (%)': bess_share_of_firm,
-                'Charge/Discharge ratio': charge_discharge_ratio,
-                'PV capture ratio': pv_capture_ratio,
-                'Total project generation (MWh)': total_project_generation_mwh,
-                'BESS share of generation (MWh)': bess_generation_mwh,
-                'PV share of generation (MWh)': pv_generation_mwh,
-                'PV excess (MWh)': pv_excess_mwh,
-                'BESS losses (MWh)': bess_losses_mwh,
-                'Final EOY usable (MWh)': final.eoy_usable_mwh,
-                'Final EOY power (MW)': final.eoy_power_mw,
-                'Final eq cycles (year)': final.eq_cycles,
-                'Final SOH_total': final.soh_total,
-            })
-            st.success("Scenario saved. Adjust inputs and add another to compare.")
-
-        if st.session_state["scenario_comparisons"]:
-            compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
-            st.dataframe(compare_df.style.format({
-                'Compliance (%)': '{:,.2f}',
-                'BESS share of firm (%)': '{:,.1f}',
-                'Charge/Discharge ratio': '{:,.3f}',
-                'PV capture ratio': '{:,.3f}',
-                'Total project generation (MWh)': '{:,.1f}',
-                'BESS share of generation (MWh)': '{:,.1f}',
-                'PV share of generation (MWh)': '{:,.1f}',
-                'PV excess (MWh)': '{:,.1f}',
-                'BESS losses (MWh)': '{:,.1f}',
-                'Final EOY usable (MWh)': '{:,.1f}',
-                'Final EOY power (MW)': '{:,.2f}',
-                'Final eq cycles (year)': '{:,.1f}',
-                'Final SOH_total': '{:,.3f}',
-            }))
-            if st.button("Clear saved scenarios"):
-                st.session_state["scenario_comparisons"] = []
-        else:
-            st.info("No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'.")
 
 if __name__ == "__main__":
     run_app()
