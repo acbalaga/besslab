@@ -8,6 +8,7 @@
 import os
 import time
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 
 
 def enforce_rate_limit(
@@ -1904,46 +1905,57 @@ def run_app():
                     st.altair_chart(heat_chart, use_container_width=True)
 
 
-    st.markdown("---")
-    comparison_tab = st.tabs(["Scenario comparisons"])[0]
-    with comparison_tab:
-        st.caption("Save different input sets to compare how capacity and dispatch choices affect KPIs.")
-        if "scenario_comparisons" not in st.session_state:
-            st.session_state["scenario_comparisons"] = []
+    def render_scenario_comparisons(container: st.delta_generator.DeltaGenerator) -> None:
+        """Show the scenario comparison controls using the latest stored snapshot."""
 
-        scenario_snapshot = st.session_state.get("latest_scenario_snapshot")
-        default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
-        scenario_label = st.text_input("Label for this scenario", default_label)
+        with container:
+            st.markdown("---")
+            comparison_tab = st.tabs(["Scenario comparisons"])[0]
+            with comparison_tab:
+                st.caption(
+                    "Save different input sets to compare how capacity and dispatch choices affect KPIs."
+                )
+                if "scenario_comparisons" not in st.session_state:
+                    st.session_state["scenario_comparisons"] = []
 
-        if scenario_snapshot is None:
-            st.info("Run the simulation to populate metrics before saving a scenario.")
+                scenario_snapshot = st.session_state.get("latest_scenario_snapshot")
+                default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
+                scenario_label = st.text_input("Label for this scenario", default_label)
 
-        if st.button("Add current scenario to table", disabled=scenario_snapshot is None):
-            scenario_entry = {"Label": scenario_label or default_label, **scenario_snapshot}
-            st.session_state["scenario_comparisons"].append(scenario_entry)
-            st.success("Scenario saved. Adjust inputs and add another to compare.")
+                if scenario_snapshot is None:
+                    st.info("Run the simulation to populate metrics before saving a scenario.")
 
-        if st.session_state["scenario_comparisons"]:
-            compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
-            st.dataframe(compare_df.style.format({
-                'Compliance (%)': '{:,.2f}',
-                'BESS share of firm (%)': '{:,.1f}',
-                'Charge/Discharge ratio': '{:,.3f}',
-                'PV capture ratio': '{:,.3f}',
-                'Total project generation (MWh)': '{:,.1f}',
-                'BESS share of generation (MWh)': '{:,.1f}',
-                'PV share of generation (MWh)': '{:,.1f}',
-                'PV excess (MWh)': '{:,.1f}',
-                'BESS losses (MWh)': '{:,.1f}',
-                'Final EOY usable (MWh)': '{:,.1f}',
-                'Final EOY power (MW)': '{:,.2f}',
-                'Final eq cycles (year)': '{:,.1f}',
-                'Final SOH_total': '{:,.3f}',
-            }))
-            if st.button("Clear saved scenarios"):
-                st.session_state["scenario_comparisons"] = []
-        else:
-            st.info("No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'.")
+                if st.button("Add current scenario to table", disabled=scenario_snapshot is None):
+                    scenario_entry = {"Label": scenario_label or default_label, **scenario_snapshot}
+                    st.session_state["scenario_comparisons"].append(scenario_entry)
+                    st.success("Scenario saved. Adjust inputs and add another to compare.")
+
+                if st.session_state["scenario_comparisons"]:
+                    compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
+                    st.dataframe(compare_df.style.format({
+                        'Compliance (%)': '{:,.2f}',
+                        'BESS share of firm (%)': '{:,.1f}',
+                        'Charge/Discharge ratio': '{:,.3f}',
+                        'PV capture ratio': '{:,.3f}',
+                        'Total project generation (MWh)': '{:,.1f}',
+                        'BESS share of generation (MWh)': '{:,.1f}',
+                        'PV share of generation (MWh)': '{:,.1f}',
+                        'PV excess (MWh)': '{:,.1f}',
+                        'BESS losses (MWh)': '{:,.1f}',
+                        'Final EOY usable (MWh)': '{:,.1f}',
+                        'Final EOY power (MW)': '{:,.2f}',
+                        'Final eq cycles (year)': '{:,.1f}',
+                        'Final SOH_total': '{:,.3f}',
+                    }))
+                    if st.button("Clear saved scenarios"):
+                        st.session_state["scenario_comparisons"] = []
+                else:
+                    st.info(
+                        "No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'."
+                    )
+
+    comparison_placeholder = st.container()
+    render_scenario_comparisons(comparison_placeholder)
 
     run_cols = st.columns([2, 1])
     with run_cols[0]:
@@ -2069,6 +2081,9 @@ def run_app():
         'Final eq cycles (year)': final.eq_cycles,
         'Final SOH_total': final.soh_total,
     }
+
+    comparison_placeholder.empty()
+    render_scenario_comparisons(comparison_placeholder)
 
     def _fmt_percent(value: float, as_fraction: bool = False) -> str:
         if math.isnan(value):
