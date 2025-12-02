@@ -1920,7 +1920,9 @@ def run_app():
 
                 scenario_snapshot = st.session_state.get("latest_scenario_snapshot")
                 default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
-                scenario_label = st.text_input("Label for this scenario", default_label)
+                scenario_label = st.text_input(
+                    "Label for this scenario", default_label, key="scenario_label_input"
+                )
 
                 if scenario_snapshot is None:
                     st.info("Run the simulation to populate metrics before saving a scenario.")
@@ -1954,9 +1956,6 @@ def run_app():
                         "No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'."
                     )
 
-    comparison_placeholder = st.container()
-    render_scenario_comparisons(comparison_placeholder)
-
     run_cols = st.columns([2, 1])
     with run_cols[0]:
         run_clicked = st.button(
@@ -1969,7 +1968,10 @@ def run_app():
             "Edit parameters freely, then run when ready. Scenarios can still be batch-run above."
         )
 
+    comparison_placeholder = st.container()
+
     if not run_clicked:
+        render_scenario_comparisons(comparison_placeholder)
         st.info("Click 'Run simulation' to generate results after updating inputs.")
         st.stop()
 
