@@ -1239,7 +1239,16 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
     augmentation_events = 0
 
     for y in range(1, cfg.years + 1):
-        yr, logs, monthly_results = simulate_year(state, y, dod_key_override, need_logs=(need_logs and y == cfg.years))
+        # Capture hourly logs for both the first and final year so the Average Daily Profile
+        # charts have data to render. We still run with `need_logs=True` across the loop so the
+        # per-hour aggregates remain available for the project-average view, while downstream
+        # consumers can opt out entirely by calling `simulate_project(..., need_logs=False)`.
+        yr, logs, monthly_results = simulate_year(
+            state,
+            y,
+            dod_key_override,
+            need_logs=need_logs,
+        )
         hours = np.mod(logs.hod.astype(int), 24)
         np.add.at(hod_count, hours, 1)
         np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
