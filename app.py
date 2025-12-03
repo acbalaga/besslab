@@ -398,6 +398,7 @@ class YearResult:
     breach_days: int
     charge_mwh: float
     discharge_mwh: float
+    available_pv_mwh: float
     pv_to_contract_mwh: float
     bess_to_contract_mwh: float
     avg_rte: float
@@ -433,6 +434,7 @@ class MonthResult:
     breach_days: int
     charge_mwh: float
     discharge_mwh: float
+    available_pv_mwh: float
     pv_to_contract_mwh: float
     bess_to_contract_mwh: float
     avg_rte: float
@@ -806,6 +808,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     month_shortfall = np.zeros(12)
     month_charge = np.zeros(12)
     month_discharge = np.zeros(12)
+    month_pv_available = np.zeros(12)
     month_pv_contract = np.zeros(12)
     month_bess_contract = np.zeros(12)
     month_pv_curtailed = np.zeros(12)
@@ -813,13 +816,16 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     month_flag_soc_floor_hits = np.zeros(12, dtype=int)
     month_flag_soc_ceiling_hits = np.zeros(12, dtype=int)
 
-    expected_firm_mwh = charged_mwh = discharged_mwh = pv_to_contract_mwh = bess_to_contract_mwh = pv_curtailed_mwh = 0.0
+    expected_firm_mwh = charged_mwh = discharged_mwh = pv_available_mwh = pv_to_contract_mwh = bess_to_contract_mwh = pv_curtailed_mwh = 0.0
     flag_shortfall_hours = flag_soc_floor_hits = flag_soc_ceiling_hits = 0
 
     for h in range(n_hours):
         is_dis = in_any_window(int(hod[h]), dis_windows)
         is_ch = True if not ch_windows else in_any_window(int(hod[h]), ch_windows)
         pv_avail_mw = max(0.0, pv_mw[h])
+
+        pv_available_mwh += pv_avail_mw * dt
+        month_pv_available[month_index[h]] += pv_avail_mw * dt
 
         target_mw = cfg.contracted_mw if is_dis else 0.0
         expected_firm_mwh += target_mw * dt
@@ -921,6 +927,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         breach_days=breach_days,
         charge_mwh=charged_mwh,
         discharge_mwh=discharged_mwh,
+        available_pv_mwh=pv_available_mwh,
         pv_to_contract_mwh=pv_to_contract_mwh,
         bess_to_contract_mwh=bess_to_contract_mwh,
         avg_rte=float(avg_rte) if not np.isnan(avg_rte) else float('nan'),
@@ -969,6 +976,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
             breach_days=month_shortfall_days[m],
             charge_mwh=month_charge[m],
             discharge_mwh=month_discharge[m],
+            available_pv_mwh=month_pv_available[m],
             pv_to_contract_mwh=month_pv_contract[m],
             bess_to_contract_mwh=month_bess_contract[m],
             avg_rte=float(month_discharge[m] / month_charge[m]) if month_charge[m] > 0 else float('nan'),
@@ -2023,6 +2031,7 @@ def run_app():
         'Breach days (has any shortfall)': r.breach_days,
         'Charge MWh': r.charge_mwh,
         'Discharge MWh (from BESS)': r.discharge_mwh,
+        'Available PV MWh': r.available_pv_mwh,
         'PV→Contract MWh': r.pv_to_contract_mwh,
         'BESS→Contract MWh': r.bess_to_contract_mwh,
         'Avg RTE': r.avg_rte,
@@ -2045,6 +2054,7 @@ def run_app():
         'Breach days (has any shortfall)': m.breach_days,
         'Charge MWh': m.charge_mwh,
         'Discharge MWh (from BESS)': m.discharge_mwh,
+        'Available PV MWh': m.available_pv_mwh,
         'PV→Contract MWh': m.pv_to_contract_mwh,
         'BESS→Contract MWh': m.bess_to_contract_mwh,
         'Avg RTE': m.avg_rte,
@@ -2779,6 +2789,7 @@ def run_app():
         'Shortfall MWh': '{:,.1f}',
         'Charge MWh': '{:,.1f}',
         'Discharge MWh (from BESS)': '{:,.1f}',
+        'Available PV MWh': '{:,.1f}',
         'PV→Contract MWh': '{:,.1f}',
         'BESS→Contract MWh': '{:,.1f}',
         'Avg RTE': '{:,.3f}',
@@ -2799,6 +2810,7 @@ def run_app():
             'Shortfall MWh': '{:,.1f}',
             'Charge MWh': '{:,.1f}',
             'Discharge MWh (from BESS)': '{:,.1f}',
+            'Available PV MWh': '{:,.1f}',
             'PV→Contract MWh': '{:,.1f}',
             'BESS→Contract MWh': '{:,.1f}',
             'Avg RTE': '{:,.3f}',
