@@ -313,12 +313,20 @@ def parse_windows(text: str) -> List[Window]:
 
 # --------- Degradation helpers ---------
 
-def infer_dod_bucket(daily_dis_mwh: np.ndarray, usable_mwh_bol: float) -> int:
-    if usable_mwh_bol <= 0: return 100
+def infer_dod_bucket(daily_dis_mwh: np.ndarray, usable_mwh_available: float) -> int:
+    """Infer an effective DoD bucket from daily discharge energy.
+
+    The usable energy basis should reflect the battery's available capability
+    (after degradation/availability), not just the original BOL rating. Using
+    an inflated reference skews the implied DoD downward and overstates the
+    equivalent cycles computed later in the simulation.
+    """
+
+    if usable_mwh_available <= 0: return 100
     if len(daily_dis_mwh) == 0: return 10
     med = float(np.median(daily_dis_mwh))
     if med <= 0: return 10
-    r = med / max(1e-9, usable_mwh_bol)
+    r = med / max(1e-9, usable_mwh_available)
     if r >= 0.9: return 100
     if r >= 0.8: return 80
     if r >= 0.4: return 40
@@ -871,7 +879,11 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     avg_rte = (discharged_mwh / charged_mwh) if charged_mwh > 0 else np.nan
 
-    dod_key_eff = dod_key if dod_key is not None else infer_dod_bucket(daily_dis_mwh, state.current_usable_mwh_bolref)
+    dod_key_eff = (
+        dod_key
+        if dod_key is not None
+        else infer_dod_bucket(daily_dis_mwh, usable_mwh_start)
+    )
     state.last_dod_key = dod_key_eff
     dod_frac = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}[dod_key_eff]
     usable_for_cycles = max(1e-9, state.current_usable_mwh_bolref * dod_frac)
