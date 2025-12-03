@@ -241,6 +241,16 @@ def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge
     )
 
 
+def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge_mw: pd.Series) -> pd.Series:
+    """Return PV surplus/curtailment after serving contract and charging.
+
+    Negative values are clipped to zero to avoid showing deficit as surplus, while
+    preserving vectorized performance for large hourly datasets.
+    """
+
+    return np.maximum(pv_resource - pv_to_contract - charge_mw, 0.0)
+
+
 def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
     """Read cycle model Excel with column pairs DoD*_Cycles / DoD*_Ret(%)."""
     last_err = None
