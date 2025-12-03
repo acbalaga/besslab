@@ -3085,6 +3085,7 @@ def run_app():
             'contracted_mw': contracted_series,
         })
         avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
+        avg['pv_surplus_mw'] = np.maximum(avg['pv_resource_mw'] - avg['pv_to_contract_mw'] - avg['charge_mw'], 0.0)
         avg['charge_mw_neg'] = -avg['charge_mw']
         return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
@@ -3126,7 +3127,7 @@ def run_app():
         )
         contrib_chart = (
             alt.Chart(contrib_long)
-            .mark_bar(opacity=0.85)
+            .mark_bar(opacity=0.9, size=16)
             .encode(
                 x=base_x,
                 x2='hour_end:Q',
@@ -3178,14 +3179,25 @@ def run_app():
             for h in range(24)
         ], dtype=float)
         with np.errstate(invalid='ignore', divide='ignore'):
+            avg_charge = np.divide(
+                hod_sum_charge,
+                hod_count,
+                out=np.zeros_like(hod_sum_charge),
+                where=hod_count > 0,
+            )
             avg_project = pd.DataFrame({
                 'hour': np.arange(24),
                 'pv_resource_mw': np.divide(hod_sum_pv_resource, hod_count, out=np.zeros_like(hod_sum_pv_resource), where=hod_count > 0),
                 'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
                 'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
-                'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
+                'charge_mw': avg_charge,
+                'charge_mw_neg': -avg_charge,
                 'contracted_mw': contracted_by_hour,
             })
+            avg_project['pv_surplus_mw'] = np.maximum(
+                avg_project['pv_resource_mw'] - avg_project['pv_to_contract_mw'] - avg_project['charge_mw'],
+                0.0,
+            )
 
         tab_final, tab_first, tab_project = st.tabs([
             "Final year",
@@ -3232,6 +3244,10 @@ def run_app():
             'charge_mw': final_year_logs.charge_mw,
             'discharge_mw': final_year_logs.discharge_mw,
             'soc_mwh': final_year_logs.soc_mwh,
+            'pv_surplus_mw': np.maximum(
+                final_year_logs.pv_mw - final_year_logs.pv_to_contract_mw - final_year_logs.charge_mw,
+                0.0,
+            ),
         })
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
                            file_name='final_year_hourly_logs.csv', mime='text/csv')
