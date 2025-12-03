@@ -6,6 +6,6 @@ port = 8501
 [fileWatcher]
 type = "none"
 
-[theme]
-base = "dark"
-primaryColor = "#f2a900"
+##[theme]
+##base = "dark"
+##primaryColor = "#f2a900"
