@@ -218,6 +218,16 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         df["pv_mw"] = df["pv_mw"].astype(float)
         return df
 
+
+def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge_mw: pd.Series) -> pd.Series:
+    """Return PV surplus/curtailment after serving contract and charging.
+
+    Negative values are clipped to zero to avoid showing deficit as surplus, while
+    preserving vectorized performance for large hourly datasets.
+    """
+
+    return np.maximum(pv_resource - pv_to_contract - charge_mw, 0.0)
+
     last_err = None
     for candidate in path_candidates:
         try:
@@ -3085,9 +3095,19 @@ def run_app():
             'contracted_mw': contracted_series,
         })
         avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
-        avg['pv_surplus_mw'] = np.maximum(avg['pv_resource_mw'] - avg['pv_to_contract_mw'] - avg['charge_mw'], 0.0)
+        avg['pv_surplus_mw'] = compute_pv_surplus(
+            avg['pv_resource_mw'], avg['pv_to_contract_mw'], avg['charge_mw']
+        )
         avg['charge_mw_neg'] = -avg['charge_mw']
-        return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
+        return avg[[
+            'hour',
+            'pv_resource_mw',
+            'pv_to_contract_mw',
+            'bess_to_contract_mw',
+            'pv_surplus_mw',
+            'charge_mw_neg',
+            'contracted_mw',
+        ]]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
         # Extend hourly bounds to support step-style contract lines that cover the full 24-hour window.
@@ -3152,6 +3172,16 @@ def run_app():
             )
         )
 
+        pv_surplus_area = (
+            base
+            .mark_area(color='#f7c5c5', opacity=0.45)
+            .encode(
+                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                y=alt.Y('pv_surplus_mw:Q', title='MW'),
+                tooltip=[alt.Tooltip('pv_surplus_mw:Q', title='PV surplus (MW)', format='.2f')]
+            )
+        )
+
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
 
         contract_steps = avg_df[['hour', 'contracted_mw']].copy()
@@ -3167,7 +3197,7 @@ def run_app():
             .encode(x=base_x, y='contracted_mw:Q')
         )
 
-        st.altair_chart(contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
+        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + pv_surplus_area + line_contract,
                         use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
@@ -3194,9 +3224,10 @@ def run_app():
                 'charge_mw_neg': -avg_charge,
                 'contracted_mw': contracted_by_hour,
             })
-            avg_project['pv_surplus_mw'] = np.maximum(
-                avg_project['pv_resource_mw'] - avg_project['pv_to_contract_mw'] - avg_project['charge_mw'],
-                0.0,
+            avg_project['pv_surplus_mw'] = compute_pv_surplus(
+                avg_project['pv_resource_mw'],
+                avg_project['pv_to_contract_mw'],
+                avg_project['charge_mw'],
             )
 
         tab_final, tab_first, tab_project = st.tabs([
@@ -3211,9 +3242,9 @@ def run_app():
         with tab_project:
             _render_avg_profile_chart(avg_project)
         st.caption(
-            "Stacked positive bars (with same-hour soft fill to baseline): PV→Contract (blue) + BESS→Contract (green). "
-            "Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). "
-            "Contract line overlaid as a step (gold)."
+            "Stacked bars (narrow width with soft fill): PV→Contract (blue) + BESS→Contract (green) fill the contract box "
+            "(gold). Negative area: BESS charging (purple). PV surplus/curtailment shown in light red. PV resource overlay "
+            "(tan, dashed outline). Contract step shown with gold outline."
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
@@ -3244,9 +3275,10 @@ def run_app():
             'charge_mw': final_year_logs.charge_mw,
             'discharge_mw': final_year_logs.discharge_mw,
             'soc_mwh': final_year_logs.soc_mwh,
-            'pv_surplus_mw': np.maximum(
-                final_year_logs.pv_mw - final_year_logs.pv_to_contract_mw - final_year_logs.charge_mw,
-                0.0,
+            'pv_surplus_mw': compute_pv_surplus(
+                final_year_logs.pv_mw,
+                final_year_logs.pv_to_contract_mw,
+                final_year_logs.charge_mw,
             ),
         })
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
