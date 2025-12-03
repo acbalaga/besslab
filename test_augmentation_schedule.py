@@ -19,6 +19,7 @@ def _make_year_result(year: int) -> YearResult:
         breach_days=0,
         charge_mwh=0.0,
         discharge_mwh=0.0,
+        available_pv_mwh=0.0,
         pv_to_contract_mwh=0.0,
         bess_to_contract_mwh=0.0,
         avg_rte=0.0,
