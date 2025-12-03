@@ -3185,7 +3185,7 @@ def run_app():
             base
             .mark_area(color='#f7c5c5', opacity=0.45)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                x=base_x,
                 y=alt.Y('pv_surplus_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_surplus_mw:Q', title='PV surplus (MW)', format='.2f')]
             )
