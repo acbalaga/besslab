@@ -3114,7 +3114,7 @@ def run_app():
         })
         contrib_fill = (
             alt.Chart(contrib_long)
-            .mark_bar(opacity=0.28)
+            .mark_area(opacity=0.28, interpolate='step-after')
             .encode(
                 x=base_x,
                 x2='hour_end:Q',
@@ -3126,7 +3126,7 @@ def run_app():
         )
         contrib_chart = (
             alt.Chart(contrib_long)
-            .mark_bar(opacity=0.85)
+            .mark_area(opacity=0.85, interpolate='step-after')
             .encode(
                 x=base_x,
                 x2='hour_end:Q',
@@ -3158,13 +3158,22 @@ def run_app():
             contract_steps,
             pd.DataFrame({'hour': [24], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
         ], ignore_index=True)
+        contract_box = (
+            alt.Chart(contract_steps)
+            .mark_area(color='#f2a900', opacity=0.1, interpolate='step-after')
+            .encode(
+                x=base_x,
+                y=alt.Y('contracted_mw:Q', title='MW'),
+                y2=alt.value(0)
+            )
+        )
         line_contract = (
             alt.Chart(contract_steps)
             .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
             .encode(x=base_x, y='contracted_mw:Q')
         )
 
-        st.altair_chart(contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
+        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
                         use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
@@ -3197,9 +3206,9 @@ def run_app():
         with tab_project:
             _render_avg_profile_chart(avg_project)
         st.caption(
-            "Stacked positive bars (with same-hour soft fill to baseline): PV→Contract (blue) + BESS→Contract (green). "
-            "Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). "
-            "Contract line overlaid as a step (gold)."
+            "Stacked step areas (with same-hour soft fill to baseline): PV→Contract (blue) + BESS→Contract (green) "
+            "show how the contract box (gold) is filled. Negative area: BESS charging (purple). "
+            "PV resource overlay (tan, dashed outline). Contract step shown with gold outline."
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
