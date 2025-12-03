@@ -218,16 +218,6 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         df["pv_mw"] = df["pv_mw"].astype(float)
         return df
 
-
-def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge_mw: pd.Series) -> pd.Series:
-    """Return PV surplus/curtailment after serving contract and charging.
-
-    Negative values are clipped to zero to avoid showing deficit as surplus, while
-    preserving vectorized performance for large hourly datasets.
-    """
-
-    return np.maximum(pv_resource - pv_to_contract - charge_mw, 0.0)
-
     last_err = None
     for candidate in path_candidates:
         if candidate is None:
@@ -1213,6 +1203,9 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
 
 def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame, dod_override: str,
                      need_logs: bool = True) -> SimulationOutput:
+    if pv_df is None or pv_df.empty:
+        raise ValueError("PV profile is missing or empty; please upload a valid 8760.")
+
     if not cfg.discharge_windows:
         raise ValueError("Please provide at least one discharge window.")
 
@@ -3126,6 +3119,8 @@ def run_app():
         ]]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
+        """Render average daily PV/BESS contributions with contract overlays."""
+
         # Extend hourly bounds to support step-style contract lines that cover the full 24-hour window.
         base_x = alt.X(
             'hour:Q',
@@ -3134,8 +3129,20 @@ def run_app():
             axis=alt.Axis(values=list(range(0, 25, 2)))
         )
 
-        avg_df = avg_df.copy()
+        # Ensure all hours are present (fill missing with zeros) and derive visualization helpers.
+        columns = avg_df.columns
+        avg_df = (
+            pd.DataFrame({'hour': np.arange(24)})
+            .merge(avg_df, on='hour', how='left')
+            .fillna(0.0)
+            .astype({c: float for c in columns if c != 'hour'})
+        )
         avg_df['hour_end'] = avg_df['hour'] + 1
+
+        contract_active = avg_df['contracted_mw'] > 0
+        contract_last_hour = contract_active & (~contract_active.shift(-1).fillna(False))
+        avg_df['contracted_vis_mw'] = avg_df['contracted_mw'].where(~contract_last_hour, 0.0)
+
         base = alt.Chart(avg_df).encode(x=base_x)
 
         contrib_long = avg_df.melt(id_vars=['hour', 'hour_end'],
@@ -3192,21 +3199,33 @@ def run_app():
             base
             .mark_area(color='#f7c5c5', opacity=0.45)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                x=base_x,
                 y=alt.Y('pv_surplus_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_surplus_mw:Q', title='PV surplus (MW)', format='.2f')]
             )
         )
 
-        area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
+        area_chg = (
+            base
+            .mark_area(opacity=0.55, color='#caa6ff')
+            .encode(y='charge_mw_neg:Q')
+        )
 
-        contract_steps = avg_df[['hour', 'contracted_mw']].copy()
         contract_steps = pd.concat([
-            contract_steps,
-            # Offset the terminal step by -1 hour so the step line ends where the final
-            # bar (hour 23→24) finishes instead of extending past the stacked bars.
-            pd.DataFrame({'hour': [23], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
+            avg_df[['hour', 'contracted_vis_mw']].rename(columns={'contracted_vis_mw': 'contracted_mw'}),
+            pd.DataFrame({'hour': [24], 'contracted_mw': [0.0]}),
         ], ignore_index=True)
+
+        contract_box = (
+            alt.Chart(avg_df)
+            .mark_rect(color='#f2a900', opacity=0.08, stroke='#f2a900', strokeWidth=1.5)
+            .encode(
+                x=base_x,
+                x2='hour_end:Q',
+                y=alt.value(0),
+                y2='contracted_vis_mw:Q'
+            )
+        )
         line_contract = (
             alt.Chart(contract_steps)
             .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
