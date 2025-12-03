@@ -220,6 +220,8 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
 
     last_err = None
     for candidate in path_candidates:
+        if candidate is None:
+            continue
         try:
             df = pd.read_csv(candidate)
             return _clean(df)
@@ -229,6 +231,16 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         "Failed to read PV profile. "
         f"Looked for: {path_candidates}. Last error: {last_err}"
     )
+
+
+def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge_mw: pd.Series) -> pd.Series:
+    """Return PV surplus/curtailment after serving contract and charging.
+
+    Negative values are clipped to zero to avoid showing deficit as surplus, while
+    preserving vectorized performance for large hourly datasets.
+    """
+
+    return np.maximum(pv_resource - pv_to_contract - charge_mw, 0.0)
 
 
 def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
@@ -1371,7 +1383,11 @@ def run_app():
         default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
 
         pv_file = st.file_uploader("PV 8760 CSV (hour_index, pv_mw in MW)", type=['csv'])
-        pv_df = pd.read_csv(pv_file) if pv_file is not None else read_pv_profile(default_pv_paths)
+        try:
+            pv_df = read_pv_profile([pv_file] if pv_file is not None else default_pv_paths)
+        except Exception as exc:
+            st.error(f"Unable to load PV profile: {exc}")
+            st.stop()
 
         cycle_file = st.file_uploader("Cycle model Excel (optional override)", type=['xlsx'])
         cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
@@ -3085,8 +3101,19 @@ def run_app():
             'contracted_mw': contracted_series,
         })
         avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
+        avg['pv_surplus_mw'] = compute_pv_surplus(
+            avg['pv_resource_mw'], avg['pv_to_contract_mw'], avg['charge_mw']
+        )
         avg['charge_mw_neg'] = -avg['charge_mw']
-        return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
+        return avg[[
+            'hour',
+            'pv_resource_mw',
+            'pv_to_contract_mw',
+            'bess_to_contract_mw',
+            'pv_surplus_mw',
+            'charge_mw_neg',
+            'contracted_mw',
+        ]]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
         axis_x = alt.Axis(values=list(range(0, 24, 2)))
@@ -3141,6 +3168,16 @@ def run_app():
             )
         )
 
+        pv_surplus_area = (
+            base
+            .mark_area(color='#f7c5c5', opacity=0.45)
+            .encode(
+                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                y=alt.Y('pv_surplus_mw:Q', title='MW'),
+                tooltip=[alt.Tooltip('pv_surplus_mw:Q', title='PV surplus (MW)', format='.2f')]
+            )
+        )
+
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
 
         contract_steps = avg_df[['hour', 'contracted_mw']].copy()
@@ -3163,7 +3200,7 @@ def run_app():
             .encode(x=alt.X('hour:O', title='Hour of Day', axis=None), y='contracted_mw:Q')
         )
 
-        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
+        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + pv_surplus_area + line_contract,
                         use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
@@ -3175,14 +3212,26 @@ def run_app():
             for h in range(24)
         ], dtype=float)
         with np.errstate(invalid='ignore', divide='ignore'):
+            avg_charge = np.divide(
+                hod_sum_charge,
+                hod_count,
+                out=np.zeros_like(hod_sum_charge),
+                where=hod_count > 0,
+            )
             avg_project = pd.DataFrame({
                 'hour': np.arange(24),
                 'pv_resource_mw': np.divide(hod_sum_pv_resource, hod_count, out=np.zeros_like(hod_sum_pv_resource), where=hod_count > 0),
                 'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
                 'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
-                'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
+                'charge_mw': avg_charge,
+                'charge_mw_neg': -avg_charge,
                 'contracted_mw': contracted_by_hour,
             })
+            avg_project['pv_surplus_mw'] = compute_pv_surplus(
+                avg_project['pv_resource_mw'],
+                avg_project['pv_to_contract_mw'],
+                avg_project['charge_mw'],
+            )
 
         tab_final, tab_first, tab_project = st.tabs([
             "Final year",
@@ -3197,8 +3246,8 @@ def run_app():
             _render_avg_profile_chart(avg_project)
         st.caption(
             "Stacked bars (narrow width with soft fill): PV→Contract (blue) + BESS→Contract (green) fill the contract box "
-            "(gold). Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). Contract step shown "
-            "with gold outline."
+            "(gold). Negative area: BESS charging (purple). PV surplus/curtailment shown in light red. PV resource overlay "
+            "(tan, dashed outline). Contract step shown with gold outline."
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
@@ -3229,6 +3278,11 @@ def run_app():
             'charge_mw': final_year_logs.charge_mw,
             'discharge_mw': final_year_logs.discharge_mw,
             'soc_mwh': final_year_logs.soc_mwh,
+            'pv_surplus_mw': compute_pv_surplus(
+                final_year_logs.pv_mw,
+                final_year_logs.pv_to_contract_mw,
+                final_year_logs.charge_mw,
+            ),
         })
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
                            file_name='final_year_hourly_logs.csv', mime='text/csv')
