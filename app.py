@@ -459,6 +459,7 @@ class SimulationOutput:
     final_year_logs: Optional[HourlyLog]
     hod_count: np.ndarray
     hod_sum_pv: np.ndarray
+    hod_sum_pv_resource: np.ndarray
     hod_sum_bess: np.ndarray
     hod_sum_charge: np.ndarray
     augmentation_energy_added_mwh: List[float]
@@ -1217,6 +1218,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
     final_year_logs = None
     hod_count = np.zeros(24, dtype=float)
     hod_sum_pv = np.zeros(24, dtype=float)
+    hod_sum_pv_resource = np.zeros(24, dtype=float)
     hod_sum_bess = np.zeros(24, dtype=float)
     hod_sum_charge = np.zeros(24, dtype=float)
     augmentation_events = 0
@@ -1226,6 +1228,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         hours = np.mod(logs.hod.astype(int), 24)
         np.add.at(hod_count, hours, 1)
         np.add.at(hod_sum_pv, hours, logs.pv_to_contract_mw)
+        np.add.at(hod_sum_pv_resource, hours, logs.pv_mw)
         np.add.at(hod_sum_bess, hours, logs.bess_to_contract_mw)
         np.add.at(hod_sum_charge, hours, logs.charge_mw)
         if y == 1 and need_logs:
@@ -1254,6 +1257,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         final_year_logs=final_year_logs,
         hod_count=hod_count,
         hod_sum_pv=hod_sum_pv,
+        hod_sum_pv_resource=hod_sum_pv_resource,
         hod_sum_bess=hod_sum_bess,
         hod_sum_charge=hod_sum_charge,
         augmentation_energy_added_mwh=augmentation_energy_added,
@@ -2018,6 +2022,7 @@ def run_app():
     final_year_logs = sim_output.final_year_logs
     hod_count = sim_output.hod_count
     hod_sum_pv = sim_output.hod_sum_pv
+    hod_sum_pv_resource = sim_output.hod_sum_pv_resource
     hod_sum_bess = sim_output.hod_sum_bess
     hod_sum_charge = sim_output.hod_sum_charge
     dis_hours_per_day = sim_output.discharge_hours_per_day
@@ -3073,6 +3078,7 @@ def run_app():
         ], dtype=float)
         df_hr = pd.DataFrame({
             'hod': logs.hod.astype(int),
+            'pv_resource_mw': logs.pv_mw,
             'pv_to_contract_mw': logs.pv_to_contract_mw,
             'bess_to_contract_mw': logs.bess_to_contract_mw,
             'charge_mw': logs.charge_mw,
@@ -3080,7 +3086,7 @@ def run_app():
         })
         avg = df_hr.groupby('hod', as_index=False).mean().rename(columns={'hod': 'hour'})
         avg['charge_mw_neg'] = -avg['charge_mw']
-        return avg[['hour', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
+        return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
         base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
@@ -3108,9 +3114,22 @@ def run_app():
             )
         )
 
+        pv_resource_area = (
+            base
+            .mark_area(
+                opacity=0.18,
+                color='#f2d7a0',
+                line=alt.LineConfig(color='#c78100', strokeDash=[6, 3], strokeWidth=2)
+            )
+            .encode(
+                y=alt.Y('pv_resource_mw:Q', title='MW'),
+                tooltip=[alt.Tooltip('pv_resource_mw:Q', title='PV resource (MW)', format='.2f')]
+            )
+        )
+
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
-        line_contract = base.mark_line(color='#f2a900', strokeWidth=2).encode(y='contracted_mw:Q')
-        st.altair_chart(contrib_chart + area_chg + line_contract, use_container_width=True)
+        line_contract = base.mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after').encode(y='contracted_mw:Q')
+        st.altair_chart(contrib_chart + area_chg + pv_resource_area + line_contract, use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
         avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
@@ -3123,6 +3142,7 @@ def run_app():
         with np.errstate(invalid='ignore', divide='ignore'):
             avg_project = pd.DataFrame({
                 'hour': np.arange(24),
+                'pv_resource_mw': np.divide(hod_sum_pv_resource, hod_count, out=np.zeros_like(hod_sum_pv_resource), where=hod_count > 0),
                 'pv_to_contract_mw': np.divide(hod_sum_pv, hod_count, out=np.zeros_like(hod_sum_pv), where=hod_count > 0),
                 'bess_to_contract_mw': np.divide(hod_sum_bess, hod_count, out=np.zeros_like(hod_sum_bess), where=hod_count > 0),
                 'charge_mw_neg': -np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0),
@@ -3140,7 +3160,10 @@ def run_app():
             _render_avg_profile_chart(avg_first_year)
         with tab_project:
             _render_avg_profile_chart(avg_project)
-        st.caption("Positive bars: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). Contract line overlaid (gold).")
+        st.caption(
+            "Positive bars: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). "
+            "PV resource overlay (tan, dashed outline). Contract line overlaid as a step (gold)."
+        )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
 
