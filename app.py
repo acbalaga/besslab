@@ -3099,8 +3099,9 @@ def run_app():
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
         axis_x = alt.Axis(values=list(range(0, 24, 2)))
+        x_hour = alt.X('hour:O', title='Hour of Day', axis=axis_x)
 
-        base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day', axis=None))
+        base = alt.Chart(avg_df).encode(x=x_hour)
 
         contrib_long = avg_df.melt(id_vars=['hour'],
                                    value_vars=['pv_to_contract_mw', 'bess_to_contract_mw'],
@@ -3117,7 +3118,7 @@ def run_app():
             alt.Chart(contrib_long)
             .mark_bar(opacity=0.28, size=16)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=axis_x),
+                x=x_hour,
                 y=alt.Y('MW:Q', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b']), legend=None),
@@ -3128,7 +3129,7 @@ def run_app():
             alt.Chart(contrib_long)
             .mark_bar(opacity=0.9, size=16)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=axis_x),
+                x=x_hour,
                 y=alt.Y('MW:Q', title='MW', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b'])),
@@ -3144,7 +3145,7 @@ def run_app():
                 line=alt.LineConfig(color='#c78100', strokeDash=[6, 3], strokeWidth=2)
             )
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                x=x_hour,
                 y=alt.Y('pv_resource_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_resource_mw:Q', title='PV resource (MW)', format='.2f')]
             )
@@ -3154,7 +3155,7 @@ def run_app():
             base
             .mark_area(color='#f7c5c5', opacity=0.45)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                x=x_hour,
                 y=alt.Y('pv_surplus_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_surplus_mw:Q', title='PV surplus (MW)', format='.2f')]
             )
@@ -3163,23 +3164,36 @@ def run_app():
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
 
         contract_steps = avg_df[['hour', 'contracted_mw']].copy()
+        contract_outline = pd.concat([
+            contract_steps,
+            pd.DataFrame({'hour': [contract_steps['hour'].max() + 1], 'contracted_mw': [0.0]})
+        ], ignore_index=True)
         contract_box = (
             alt.Chart(contract_steps)
             .mark_bar(color='#f2a900', opacity=0.1, size=26)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day', axis=None),
-                y=alt.value(0),
-                y2=alt.Y2('contracted_mw')
+                x=x_hour,
+                y=alt.Y('contracted_mw:Q', title='MW'),
+                y2=alt.value(0)
             )
         )
         line_contract = (
-            alt.Chart(contract_steps)
+            alt.Chart(contract_outline)
             .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-before')
-            .encode(x=alt.X('hour:O', title='Hour of Day', axis=None), y='contracted_mw:Q')
+            .encode(x=x_hour, y='contracted_mw:Q')
         )
 
-        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + pv_surplus_area + line_contract,
-                        use_container_width=True)
+        chart_avg_profile = alt.layer(
+            contract_box,
+            line_contract,
+            pv_resource_area,
+            pv_surplus_area,
+            area_chg,
+            contrib_fill,
+            contrib_chart,
+        ).properties(height=360)
+
+        st.altair_chart(chart_avg_profile, use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
         avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
