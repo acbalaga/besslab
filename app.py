@@ -230,6 +230,8 @@ def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge
 
     last_err = None
     for candidate in path_candidates:
+        if candidate is None:
+            continue
         try:
             df = pd.read_csv(candidate)
             return _clean(df)
@@ -1391,7 +1393,11 @@ def run_app():
         default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
 
         pv_file = st.file_uploader("PV 8760 CSV (hour_index, pv_mw in MW)", type=['csv'])
-        pv_df = pd.read_csv(pv_file) if pv_file is not None else read_pv_profile(default_pv_paths)
+        try:
+            pv_df = read_pv_profile([pv_file] if pv_file is not None else default_pv_paths)
+        except Exception as exc:
+            st.error(f"Unable to load PV profile: {exc}")
+            st.stop()
 
         cycle_file = st.file_uploader("Cycle model Excel (optional override)", type=['xlsx'])
         cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
