@@ -218,16 +218,6 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         df["pv_mw"] = df["pv_mw"].astype(float)
         return df
 
-
-def compute_pv_surplus(pv_resource: pd.Series, pv_to_contract: pd.Series, charge_mw: pd.Series) -> pd.Series:
-    """Return PV surplus/curtailment after serving contract and charging.
-
-    Negative values are clipped to zero to avoid showing deficit as surplus, while
-    preserving vectorized performance for large hourly datasets.
-    """
-
-    return np.maximum(pv_resource - pv_to_contract - charge_mw, 0.0)
-
     last_err = None
     for candidate in path_candidates:
         if candidate is None:
@@ -1213,6 +1203,9 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
 
 def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame, dod_override: str,
                      need_logs: bool = True) -> SimulationOutput:
+    if pv_df is None or pv_df.empty:
+        raise ValueError("PV profile is missing or empty; please upload a valid 8760.")
+
     if not cfg.discharge_windows:
         raise ValueError("Please provide at least one discharge window.")
 
@@ -3198,15 +3191,31 @@ def run_app():
             )
         )
 
-        area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
+        area_chg = (
+            base
+            .mark_area(opacity=0.55, color='#caa6ff')
+            .encode(y='charge_mw_neg:Q')
+        )
 
         contract_steps = avg_df[['hour', 'contracted_mw']].copy()
+        # Append a terminal point at hour 24 so the step line stops at the final bar edge.
         contract_steps = pd.concat([
             contract_steps,
-            # Offset the terminal step by -1 hour so the step line ends where the final
-            # bar (hour 23→24) finishes instead of extending past the stacked bars.
-            pd.DataFrame({'hour': [23], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
+            pd.DataFrame({'hour': [24], 'contracted_mw': [0.0]})
         ], ignore_index=True)
+        # Drop the last hour of each discharge window from the visualization (e.g., 4–7 shows 4,5,6).
+        contract_steps['contracted_mw'] = contract_steps['contracted_mw'].where(contract_steps['hour'] < 24, 0.0)
+
+        contract_box = (
+            alt.Chart(avg_df)
+            .mark_rect(color='#f2a900', opacity=0.08, stroke='#f2a900', strokeWidth=1.5)
+            .encode(
+                x=base_x,
+                x2='hour_end:Q',
+                y=alt.value(0),
+                y2='contracted_mw:Q'
+            )
+        )
         line_contract = (
             alt.Chart(contract_steps)
             .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
