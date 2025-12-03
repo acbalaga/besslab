@@ -3119,6 +3119,8 @@ def run_app():
         ]]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
+        """Render average daily PV/BESS contributions with contract overlays."""
+
         # Extend hourly bounds to support step-style contract lines that cover the full 24-hour window.
         base_x = alt.X(
             'hour:Q',
@@ -3127,8 +3129,20 @@ def run_app():
             axis=alt.Axis(values=list(range(0, 25, 2)))
         )
 
-        avg_df = avg_df.copy()
+        # Ensure all hours are present (fill missing with zeros) and derive visualization helpers.
+        columns = avg_df.columns
+        avg_df = (
+            pd.DataFrame({'hour': np.arange(24)})
+            .merge(avg_df, on='hour', how='left')
+            .fillna(0.0)
+            .astype({c: float for c in columns if c != 'hour'})
+        )
         avg_df['hour_end'] = avg_df['hour'] + 1
+
+        contract_active = avg_df['contracted_mw'] > 0
+        contract_last_hour = contract_active & (~contract_active.shift(-1).fillna(False))
+        avg_df['contracted_vis_mw'] = avg_df['contracted_mw'].where(~contract_last_hour, 0.0)
+
         base = alt.Chart(avg_df).encode(x=base_x)
 
         contrib_long = avg_df.melt(id_vars=['hour', 'hour_end'],
@@ -3197,14 +3211,10 @@ def run_app():
             .encode(y='charge_mw_neg:Q')
         )
 
-        contract_steps = avg_df[['hour', 'contracted_mw']].copy()
-        # Append a terminal point at hour 24 so the step line stops at the final bar edge.
         contract_steps = pd.concat([
-            contract_steps,
-            pd.DataFrame({'hour': [24], 'contracted_mw': [0.0]})
+            avg_df[['hour', 'contracted_vis_mw']].rename(columns={'contracted_vis_mw': 'contracted_mw'}),
+            pd.DataFrame({'hour': [24], 'contracted_mw': [0.0]}),
         ], ignore_index=True)
-        # Drop the last hour of each discharge window from the visualization (e.g., 4–7 shows 4,5,6).
-        contract_steps['contracted_mw'] = contract_steps['contracted_mw'].where(contract_steps['hour'] < 24, 0.0)
 
         contract_box = (
             alt.Chart(avg_df)
@@ -3213,7 +3223,7 @@ def run_app():
                 x=base_x,
                 x2='hour_end:Q',
                 y=alt.value(0),
-                y2='contracted_mw:Q'
+                y2='contracted_vis_mw:Q'
             )
         )
         line_contract = (
