@@ -3112,6 +3112,18 @@ def run_app():
             'PV→Contract': 0,
             'BESS→Contract': 1,
         })
+        contrib_area = (
+            alt.Chart(contrib_long)
+            .mark_area(opacity=0.18)
+            .encode(
+                x=base_x,
+                x2='hour_end:Q',
+                y=alt.Y('MW:Q', stack='zero'),
+                color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
+                                                           range=['#86c5da', '#7fd18b']), legend=None),
+                order=alt.Order('SourceOrder:Q', sort='ascending')
+            )
+        )
         contrib_chart = (
             alt.Chart(contrib_long)
             .mark_bar(opacity=0.85)
@@ -3152,7 +3164,8 @@ def run_app():
             .encode(x=base_x, y='contracted_mw:Q')
         )
 
-        st.altair_chart(contrib_chart + area_chg + pv_resource_area + line_contract, use_container_width=True)
+        st.altair_chart(contrib_area + contrib_chart + area_chg + pv_resource_area + line_contract,
+                        use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
         avg_first_year = _avg_profile_df_from_logs(first_year_logs, cfg)
@@ -3184,8 +3197,9 @@ def run_app():
         with tab_project:
             _render_avg_profile_chart(avg_project)
         st.caption(
-            "Positive bars: PV→Contract (blue) + BESS→Contract (green). Negative area: BESS charging (purple). "
-            "PV resource overlay (tan, dashed outline). Contract line overlaid as a step (gold)."
+            "Stacked positive bars (with a soft fill to the baseline): PV→Contract (blue) + BESS→Contract (green). "
+            "Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). "
+            "Contract line overlaid as a step (gold)."
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
