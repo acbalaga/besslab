@@ -3112,9 +3112,9 @@ def run_app():
             'PV→Contract': 0,
             'BESS→Contract': 1,
         })
-        contrib_area = (
+        contrib_fill = (
             alt.Chart(contrib_long)
-            .mark_area(opacity=0.18)
+            .mark_bar(opacity=0.28)
             .encode(
                 x=base_x,
                 x2='hour_end:Q',
@@ -3164,7 +3164,7 @@ def run_app():
             .encode(x=base_x, y='contracted_mw:Q')
         )
 
-        st.altair_chart(contrib_area + contrib_chart + area_chg + pv_resource_area + line_contract,
+        st.altair_chart(contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
                         use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
@@ -3197,7 +3197,7 @@ def run_app():
         with tab_project:
             _render_avg_profile_chart(avg_project)
         st.caption(
-            "Stacked positive bars (with a soft fill to the baseline): PV→Contract (blue) + BESS→Contract (green). "
+            "Stacked positive bars (with same-hour soft fill to baseline): PV→Contract (blue) + BESS→Contract (green). "
             "Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). "
             "Contract line overlaid as a step (gold)."
         )
