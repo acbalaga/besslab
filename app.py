@@ -876,9 +876,14 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     dod_frac = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}[dod_key_eff]
     usable_for_cycles = max(1e-9, state.current_usable_mwh_bolref * dod_frac)
     eq_cycles_year = discharged_mwh / usable_for_cycles
-    cum_cycles_new = state.cum_cycles + eq_cycles_year
+    # Add the year's equivalent cycles once and reuse that increment for
+    # every cohort and the fleet-level counter. Keeping the increment in a
+    # single variable avoids accidental double-handling if state.cum_cycles
+    # is also updated by the caller.
+    cum_cycles_increment = eq_cycles_year
+    cum_cycles_new = state.cum_cycles + cum_cycles_increment
 
-    cohort_cycles_eoy = [c.cum_cycles + eq_cycles_year for c in state.cohorts]
+    cohort_cycles_eoy = [c.cum_cycles + cum_cycles_increment for c in state.cohorts]
     soh_cycle, soh_calendar, soh_total = compute_fleet_soh(
         state.cohorts,
         state.cycle_df,
@@ -972,6 +977,10 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     for idx, cohort in enumerate(state.cohorts):
         cohort.cum_cycles = cohort_cycles_eoy[idx]
+
+    # Keep the fleet-level cumulative cycles in sync with the cohorts to
+    # avoid adding the year's increment again elsewhere.
+    state.cum_cycles = cum_cycles_new
 
     logs = HourlyLog(
         hod=hod,
