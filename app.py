@@ -3169,7 +3169,7 @@ def run_app():
             .encode(
                 x=alt.X('hour:O', title='Hour of Day', axis=None),
                 y=alt.value(0),
-                y2=alt.Y('contracted_mw:Q', title='MW')
+                y2=alt.Y2('contracted_mw')
             )
         )
         line_contract = (
