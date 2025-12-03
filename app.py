@@ -356,7 +356,7 @@ class SimConfig:
     bess_availability: float = 0.99
     rte_roundtrip: float = 0.88           # single (η_rt)
     soc_floor: float = 0.10
-    soc_ceiling: float = 0.98
+    soc_ceiling: float = 0.90
     initial_power_mw: float = 30.0
     initial_usable_mwh: float = 120.0
     contracted_mw: float = 30.0
