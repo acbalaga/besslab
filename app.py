@@ -3179,8 +3179,8 @@ def run_app():
         )
         line_contract = (
             alt.Chart(contract_outline)
-            .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-before')
-            .encode(x=x_hour, y='contracted_mw:Q')
+            .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
+            .encode(x=x_hour-1, y='contracted_mw:Q')
         )
 
         chart_avg_profile = alt.layer(
