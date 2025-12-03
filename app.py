@@ -3089,9 +3089,19 @@ def run_app():
         return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
-        base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day'))
+        # Extend hourly bounds to support step-style contract lines that cover the full 24-hour window.
+        base_x = alt.X(
+            'hour:Q',
+            title='Hour of Day',
+            scale=alt.Scale(domain=[0, 24], nice=False),
+            axis=alt.Axis(values=list(range(0, 25, 2)))
+        )
 
-        contrib_long = avg_df.melt(id_vars=['hour'],
+        avg_df = avg_df.copy()
+        avg_df['hour_end'] = avg_df['hour'] + 1
+        base = alt.Chart(avg_df).encode(x=base_x)
+
+        contrib_long = avg_df.melt(id_vars=['hour', 'hour_end'],
                                    value_vars=['pv_to_contract_mw', 'bess_to_contract_mw'],
                                    var_name='Source', value_name='MW')
         contrib_long['Source'] = contrib_long['Source'].replace({
@@ -3106,7 +3116,8 @@ def run_app():
             alt.Chart(contrib_long)
             .mark_bar(opacity=0.85)
             .encode(
-                x=alt.X('hour:O', title='Hour of Day'),
+                x=base_x,
+                x2='hour_end:Q',
                 y=alt.Y('MW:Q', title='MW', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b'])),
@@ -3122,13 +3133,25 @@ def run_app():
                 line=alt.LineConfig(color='#c78100', strokeDash=[6, 3], strokeWidth=2)
             )
             .encode(
+                x=base_x,
                 y=alt.Y('pv_resource_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_resource_mw:Q', title='PV resource (MW)', format='.2f')]
             )
         )
 
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
-        line_contract = base.mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after').encode(y='contracted_mw:Q')
+
+        contract_steps = avg_df[['hour', 'contracted_mw']].copy()
+        contract_steps = pd.concat([
+            contract_steps,
+            pd.DataFrame({'hour': [24], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
+        ], ignore_index=True)
+        line_contract = (
+            alt.Chart(contract_steps)
+            .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
+            .encode(x=base_x, y='contracted_mw:Q')
+        )
+
         st.altair_chart(contrib_chart + area_chg + pv_resource_area + line_contract, use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
