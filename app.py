@@ -3163,22 +3163,18 @@ def run_app():
         area_chg = base.mark_area(opacity=0.5).encode(y='charge_mw_neg:Q', color=alt.value('#caa6ff'))
 
         contract_steps = avg_df[['hour', 'contracted_mw']].copy()
-        contract_steps = pd.concat([
-            contract_steps,
-            pd.DataFrame({'hour': [24], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
-        ], ignore_index=True)
         contract_box = (
             alt.Chart(contract_steps)
-            .mark_area(color='#f2a900', opacity=0.1, interpolate='step-after')
+            .mark_bar(color='#f2a900', opacity=0.1, size=26)
             .encode(
                 x=alt.X('hour:O', title='Hour of Day', axis=None),
-                y=alt.Y('contracted_mw:Q', title='MW'),
-                y2=alt.value(0)
+                y=alt.value(0),
+                y2=alt.Y2('contracted_mw')
             )
         )
         line_contract = (
             alt.Chart(contract_steps)
-            .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
+            .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-before')
             .encode(x=alt.X('hour:O', title='Hour of Day', axis=None), y='contracted_mw:Q')
         )
 
