@@ -3089,19 +3089,11 @@ def run_app():
         return avg[['hour', 'pv_resource_mw', 'pv_to_contract_mw', 'bess_to_contract_mw', 'charge_mw_neg', 'contracted_mw']]
 
     def _render_avg_profile_chart(avg_df: pd.DataFrame) -> None:
-        # Extend hourly bounds to support step-style contract lines that cover the full 24-hour window.
-        base_x = alt.X(
-            'hour:Q',
-            title='Hour of Day',
-            scale=alt.Scale(domain=[0, 24], nice=False),
-            axis=alt.Axis(values=list(range(0, 25, 2)))
-        )
+        axis_x = alt.Axis(values=list(range(0, 24, 2)))
 
-        avg_df = avg_df.copy()
-        avg_df['hour_end'] = avg_df['hour'] + 1
-        base = alt.Chart(avg_df).encode(x=base_x)
+        base = alt.Chart(avg_df).encode(x=alt.X('hour:O', title='Hour of Day', axis=None))
 
-        contrib_long = avg_df.melt(id_vars=['hour', 'hour_end'],
+        contrib_long = avg_df.melt(id_vars=['hour'],
                                    value_vars=['pv_to_contract_mw', 'bess_to_contract_mw'],
                                    var_name='Source', value_name='MW')
         contrib_long['Source'] = contrib_long['Source'].replace({
@@ -3114,10 +3106,9 @@ def run_app():
         })
         contrib_fill = (
             alt.Chart(contrib_long)
-            .mark_bar(opacity=0.28)
+            .mark_bar(opacity=0.28, size=16)
             .encode(
-                x=base_x,
-                x2='hour_end:Q',
+                x=alt.X('hour:O', title='Hour of Day', axis=axis_x),
                 y=alt.Y('MW:Q', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b']), legend=None),
@@ -3126,10 +3117,9 @@ def run_app():
         )
         contrib_chart = (
             alt.Chart(contrib_long)
-            .mark_bar(opacity=0.85)
+            .mark_bar(opacity=0.9, size=16)
             .encode(
-                x=base_x,
-                x2='hour_end:Q',
+                x=alt.X('hour:O', title='Hour of Day', axis=axis_x),
                 y=alt.Y('MW:Q', title='MW', stack='zero'),
                 color=alt.Color('Source:N', scale=alt.Scale(domain=['PV→Contract', 'BESS→Contract'],
                                                            range=['#86c5da', '#7fd18b'])),
@@ -3145,7 +3135,7 @@ def run_app():
                 line=alt.LineConfig(color='#c78100', strokeDash=[6, 3], strokeWidth=2)
             )
             .encode(
-                x=base_x,
+                x=alt.X('hour:O', title='Hour of Day', axis=None),
                 y=alt.Y('pv_resource_mw:Q', title='MW'),
                 tooltip=[alt.Tooltip('pv_resource_mw:Q', title='PV resource (MW)', format='.2f')]
             )
@@ -3158,13 +3148,22 @@ def run_app():
             contract_steps,
             pd.DataFrame({'hour': [24], 'contracted_mw': contract_steps['contracted_mw'].iloc[-1:]})
         ], ignore_index=True)
+        contract_box = (
+            alt.Chart(contract_steps)
+            .mark_area(color='#f2a900', opacity=0.1, interpolate='step-after')
+            .encode(
+                x=alt.X('hour:O', title='Hour of Day', axis=None),
+                y=alt.Y('contracted_mw:Q', title='MW'),
+                y2=alt.value(0)
+            )
+        )
         line_contract = (
             alt.Chart(contract_steps)
             .mark_line(color='#f2a900', strokeWidth=2, interpolate='step-after')
-            .encode(x=base_x, y='contracted_mw:Q')
+            .encode(x=alt.X('hour:O', title='Hour of Day', axis=None), y='contracted_mw:Q')
         )
 
-        st.altair_chart(contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
+        st.altair_chart(contract_box + contrib_fill + contrib_chart + area_chg + pv_resource_area + line_contract,
                         use_container_width=True)
 
     if final_year_logs is not None and first_year_logs is not None:
@@ -3197,9 +3196,9 @@ def run_app():
         with tab_project:
             _render_avg_profile_chart(avg_project)
         st.caption(
-            "Stacked positive bars (with same-hour soft fill to baseline): PV→Contract (blue) + BESS→Contract (green). "
-            "Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). "
-            "Contract line overlaid as a step (gold)."
+            "Stacked bars (narrow width with soft fill): PV→Contract (blue) + BESS→Contract (green) fill the contract box "
+            "(gold). Negative area: BESS charging (purple). PV resource overlay (tan, dashed outline). Contract step shown "
+            "with gold outline."
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
