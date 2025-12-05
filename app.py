@@ -2229,73 +2229,82 @@ def run_app():
             "the rest of the app."
         )
 
-        size_col1, size_col2, size_col3 = st.columns(3)
-        with size_col1:
-            power_range = st.slider(
-                "Power range (MW)",
-                min_value=1.0,
-                max_value=200.0,
-                value=(max(1.0, cfg.initial_power_mw * 0.5), cfg.initial_power_mw * 1.5),
-                step=1.0,
-                help="Lower and upper bounds for the MW grid.",
-            )
-            power_steps = st.number_input(
-                "Power points",
-                min_value=1,
-                max_value=10,
-                value=3,
-                help="Number of evenly spaced MW values between the bounds.",
-            )
+        st.session_state.setdefault("size_sweep_results", None)
 
-        with size_col2:
-            default_duration = max(1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1))
-            duration_range = st.slider(
-                "Duration range (hours)",
-                min_value=0.5,
-                max_value=12.0,
-                value=(max(0.5, default_duration * 0.5), min(12.0, default_duration * 1.5)),
-                step=0.25,
-                help="Lower and upper bounds for duration at rated power.",
-            )
-            duration_steps = st.number_input(
-                "Duration points",
-                min_value=1,
-                max_value=10,
-                value=3,
-                help="Number of evenly spaced durations between the bounds.",
-            )
+        with st.form("size_sweep_form"):
+            size_col1, size_col2, size_col3 = st.columns(3)
+            with size_col1:
+                power_range = st.slider(
+                    "Power range (MW)",
+                    min_value=1.0,
+                    max_value=200.0,
+                    value=(
+                        max(1.0, cfg.initial_power_mw * 0.5),
+                        cfg.initial_power_mw * 1.5,
+                    ),
+                    step=1.0,
+                    help="Lower and upper bounds for the MW grid.",
+                )
+                power_steps = st.number_input(
+                    "Power points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced MW values between the bounds.",
+                )
 
-        with size_col3:
-            ranking_choice = st.selectbox(
-                "Rank feasible candidates by",
-                options=[
-                    "compliance_pct",
-                    "total_shortfall_mwh",
-                    "total_project_generation_mwh",
-                    "bess_generation_mwh",
-                ],
-                format_func=lambda x: {
-                    "compliance_pct": "Compliance % (higher is better)",
-                    "total_shortfall_mwh": "Shortfall MWh (lower is better)",
-                    "total_project_generation_mwh": "Total generation (higher is better)",
-                    "bess_generation_mwh": "BESS discharge (higher is better)",
-                }.get(x, x),
-                help="Column used to pick the top feasible design.",
-            )
-            min_soh = st.number_input(
-                "Minimum SOH for feasibility",
-                min_value=0.2,
-                max_value=1.0,
-                value=0.6,
-                step=0.05,
-                help="Candidates falling below this total SOH are flagged as infeasible.",
-            )
+            with size_col2:
+                default_duration = max(
+                    1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1)
+                )
+                duration_range = st.slider(
+                    "Duration range (hours)",
+                    min_value=0.5,
+                    max_value=12.0,
+                    value=(
+                        max(0.5, default_duration * 0.5),
+                        min(12.0, default_duration * 1.5),
+                    ),
+                    step=0.25,
+                    help="Lower and upper bounds for duration at rated power.",
+                )
+                duration_steps = st.number_input(
+                    "Duration points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced durations between the bounds.",
+                )
 
-        run_size_sweep = st.button("Run BESS size sweep", use_container_width=True)
-        if "size_sweep_results" not in st.session_state:
-            st.session_state["size_sweep_results"] = None
+            with size_col3:
+                ranking_choice = st.selectbox(
+                    "Rank feasible candidates by",
+                    options=[
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "total_project_generation_mwh",
+                        "bess_generation_mwh",
+                    ],
+                    format_func=lambda x: {
+                        "compliance_pct": "Compliance % (higher is better)",
+                        "total_shortfall_mwh": "Shortfall MWh (lower is better)",
+                        "total_project_generation_mwh": "Total generation (higher is better)",
+                        "bess_generation_mwh": "BESS discharge (higher is better)",
+                    }.get(x, x),
+                    help="Column used to pick the top feasible design.",
+                )
+                min_soh = st.number_input(
+                    "Minimum SOH for feasibility",
+                    min_value=0.2,
+                    max_value=1.0,
+                    value=0.6,
+                    step=0.05,
+                    help="Candidates falling below this total SOH are flagged as infeasible.",
+                )
 
-        if run_size_sweep:
+            submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
+
+        if submitted:
             enforce_rate_limit()
             power_values = generate_values(power_range[0], power_range[1], int(power_steps))
             duration_values = generate_values(
