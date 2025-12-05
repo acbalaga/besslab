@@ -1147,6 +1147,19 @@ def run_app():
         elif st.session_state.get("rate_limit_bypass", False):
             st.caption("Rate limit disabled for this session.")
 
+        st.divider()
+        st.subheader("More analysis")
+        st.page_link(
+            "pages/03_Scenario_Comparisons.py",
+            label="Scenario comparisons",
+            help="Save and review scenarios built from the latest simulation snapshot.",
+        )
+        st.page_link(
+            "pages/04_BESS_Sizing_Sweep.py",
+            label="BESS sizing sweep",
+            help="Run a power × duration grid using the current inputs.",
+        )
+
     st.subheader("Inputs")
 
     # Project & PV
@@ -1427,6 +1440,16 @@ def run_app():
         else:
             st.info("No scenarios saved yet. Use 'Add current inputs' to capture this configuration.")
 
+    st.info(
+        "Saved scenarios and KPI comparisons have moved to their own page for easier review.",
+        icon="🗂️",
+    )
+    st.page_link(
+        "pages/03_Scenario_Comparisons.py",
+        label="Open Scenario comparisons",
+        help="Add the latest simulation snapshot and review the saved table.",
+    )
+
     if aug_mode == "Manual" and (manual_schedule_errors or not manual_schedule_entries):
         st.error("Manual augmentation requires at least one valid year and no duplicate years.")
         st.stop()
@@ -1462,6 +1485,11 @@ def run_app():
         aug_retire_soh_pct=float(retire_soh),
         augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
+
+    # Store the latest input set for use in other pages (e.g., sweeps) without
+    # tying the data to this page's widgets.
+    st.session_state["latest_sim_config"] = cfg
+    st.session_state["latest_dod_override"] = dod_override
 
     scenarios_run_col, scenarios_hint_col = st.columns([2, 1])
     with scenarios_run_col:
@@ -1685,198 +1713,16 @@ def run_app():
                     st.altair_chart(heat_chart, use_container_width=True)
 
 
-    def render_scenario_comparisons(container: st.delta_generator.DeltaGenerator) -> None:
-        """Show the scenario comparison controls using the latest stored snapshot."""
-
-        with container:
-            st.markdown("---")
-            comparison_tab = st.tabs(["Scenario comparisons"])[0]
-            with comparison_tab:
-                st.caption(
-                    "Save different input sets to compare how capacity and dispatch choices affect KPIs."
-                )
-                if "scenario_comparisons" not in st.session_state:
-                    st.session_state["scenario_comparisons"] = []
-
-                scenario_snapshot = st.session_state.get("latest_scenario_snapshot")
-                default_label = f"Scenario {len(st.session_state['scenario_comparisons']) + 1}"
-                scenario_label = st.text_input(
-                    "Label for this scenario", default_label, key="scenario_label_input"
-                )
-
-                if scenario_snapshot is None:
-                    st.info("Run the simulation to populate metrics before saving a scenario.")
-
-                if st.button("Add current scenario to table", disabled=scenario_snapshot is None):
-                    scenario_entry = {"Label": scenario_label or default_label, **scenario_snapshot}
-                    st.session_state["scenario_comparisons"].append(scenario_entry)
-                    st.success("Scenario saved. Adjust inputs and add another to compare.")
-
-                if st.session_state["scenario_comparisons"]:
-                    compare_df = pd.DataFrame(st.session_state["scenario_comparisons"])
-                    st.dataframe(compare_df.style.format({
-                        'Compliance (%)': '{:,.2f}',
-                        'BESS share of firm (%)': '{:,.1f}',
-                        'Charge/Discharge ratio': '{:,.3f}',
-                        'PV capture ratio': '{:,.3f}',
-                        'Total project generation (MWh)': '{:,.1f}',
-                        'BESS share of generation (MWh)': '{:,.1f}',
-                        'PV share of generation (MWh)': '{:,.1f}',
-                        'PV excess (MWh)': '{:,.1f}',
-                        'BESS losses (MWh)': '{:,.1f}',
-                        'Final EOY usable (MWh)': '{:,.1f}',
-                        'Final EOY power (MW)': '{:,.2f}',
-                        'Final eq cycles (year)': '{:,.1f}',
-                        'Final SOH_total': '{:,.3f}',
-                    }))
-                    if st.button("Clear saved scenarios"):
-                        st.session_state["scenario_comparisons"] = []
-                else:
-                    st.info(
-                        "No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'."
-                    )
-
-    with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
-        # Local import avoids circular dependency when the grid-search module
-        # pulls in the simulator types from this file.
-        from utils.sweeps import sweep_bess_sizes
-
-        st.caption(
-            "Run a simple grid search over BESS power and duration using the current "
-            "assumptions. Results reuse the main simulator so feasibility checks match "
-            "the rest of the app."
-        )
-
-        st.session_state.setdefault("size_sweep_results", None)
-
-        # Use a unique form key to avoid collisions with other Streamlit pages or reruns.
-        with st.form("size_sweep_form_main"):
-            size_col1, size_col2, size_col3 = st.columns(3)
-            with size_col1:
-                power_range = st.slider(
-                    "Power range (MW)",
-                    min_value=1.0,
-                    max_value=200.0,
-                    value=(
-                        max(1.0, cfg.initial_power_mw * 0.5),
-                        cfg.initial_power_mw * 1.5,
-                    ),
-                    step=1.0,
-                    help="Lower and upper bounds for the MW grid.",
-                )
-                power_steps = st.number_input(
-                    "Power points",
-                    min_value=1,
-                    max_value=10,
-                    value=3,
-                    help="Number of evenly spaced MW values between the bounds.",
-                )
-
-            with size_col2:
-                default_duration = max(
-                    1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1)
-                )
-                duration_range = st.slider(
-                    "Duration range (hours)",
-                    min_value=0.5,
-                    max_value=12.0,
-                    value=(
-                        max(0.5, default_duration * 0.5),
-                        min(12.0, default_duration * 1.5),
-                    ),
-                    step=0.25,
-                    help="Lower and upper bounds for duration at rated power.",
-                )
-                duration_steps = st.number_input(
-                    "Duration points",
-                    min_value=1,
-                    max_value=10,
-                    value=3,
-                    help="Number of evenly spaced durations between the bounds.",
-                )
-
-            with size_col3:
-                ranking_choice = st.selectbox(
-                    "Rank feasible candidates by",
-                    options=[
-                        "compliance_pct",
-                        "total_shortfall_mwh",
-                        "total_project_generation_mwh",
-                        "bess_generation_mwh",
-                    ],
-                    format_func=lambda x: {
-                        "compliance_pct": "Compliance % (higher is better)",
-                        "total_shortfall_mwh": "Shortfall MWh (lower is better)",
-                        "total_project_generation_mwh": "Total generation (higher is better)",
-                        "bess_generation_mwh": "BESS discharge (higher is better)",
-                    }.get(x, x),
-                    help="Column used to pick the top feasible design.",
-                )
-                min_soh = st.number_input(
-                    "Minimum SOH for feasibility",
-                    min_value=0.2,
-                    max_value=1.0,
-                    value=0.6,
-                    step=0.05,
-                    help="Candidates falling below this total SOH are flagged as infeasible.",
-                )
-
-            submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
-
-        if submitted:
-            enforce_rate_limit()
-            power_values = generate_values(power_range[0], power_range[1], int(power_steps))
-            duration_values = generate_values(
-                duration_range[0], duration_range[1], int(duration_steps)
-            )
-
-            with st.spinner("Running BESS size grid..."):
-                sweep_df = sweep_bess_sizes(
-                    base_cfg=cfg,
-                    pv_df=pv_df,
-                    cycle_df=cycle_df,
-                    dod_override=dod_override,
-                    power_mw_values=power_values,
-                    duration_h_values=duration_values,
-                    ranking_kpi=ranking_choice,
-                    min_soh=min_soh,
-                    use_case="reliability",
-                )
-
-            if sweep_df.empty:
-                st.info("No sweep results generated; widen the ranges and try again.")
-                st.session_state["size_sweep_results"] = None
-            else:
-                st.session_state["size_sweep_results"] = sweep_df
-
-        sweep_df = st.session_state.get("size_sweep_results")
-        if sweep_df is not None:
-            best_row = sweep_df[sweep_df["is_best"]]
-            if best_row.empty:
-                st.warning("No feasible candidates met the SOH/cycle thresholds.")
-            else:
-                best = best_row.iloc[0]
-                st.success(
-                    f"Best feasible: {best['power_mw']:.1f} MW × {best['duration_h']:.2f} h "
-                    f"({best['energy_mwh']:.1f} MWh)"
-                )
-
-            st.dataframe(
-                sweep_df[
-                    [
-                        "power_mw",
-                        "duration_h",
-                        "energy_mwh",
-                        "compliance_pct",
-                        "total_shortfall_mwh",
-                        "avg_eq_cycles_per_year",
-                        "min_soh_total",
-                        "feasible",
-                        "is_best",
-                    ]
-                ],
-                use_container_width=True,
-            )
+    st.markdown("---")
+    st.info(
+        "The power × duration sweep now lives on the dedicated BESS sizing sweep page.",
+        icon="ℹ️",
+    )
+    st.page_link(
+        "pages/04_BESS_Sizing_Sweep.py",
+        label="Open BESS sizing sweep",
+        help="Run the grid search without scrolling through the main inputs page.",
+    )
 
     with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
         st.caption(
@@ -2140,11 +1986,14 @@ def run_app():
             "Edit parameters freely, then run when ready. Scenarios can still be batch-run above."
         )
 
-    comparison_placeholder = st.container()
-
     if not run_clicked:
-        render_scenario_comparisons(comparison_placeholder)
         st.info("Click 'Run simulation' to generate results after updating inputs.")
+        st.caption("The latest run is saved for the Scenario comparisons page.")
+        st.page_link(
+            "pages/03_Scenario_Comparisons.py",
+            label="Open Scenario comparisons",
+            help="Save the most recent run and review the table of scenarios.",
+        )
         st.stop()
 
     enforce_rate_limit()
@@ -2238,7 +2087,7 @@ def run_app():
     augmentation_events = sim_output.augmentation_events
     augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
 
-    st.session_state["latest_scenario_snapshot"] = {
+    st.session_state["latest_simulation_snapshot"] = {
         'Contracted MW': cfg.contracted_mw,
         'Power (BOL MW)': cfg.initial_power_mw,
         'Usable (BOL MWh)': cfg.initial_usable_mwh,
@@ -2258,9 +2107,6 @@ def run_app():
         'Final eq cycles (year)': final.eq_cycles,
         'Final SOH_total': final.soh_total,
     }
-
-    comparison_placeholder.empty()
-    render_scenario_comparisons(comparison_placeholder)
 
     def _fmt_percent(value: float, as_fraction: bool = False) -> str:
         if math.isnan(value):
