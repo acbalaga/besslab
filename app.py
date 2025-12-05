@@ -13,9 +13,13 @@ import pandas as pd
 from pathlib import Path
 import altair as alt
 from fpdf import FPDF
-from economics import EconomicInputs, EconomicOutputs, compute_lcoe_lcos
-from economics_helpers import compute_lcoe_lcos_with_augmentation_fallback
-from sensitivity_sweeps import build_soc_windows, generate_values, run_sensitivity_grid
+from utils.economics import (
+    EconomicInputs,
+    EconomicOutputs,
+    compute_lcoe_lcos,
+    compute_lcoe_lcos_with_augmentation_fallback,
+)
+from utils.sweeps import build_soc_windows, generate_values, run_sensitivity_grid
 from utils import (
     FLAG_DEFINITIONS,
     build_flag_insights,
@@ -1780,7 +1784,7 @@ def run_app():
     with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
         # Local import avoids circular dependency when the grid-search module
         # pulls in the simulator types from this file.
-        from bess_size_sweeps import sweep_bess_sizes
+        from utils.sweeps import sweep_bess_sizes
 
         st.caption(
             "Run a simple grid search over BESS power and duration using the current "

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app import SimConfig, SimulationOutput, SimulationSummary, YearResult
-from bess_size_sweeps import sweep_bess_sizes
+from utils.sweeps import sweep_bess_sizes
 
 
 def _fake_simulation_factory(cycles_by_power: dict[float, float], soh_by_power: dict[float, float]):
