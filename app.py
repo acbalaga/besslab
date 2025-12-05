@@ -784,7 +784,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         calendar_rate=cfg.calendar_fade_rate,
         use_calendar_exp_model=cfg.use_calendar_exp_model,
     )
-    usable_mwh_start = state.current_usable_mwh_bolref * soh_total_start
+    usable_mwh_start = state.current_usable_mwh_bolref * soh_total_start * cfg.bess_availability
 
     soc_mwh = usable_mwh_start * 0.5
     soc_min = usable_mwh_start * cfg.soc_floor
@@ -893,7 +893,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     )
     state.last_dod_key = dod_key_eff
     dod_frac = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}[dod_key_eff]
-    usable_for_cycles = max(1e-9, state.current_usable_mwh_bolref * dod_frac)
+    usable_for_cycles = max(1e-9, usable_mwh_start * dod_frac)
     eq_cycles_year = discharged_mwh / usable_for_cycles
     # Add the year's equivalent cycles once and reuse that increment for
     # every cohort and the fleet-level counter. Keeping the increment in a
