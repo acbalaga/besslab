@@ -26,7 +26,7 @@ To remove the session rate limit in an open deployment, enter the password in th
 The grid-search helper can be exercised without Streamlit using the bundled sample data:
 
 ```bash
-python -m bess_size_sweeps
+python -m utils.legacy.bess_size_sweeps
 ```
 
 The command will sweep a handful of power/duration combinations, print the KPI table, and flag the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
