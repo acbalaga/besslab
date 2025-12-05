@@ -316,6 +316,12 @@ def parse_windows(text: str) -> List[Window]:
 def infer_dod_bucket(daily_dis_mwh: np.ndarray, usable_mwh_available: float) -> int:
     """Infer an effective DoD bucket from daily discharge energy.
 
+    The median is computed across the daily data provided, which for annual
+    simulations represents the entire year's profile rather than a single
+    month. Anchoring the inference on the full-year distribution yields a
+    stable DoD assumption for downstream monthly and annual cycle calculations
+    instead of letting seasonal swings toggle the bucket from month to month.
+
     The usable energy basis should reflect the battery's available capability
     (after degradation/availability), not just the original BOL rating. Using
     an inflated reference skews the implied DoD downward and overstates the
@@ -891,6 +897,9 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         if dod_key is not None
         else infer_dod_bucket(daily_dis_mwh, usable_mwh_start)
     )
+    # The inferred DoD reflects the full year's median daily discharge and is
+    # reused for monthly reporting so that both annual and monthly cycle counts
+    # share a consistent depth assumption.
     state.last_dod_key = dod_key_eff
     dod_frac = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}[dod_key_eff]
     usable_for_cycles = max(1e-9, usable_mwh_start * dod_frac)
