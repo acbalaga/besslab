@@ -2218,6 +2218,147 @@ def run_app():
     else:
         st.info("No augmentation or retirement events were triggered in this run.")
 
+    with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
+        # Local import avoids circular dependency when the grid-search module
+        # pulls in the simulator types from this file.
+        from bess_size_sweeps import sweep_bess_sizes
+
+        st.caption(
+            "Run a simple grid search over BESS power and duration using the current "
+            "assumptions. Results reuse the main simulator so feasibility checks match "
+            "the rest of the app."
+        )
+
+        st.session_state.setdefault("size_sweep_results", None)
+
+        with st.form("size_sweep_form"):
+            size_col1, size_col2, size_col3 = st.columns(3)
+            with size_col1:
+                power_range = st.slider(
+                    "Power range (MW)",
+                    min_value=1.0,
+                    max_value=200.0,
+                    value=(
+                        max(1.0, cfg.initial_power_mw * 0.5),
+                        cfg.initial_power_mw * 1.5,
+                    ),
+                    step=1.0,
+                    help="Lower and upper bounds for the MW grid.",
+                )
+                power_steps = st.number_input(
+                    "Power points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced MW values between the bounds.",
+                )
+
+            with size_col2:
+                default_duration = max(
+                    1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1)
+                )
+                duration_range = st.slider(
+                    "Duration range (hours)",
+                    min_value=0.5,
+                    max_value=12.0,
+                    value=(
+                        max(0.5, default_duration * 0.5),
+                        min(12.0, default_duration * 1.5),
+                    ),
+                    step=0.25,
+                    help="Lower and upper bounds for duration at rated power.",
+                )
+                duration_steps = st.number_input(
+                    "Duration points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced durations between the bounds.",
+                )
+
+            with size_col3:
+                ranking_choice = st.selectbox(
+                    "Rank feasible candidates by",
+                    options=[
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "total_project_generation_mwh",
+                        "bess_generation_mwh",
+                    ],
+                    format_func=lambda x: {
+                        "compliance_pct": "Compliance % (higher is better)",
+                        "total_shortfall_mwh": "Shortfall MWh (lower is better)",
+                        "total_project_generation_mwh": "Total generation (higher is better)",
+                        "bess_generation_mwh": "BESS discharge (higher is better)",
+                    }.get(x, x),
+                    help="Column used to pick the top feasible design.",
+                )
+                min_soh = st.number_input(
+                    "Minimum SOH for feasibility",
+                    min_value=0.2,
+                    max_value=1.0,
+                    value=0.6,
+                    step=0.05,
+                    help="Candidates falling below this total SOH are flagged as infeasible.",
+                )
+
+            submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
+
+        if submitted:
+            enforce_rate_limit()
+            power_values = generate_values(power_range[0], power_range[1], int(power_steps))
+            duration_values = generate_values(
+                duration_range[0], duration_range[1], int(duration_steps)
+            )
+
+            with st.spinner("Running BESS size grid..."):
+                sweep_df = sweep_bess_sizes(
+                    base_cfg=cfg,
+                    pv_df=pv_df,
+                    cycle_df=cycle_df,
+                    dod_override=dod_override,
+                    power_mw_values=power_values,
+                    duration_h_values=duration_values,
+                    ranking_kpi=ranking_choice,
+                    min_soh=min_soh,
+                    use_case="reliability",
+                )
+
+            if sweep_df.empty:
+                st.info("No sweep results generated; widen the ranges and try again.")
+                st.session_state["size_sweep_results"] = None
+            else:
+                st.session_state["size_sweep_results"] = sweep_df
+
+        sweep_df = st.session_state.get("size_sweep_results")
+        if sweep_df is not None:
+            best_row = sweep_df[sweep_df["is_best"]]
+            if best_row.empty:
+                st.warning("No feasible candidates met the SOH/cycle thresholds.")
+            else:
+                best = best_row.iloc[0]
+                st.success(
+                    f"Best feasible: {best['power_mw']:.1f} MW × {best['duration_h']:.2f} h "
+                    f"({best['energy_mwh']:.1f} MWh)"
+                )
+
+            st.dataframe(
+                sweep_df[
+                    [
+                        "power_mw",
+                        "duration_h",
+                        "energy_mwh",
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "avg_eq_cycles_per_year",
+                        "min_soh_total",
+                        "feasible",
+                        "is_best",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
     with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
         st.caption(
             "Run quick grids of PV/SOC/RTE combos without blocking the main simulation, then "
