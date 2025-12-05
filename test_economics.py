@@ -1,7 +1,7 @@
 import math
 import unittest
 
-from economics import EconomicInputs, compute_lcoe_lcos
+from utils.economics import EconomicInputs, compute_lcoe_lcos
 
 
 class EconomicModuleTests(unittest.TestCase):

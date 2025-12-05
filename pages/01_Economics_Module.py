@@ -7,7 +7,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from economics import EconomicInputs, compute_lcoe_lcos
+from utils.economics import EconomicInputs, compute_lcoe_lcos
 
 st.set_page_config(page_title="Economics module — LCOE/LCOS helper", layout="wide")
 
@@ -21,7 +21,7 @@ st.markdown(
     """
 ### How to import and use
 ```python
-from economics import EconomicInputs, compute_lcoe_lcos
+from utils.economics import EconomicInputs, compute_lcoe_lcos
 
 inputs = EconomicInputs(
     capex_musd=40.0,
@@ -41,18 +41,18 @@ print(outputs.lcoe_usd_per_mwh, outputs.lcos_usd_per_mwh)
 )
 
 st.markdown("### Download or view the module")
-module_path = Path(__file__).resolve().parent.parent / "economics.py"
+module_path = Path(__file__).resolve().parent.parent / "utils" / "economics.py"
 source_text = module_path.read_text(encoding="utf-8")
 
 st.download_button(
-    label="Download economics.py",
+    label="Download utils/economics.py",
     data=source_text,
     file_name="economics.py",
     mime="text/x-python",
     use_container_width=True,
 )
 
-with st.expander("Preview economics.py", expanded=False):
+with st.expander("Preview utils/economics.py", expanded=False):
     st.code(source_text, language="python")
 
 st.info(
