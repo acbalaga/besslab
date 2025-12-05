@@ -3200,18 +3200,16 @@ def render_landing() -> None:
     )
     pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
 
-    st.success(
+    st.info(
         f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
     )
     st.caption("Uploads are cached in the session and reused across pages.")
 
     st.markdown("---")
     st.subheader("Next steps")
-    st.page_link("pages/00_Home.py", label="Open guide and tips", icon="📘")
-    st.page_link(
-        "pages/01_Simulation.py", label="Configure inputs and view results", icon="⚡"
-    )
-    st.page_link("pages/02_Economics_Module.py", label="Economics helper", icon="💰")
+    st.page_link("pages/00_Home.py", label="Open guide and tips")
+    st.page_link("pages/01_Simulation.py", label="Configure inputs and view results")
+    st.page_link("pages/02_Economics_Module.py", label="Economics helper")
 
 
 if __name__ == "__main__":
