@@ -1998,6 +1998,397 @@ def run_app():
                         "No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'."
                     )
 
+    with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
+        # Local import avoids circular dependency when the grid-search module
+        # pulls in the simulator types from this file.
+        from bess_size_sweeps import sweep_bess_sizes
+
+        st.caption(
+            "Run a simple grid search over BESS power and duration using the current "
+            "assumptions. Results reuse the main simulator so feasibility checks match "
+            "the rest of the app."
+        )
+
+        st.session_state.setdefault("size_sweep_results", None)
+
+        with st.form("size_sweep_form"):
+            size_col1, size_col2, size_col3 = st.columns(3)
+            with size_col1:
+                power_range = st.slider(
+                    "Power range (MW)",
+                    min_value=1.0,
+                    max_value=200.0,
+                    value=(
+                        max(1.0, cfg.initial_power_mw * 0.5),
+                        cfg.initial_power_mw * 1.5,
+                    ),
+                    step=1.0,
+                    help="Lower and upper bounds for the MW grid.",
+                )
+                power_steps = st.number_input(
+                    "Power points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced MW values between the bounds.",
+                )
+
+            with size_col2:
+                default_duration = max(
+                    1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1)
+                )
+                duration_range = st.slider(
+                    "Duration range (hours)",
+                    min_value=0.5,
+                    max_value=12.0,
+                    value=(
+                        max(0.5, default_duration * 0.5),
+                        min(12.0, default_duration * 1.5),
+                    ),
+                    step=0.25,
+                    help="Lower and upper bounds for duration at rated power.",
+                )
+                duration_steps = st.number_input(
+                    "Duration points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced durations between the bounds.",
+                )
+
+            with size_col3:
+                ranking_choice = st.selectbox(
+                    "Rank feasible candidates by",
+                    options=[
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "total_project_generation_mwh",
+                        "bess_generation_mwh",
+                    ],
+                    format_func=lambda x: {
+                        "compliance_pct": "Compliance % (higher is better)",
+                        "total_shortfall_mwh": "Shortfall MWh (lower is better)",
+                        "total_project_generation_mwh": "Total generation (higher is better)",
+                        "bess_generation_mwh": "BESS discharge (higher is better)",
+                    }.get(x, x),
+                    help="Column used to pick the top feasible design.",
+                )
+                min_soh = st.number_input(
+                    "Minimum SOH for feasibility",
+                    min_value=0.2,
+                    max_value=1.0,
+                    value=0.6,
+                    step=0.05,
+                    help="Candidates falling below this total SOH are flagged as infeasible.",
+                )
+
+            submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
+
+        if submitted:
+            enforce_rate_limit()
+            power_values = generate_values(power_range[0], power_range[1], int(power_steps))
+            duration_values = generate_values(
+                duration_range[0], duration_range[1], int(duration_steps)
+            )
+
+            with st.spinner("Running BESS size grid..."):
+                sweep_df = sweep_bess_sizes(
+                    base_cfg=cfg,
+                    pv_df=pv_df,
+                    cycle_df=cycle_df,
+                    dod_override=dod_override,
+                    power_mw_values=power_values,
+                    duration_h_values=duration_values,
+                    ranking_kpi=ranking_choice,
+                    min_soh=min_soh,
+                    use_case="reliability",
+                )
+
+            if sweep_df.empty:
+                st.info("No sweep results generated; widen the ranges and try again.")
+                st.session_state["size_sweep_results"] = None
+            else:
+                st.session_state["size_sweep_results"] = sweep_df
+
+        sweep_df = st.session_state.get("size_sweep_results")
+        if sweep_df is not None:
+            best_row = sweep_df[sweep_df["is_best"]]
+            if best_row.empty:
+                st.warning("No feasible candidates met the SOH/cycle thresholds.")
+            else:
+                best = best_row.iloc[0]
+                st.success(
+                    f"Best feasible: {best['power_mw']:.1f} MW × {best['duration_h']:.2f} h "
+                    f"({best['energy_mwh']:.1f} MWh)"
+                )
+
+            st.dataframe(
+                sweep_df[
+                    [
+                        "power_mw",
+                        "duration_h",
+                        "energy_mwh",
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "avg_eq_cycles_per_year",
+                        "min_soh_total",
+                        "feasible",
+                        "is_best",
+                    ]
+                ],
+                use_container_width=True,
+            )
+
+    with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
+        st.caption(
+            "Run quick grids of PV/SOC/RTE combos without blocking the main simulation, then "
+            "surface the most promising settings."
+        )
+
+        sweep_col1, sweep_col2, sweep_col3 = st.columns(3)
+        with sweep_col1:
+            pv_range = st.slider(
+                "PV oversize multipliers (×)",
+                min_value=0.5,
+                max_value=3.0,
+                value=(1.0, 1.5),
+                step=0.05,
+                help="Scales the PV profile before running each sweep case.",
+            )
+            pv_steps = st.number_input(
+                "PV oversize points",
+                min_value=1,
+                max_value=6,
+                value=3,
+                help="Number of evenly spaced multipliers between the selected bounds.",
+            )
+
+        with sweep_col2:
+            soc_floor_range = st.slider(
+                "SOC floor range",
+                min_value=0.0,
+                max_value=0.9,
+                value=(max(0.0, cfg.soc_floor - 0.05), min(0.9, cfg.soc_floor + 0.05)),
+                step=0.01,
+                help="Lower bound sweep for minimum SOC.",
+            )
+            soc_ceiling_range = st.slider(
+                "SOC ceiling range",
+                min_value=0.1,
+                max_value=1.0,
+                value=(max(0.1, cfg.soc_ceiling - 0.05), min(1.0, cfg.soc_ceiling + 0.05)),
+                step=0.01,
+                help="Upper bound sweep for maximum SOC.",
+            )
+            soc_steps = st.number_input(
+                "SOC window grid points",
+                min_value=1,
+                max_value=5,
+                value=2,
+                help="Number of evenly spaced floors and ceilings to cross-multiply.",
+            )
+
+        with sweep_col3:
+            rte_range = st.slider(
+                "Round-trip efficiency sweep",
+                min_value=0.6,
+                max_value=1.0,
+                value=(max(0.6, cfg.rte_roundtrip - 0.05), min(1.0, cfg.rte_roundtrip + 0.05)),
+                step=0.01,
+                help="Efficiency values are applied directly to the simulator.",
+            )
+            rte_steps = st.number_input(
+                "RTE points",
+                min_value=1,
+                max_value=6,
+                value=3,
+                help="Number of values between the bounds (inclusive).",
+            )
+
+        pv_factors = generate_values(pv_range[0], pv_range[1], int(pv_steps))
+        soc_windows = build_soc_windows(
+            soc_floor_range, soc_ceiling_range, int(soc_steps), int(soc_steps)
+        )
+        rte_values = generate_values(rte_range[0], rte_range[1], int(rte_steps))
+
+        if not soc_windows:
+            st.warning("SOC sweep skipped because all floor/ceiling combinations are invalid.")
+
+        run_sweeps = st.button(
+            "Run sensitivity sweeps", use_container_width=True, disabled=not soc_windows
+        )
+
+        if "sensitivity_sweep_results" not in st.session_state:
+            st.session_state["sensitivity_sweep_results"] = None
+
+        base_summary = None
+        sweep_df = None
+        if run_sweeps:
+            enforce_rate_limit()
+            with st.spinner("Running sensitivity sweep grid..."):
+                try:
+                    base_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+                except ValueError as exc:  # noqa: BLE001
+                    st.error(str(exc))
+                else:
+                    base_summary = summarize_simulation(base_output)
+                    sweep_df = run_sensitivity_grid(
+                        base_cfg=cfg,
+                        pv_df=pv_df,
+                        cycle_df=cycle_df,
+                        dod_override=dod_override,
+                        pv_oversize_factors=pv_factors,
+                        soc_windows=soc_windows,
+                        rte_values=rte_values,
+                        simulate_project_fn=simulate_project,
+                        summarize_fn=summarize_simulation,
+                    )
+
+            if base_summary is None or sweep_df is None:
+                st.session_state["sensitivity_sweep_results"] = None
+            elif sweep_df.empty:
+                st.info("No sweep results generated; adjust ranges and retry.")
+                st.session_state["sensitivity_sweep_results"] = None
+            else:
+                base_compliance = base_summary.compliance
+                base_shortfall = base_summary.total_shortfall_mwh
+
+                sweep_df = sweep_df.assign(
+                    compliance_delta_pct=sweep_df["compliance_pct"] - base_compliance,
+                    shortfall_delta_mwh=base_shortfall - sweep_df["shortfall_mwh"],
+                )
+                st.session_state["sensitivity_sweep_results"] = sweep_df
+
+        sweep_df = st.session_state.get("sensitivity_sweep_results")
+
+        if sweep_df is not None:
+            ranked_df = sweep_df.sort_values(
+                ["compliance_pct", "shortfall_mwh"], ascending=[False, True]
+            )
+            top_rows = ranked_df.head(5)
+            st.markdown("**Top sweep picks (sorted by delivery, then shortfall)**")
+            st.dataframe(
+                top_rows.round(
+                    {
+                        "compliance_pct": 2,
+                        "bess_share_pct": 2,
+                        "shortfall_mwh": 1,
+                        "compliance_delta_pct": 2,
+                        "shortfall_delta_mwh": 1,
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            pv_span = (
+                sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().max()
+                - sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().min()
+            )
+            rte_span = (
+                sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().max()
+                - sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().min()
+            )
+            st.caption(
+                "PV oversize swing across tested points: "
+                f"{pv_span:,.2f} compliance points. "
+                "RTE swing: "
+                f"{rte_span:,.2f} compliance points."
+            )
+
+            metric_options = {
+                "Compliance delta vs base (pct-pts)": {
+                    "field": "compliance_delta_pct",
+                    "format": ".2f",
+                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                    "title": "Δ compliance (pct-pts)",
+                    "higher_is_better": True,
+                    "is_delta": True,
+                },
+                "Total shortfall (MWh)": {
+                    "field": "shortfall_mwh",
+                    "format": ",.0f",
+                    "scale": alt.Scale(scheme="blues", reverse=True),
+                    "title": "Total shortfall (MWh)",
+                    "higher_is_better": False,
+                    "is_delta": False,
+                },
+                "Shortfall delta vs base (MWh)": {
+                    "field": "shortfall_delta_mwh",
+                    "format": ",.0f",
+                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
+                    "title": "Δ shortfall (MWh)",
+                    "higher_is_better": True,
+                    "is_delta": True,
+                },
+                "BESS share of firm (%)": {
+                    "field": "bess_share_pct",
+                    "format": ".2f",
+                    "scale": alt.Scale(scheme="greens"),
+                    "title": "BESS share of firm (%)",
+                    "higher_is_better": True,
+                    "is_delta": False,
+                },
+            }
+
+            selected_metric = st.radio(
+                "Heatmap focus",
+                list(metric_options.keys()),
+                horizontal=True,
+                index=0,
+            )
+            metric_cfg = metric_options[selected_metric]
+            metric_field = metric_cfg["field"]
+
+            soc_options = {
+                f"{floor:.2f}–{ceiling:.2f}": (floor, ceiling)
+                for floor, ceiling in sorted(
+                    sweep_df[["soc_floor", "soc_ceiling"]].drop_duplicates().itertuples(
+                        index=False, name=None
+                    )
+                )
+            }
+            selected_soc_label = st.selectbox(
+                "SOC window shown in heatmap", list(soc_options.keys()), index=0
+            )
+            selected_floor, selected_ceiling = soc_options[selected_soc_label]
+
+            st.markdown(
+                "**Heatmap (PV oversize × RTE) for the selected SOC window, following the LCOE/LCOS style.**"
+            )
+            group = sweep_df[
+                (sweep_df["soc_floor"] == selected_floor)
+                & (sweep_df["soc_ceiling"] == selected_ceiling)
+            ]
+            if group.empty:
+                st.info("No sweep points available for the selected SOC window.")
+            else:
+                base_chart = alt.Chart(group).encode(
+                    x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
+                    y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
+                    color=alt.Color(
+                        f"{metric_field}:Q",
+                        title=metric_cfg["title"],
+                        scale=metric_cfg["scale"],
+                    ),
+                    tooltip=[
+                        alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
+                        alt.Tooltip("pv_oversize_factor", title="PV oversize", format=".2f"),
+                        alt.Tooltip(metric_field, title=metric_cfg["title"], format=metric_cfg["format"]),
+                        alt.Tooltip("soc_floor", title="SOC floor", format=".2f"),
+                        alt.Tooltip("soc_ceiling", title="SOC ceiling", format=".2f"),
+                        alt.Tooltip("bess_share_pct", title="BESS share of firm", format=".2f"),
+                        alt.Tooltip("compliance_pct", title="Compliance", format=".2f"),
+                    ],
+                )
+
+                delta_chart = base_chart.mark_rect()
+                text_layer = base_chart.mark_text(baseline="middle", fontSize=12).encode(
+                    text=alt.Text(metric_field, format=metric_cfg["format"])
+                )
+
+                st.altair_chart(delta_chart + text_layer, use_container_width=True)
+
     run_cols = st.columns([2, 1])
     with run_cols[0]:
         run_clicked = st.button(
@@ -2217,263 +2608,6 @@ def run_app():
             st.altair_chart(delta_chart, use_container_width=True)
     else:
         st.info("No augmentation or retirement events were triggered in this run.")
-
-    with st.expander("Sensitivity sweeps (PV oversize, SOC window, RTE)", expanded=False):
-        st.caption(
-            "Run quick grids of PV/SOC/RTE combos without blocking the main simulation, then "
-            "surface the most promising settings."
-        )
-
-        sweep_col1, sweep_col2, sweep_col3 = st.columns(3)
-        with sweep_col1:
-            pv_range = st.slider(
-                "PV oversize multipliers (×)",
-                min_value=0.5,
-                max_value=3.0,
-                value=(1.0, 1.5),
-                step=0.05,
-                help="Scales the PV profile before running each sweep case.",
-            )
-            pv_steps = st.number_input(
-                "PV oversize points",
-                min_value=1,
-                max_value=6,
-                value=3,
-                help="Number of evenly spaced multipliers between the selected bounds.",
-            )
-
-        with sweep_col2:
-            soc_floor_range = st.slider(
-                "SOC floor range",
-                min_value=0.0,
-                max_value=0.9,
-                value=(max(0.0, cfg.soc_floor - 0.05), min(0.9, cfg.soc_floor + 0.05)),
-                step=0.01,
-                help="Lower bound sweep for minimum SOC.",
-            )
-            soc_ceiling_range = st.slider(
-                "SOC ceiling range",
-                min_value=0.1,
-                max_value=1.0,
-                value=(max(0.1, cfg.soc_ceiling - 0.05), min(1.0, cfg.soc_ceiling + 0.05)),
-                step=0.01,
-                help="Upper bound sweep for maximum SOC.",
-            )
-            soc_steps = st.number_input(
-                "SOC window grid points",
-                min_value=1,
-                max_value=5,
-                value=2,
-                help="Number of evenly spaced floors and ceilings to cross-multiply.",
-            )
-
-        with sweep_col3:
-            rte_range = st.slider(
-                "Round-trip efficiency sweep",
-                min_value=0.6,
-                max_value=1.0,
-                value=(max(0.6, cfg.rte_roundtrip - 0.05), min(1.0, cfg.rte_roundtrip + 0.05)),
-                step=0.01,
-                help="Efficiency values are applied directly to the simulator.",
-            )
-            rte_steps = st.number_input(
-                "RTE points",
-                min_value=1,
-                max_value=6,
-                value=3,
-                help="Number of values between the bounds (inclusive).",
-            )
-
-        pv_factors = generate_values(pv_range[0], pv_range[1], int(pv_steps))
-        soc_windows = build_soc_windows(
-            soc_floor_range, soc_ceiling_range, int(soc_steps), int(soc_steps)
-        )
-        rte_values = generate_values(rte_range[0], rte_range[1], int(rte_steps))
-
-        if not soc_windows:
-            st.warning("SOC sweep skipped because all floor/ceiling combinations are invalid.")
-
-        run_sweeps = st.button(
-            "Run sensitivity sweeps", use_container_width=True, disabled=not soc_windows
-        )
-
-        if "sensitivity_sweep_results" not in st.session_state:
-            st.session_state["sensitivity_sweep_results"] = None
-
-        if run_sweeps:
-            enforce_rate_limit()
-            with st.spinner("Running sensitivity sweep grid..."):
-                sweep_df = run_sensitivity_grid(
-                    base_cfg=cfg,
-                    pv_df=pv_df,
-                    cycle_df=cycle_df,
-                    dod_override=dod_override,
-                    pv_oversize_factors=pv_factors,
-                    soc_windows=soc_windows,
-                    rte_values=rte_values,
-                    simulate_project_fn=simulate_project,
-                    summarize_fn=summarize_simulation,
-                )
-
-            if sweep_df.empty:
-                st.info("No sweep results generated; adjust ranges and retry.")
-                st.session_state["sensitivity_sweep_results"] = None
-            else:
-                base_compliance = summary.compliance
-                base_shortfall = summary.total_shortfall_mwh
-
-                sweep_df = sweep_df.assign(
-                    compliance_delta_pct=sweep_df["compliance_pct"] - base_compliance,
-                    shortfall_delta_mwh=base_shortfall - sweep_df["shortfall_mwh"],
-                )
-                st.session_state["sensitivity_sweep_results"] = sweep_df
-
-        sweep_df = st.session_state.get("sensitivity_sweep_results")
-
-        if sweep_df is not None:
-            ranked_df = sweep_df.sort_values(
-                ["compliance_pct", "shortfall_mwh"], ascending=[False, True]
-            )
-            top_rows = ranked_df.head(5)
-            st.markdown("**Top sweep picks (sorted by delivery, then shortfall)**")
-            st.dataframe(
-                top_rows.round(
-                    {
-                        "compliance_pct": 2,
-                        "bess_share_pct": 2,
-                        "shortfall_mwh": 1,
-                        "compliance_delta_pct": 2,
-                        "shortfall_delta_mwh": 1,
-                    }
-                ),
-                hide_index=True,
-                use_container_width=True,
-            )
-
-            pv_span = (
-                sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().max()
-                - sweep_df.groupby("pv_oversize_factor")["compliance_pct"].mean().min()
-            )
-            rte_span = (
-                sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().max()
-                - sweep_df.groupby("rte_roundtrip")["compliance_pct"].mean().min()
-            )
-            st.caption(
-                "PV oversize swing across tested points: "
-                f"{pv_span:,.2f} compliance points. "
-                "RTE swing: "
-                f"{rte_span:,.2f} compliance points."
-            )
-
-            metric_options = {
-                "Compliance delta vs base (pct-pts)": {
-                    "field": "compliance_delta_pct",
-                    "format": ".2f",
-                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
-                    "title": "Δ compliance (pct-pts)",
-                    "higher_is_better": True,
-                    "is_delta": True,
-                },
-                "Total shortfall (MWh)": {
-                    "field": "shortfall_mwh",
-                    "format": ",.0f",
-                    "scale": alt.Scale(scheme="blues", reverse=True),
-                    "title": "Total shortfall (MWh)",
-                    "higher_is_better": False,
-                    "is_delta": False,
-                },
-                "Shortfall delta vs base (MWh)": {
-                    "field": "shortfall_delta_mwh",
-                    "format": ",.0f",
-                    "scale": alt.Scale(scheme="redyellowgreen", domainMid=0),
-                    "title": "Δ shortfall (MWh)",
-                    "higher_is_better": True,
-                    "is_delta": True,
-                },
-                "BESS share of firm (%)": {
-                    "field": "bess_share_pct",
-                    "format": ".2f",
-                    "scale": alt.Scale(scheme="greens"),
-                    "title": "BESS share of firm (%)",
-                    "higher_is_better": True,
-                    "is_delta": False,
-                },
-            }
-
-            selected_metric = st.radio(
-                "Heatmap focus",
-                list(metric_options.keys()),
-                horizontal=True,
-                index=0,
-            )
-            metric_cfg = metric_options[selected_metric]
-            metric_field = metric_cfg["field"]
-
-            soc_options = {
-                f"{floor:.2f}–{ceiling:.2f}": (floor, ceiling)
-                for floor, ceiling in sorted(
-                    sweep_df[["soc_floor", "soc_ceiling"]].drop_duplicates().itertuples(
-                        index=False, name=None
-                    )
-                )
-            }
-            selected_soc_label = st.selectbox(
-                "SOC window shown in heatmap", list(soc_options.keys()), index=0
-            )
-            selected_floor, selected_ceiling = soc_options[selected_soc_label]
-
-            st.markdown(
-                "**Heatmap (PV oversize × RTE) for the selected SOC window, following the LCOE/LCOS style.**"
-            )
-            group = sweep_df[
-                (sweep_df["soc_floor"] == selected_floor)
-                & (sweep_df["soc_ceiling"] == selected_ceiling)
-            ]
-            if group.empty:
-                st.info("No sweep points available for the selected SOC window.")
-            else:
-                base_chart = alt.Chart(group).encode(
-                    x=alt.X("rte_roundtrip:Q", title="Round-trip efficiency"),
-                    y=alt.Y("pv_oversize_factor:Q", title="PV oversize (×)"),
-                    color=alt.Color(
-                        f"{metric_field}:Q",
-                        title=metric_cfg["title"],
-                        scale=metric_cfg["scale"],
-                    ),
-                    tooltip=[
-                        alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
-                        alt.Tooltip("pv_oversize_factor", title="PV oversize", format=".2f"),
-                        alt.Tooltip("compliance_pct", title="Compliance %", format=".2f"),
-                        alt.Tooltip("bess_share_pct", title="BESS share %", format=".2f"),
-                        alt.Tooltip("shortfall_mwh", title="Shortfall (MWh)", format=",.1f"),
-                        alt.Tooltip("compliance_delta_pct", title="Δ compliance", format=".2f"),
-                        alt.Tooltip("shortfall_delta_mwh", title="Δ shortfall", format=",.0f"),
-                    ],
-                )
-
-                text_layer = base_chart.mark_text(color="black").encode(
-                    text=alt.Text(f"{metric_field}:Q", format=metric_cfg["format"])
-                )
-
-                best_row = (
-                    group.sort_values(metric_field, ascending=not metric_cfg["higher_is_better"])
-                    .iloc[0]
-                )
-                best_point = alt.Chart(pd.DataFrame([best_row])).mark_point(
-                    shape="star", size=120, color="black"
-                ).encode(x="rte_roundtrip:Q", y="pv_oversize_factor:Q")
-
-                st.altair_chart(
-                    base_chart.mark_rect() + text_layer + best_point,
-                    use_container_width=True,
-                )
-
-                st.caption(
-                    "Deltas are measured against the base run and the chart mirrors the LCOE/LCOS heatmap layout "
-                    "for faster scanning."
-                )
-        else:
-            st.info("Run the sensitivity sweeps to populate the heatmap and ranking table.")
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
         econ_inputs_col1, econ_inputs_col2 = st.columns(2)

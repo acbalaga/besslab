@@ -22,6 +22,20 @@ Open the provided local URL in your browser to launch the app.
 
 To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
 
+### Run a quick BESS sizing sweep from the CLI
+The grid-search helper can be exercised without Streamlit using the bundled sample data:
+
+```bash
+python -m bess_size_sweeps
+```
+
+The command will sweep a handful of power/duration combinations, print the KPI table, and flag the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
+
+### Run the sizing sweep inside Streamlit
+- Launch the app with `streamlit run app.py` and load your inputs as usual.
+- Open the **“BESS sizing sweep (power × duration grid)”** expander near the results section.
+- Set the MW/duration ranges, choose how to rank candidates, and click **Run BESS size sweep** to execute the grid search and view the KPIs in-app.
+
 ## Inputs
 - **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). The app auto-aligns a 1-based index and drops out-of-range values.
 - **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
