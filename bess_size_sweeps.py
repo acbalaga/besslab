@@ -8,6 +8,7 @@ callers can plug in either the real simulator or a stub during tests.
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable, Iterable, List, Tuple
 
 import numpy as np
@@ -171,3 +172,49 @@ __all__ = [
     "run_candidate_simulation",
     "sweep_bess_sizes",
 ]
+
+
+def _load_sample_inputs() -> tuple[SimConfig, pd.DataFrame, pd.DataFrame]:
+    """Load the packaged sample PV and cycle-model inputs for quick demos."""
+
+    repo_root = Path(__file__).resolve().parent
+    pv_df = pd.read_csv(repo_root / "data" / "PV_8760_MW.csv")
+    cycle_df = pd.read_excel(repo_root / "data" / "cycle_model.xlsx")
+
+    # One-year run keeps the demo fast while still exercising the simulator.
+    base_cfg = SimConfig(years=1)
+    return base_cfg, pv_df, cycle_df
+
+
+def _main_example() -> None:
+    """Execute a small sweep using bundled sample data and print the table."""
+
+    base_cfg, pv_df, cycle_df = _load_sample_inputs()
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        power_mw_values=[10.0, 15.0, 20.0],
+        duration_h_values=[2.0, 4.0],
+    )
+
+    # Show a compact summary so callers know where the best candidate landed.
+    display_cols = [
+        "power_mw",
+        "duration_h",
+        "energy_mwh",
+        "compliance_pct",
+        "total_shortfall_mwh",
+        "avg_eq_cycles_per_year",
+        "min_soh_total",
+        "feasible",
+        "is_best",
+    ]
+    print("\nGrid-search results (sample data):")
+    print(df[display_cols].to_string(index=False))
+
+
+if __name__ == "__main__":
+    _main_example()
