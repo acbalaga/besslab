@@ -3,7 +3,7 @@ import unittest
 
 import pandas as pd
 
-from app import read_pv_profile
+from utils.io import read_pv_profile
 
 
 class ReadPvProfileTests(unittest.TestCase):
