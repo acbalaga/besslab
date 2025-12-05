@@ -28,8 +28,9 @@ from utils import (
     read_cycle_model,
     read_pv_profile,
 )
+from utils.ui_state import get_base_dir, load_shared_data
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = get_base_dir()
 USD_TO_PHP = 58.0
 
 @dataclass
@@ -1101,74 +1102,27 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
 
 
 def run_app():
-
-
     st.set_page_config(page_title="BESSLab by ACB", layout="wide")
-    st.markdown(
-        """
-        <style>
-        /* Hide default Streamlit sidebar navigation to declutter the layout */
-        [data-testid="stSidebarNav"] {display: none;}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
     st.title("BESS LAB — PV-only charging, AC-coupled")
-
-    # README / Help
-    with st.expander("Help & Guide (click to open)", expanded=False):
-        st.markdown("""
-    ## Welcome to BESSLab
-    A quick-start guide for exploring **PV-only, AC-coupled BESS** behavior.
-
-    ### How to get started
-    1) Upload a **PV 8760 CSV** (`hour_index, pv_mw`) or keep the sample file.
-    2) (Optional) Upload a **cycle-model Excel** file to use your own degradation table.
-    3) Set your **contracted MW**, **duration (hours)**, and **dispatch windows** in the sidebar.
-    4) Adjust efficiency, SOC limits, availability, augmentation triggers, and rate-limit settings if needed.
-    5) Review the summary cards and charts, then download the CSV or PDF outputs you need.
-    6) Run **Design Advisor** recommendations or **SOC sensitivity sweeps** when compliance slips.
-
-    ### What you will see
-    - Whether the contract is met across the project life.
-    - How much energy comes from **PV directly** vs. **the BESS**, including shortfall flags.
-    - End-of-year capability bars, typical daily profiles, and **economics sensitivities**.
-    - Friendly suggestions from the **Design Advisor** plus SOC-window **sensitivity sweeps**.
-    - A **scenario table** for saving and comparing different input sets, alongside hourly/monthly/yearly downloads.
-
-    ### Handy extras
-    - Use the sidebar link to open the **economics helper** page (LCOE/LCOS) and download the module.
-    - Turn off the **rate limit** by entering the password in the sidebar (default: `besslab`).
-    - Window strings accept minutes (e.g., `05:30-09:00`), which are parsed as fractional hours.
-
-    ### If results look off
-    - Shortfalls? Try widening the SOC window, improving efficiency, or enabling augmentation.
-    - Frequent empty battery? Increase duration (MWh), raise the SOC ceiling, or allow more charge time.
-    - Battery keeps topping out? Lower the SOC ceiling slightly or add a bit more discharge window.
-    - Unexpected economics results? Confirm price/cost units and rerun the sensitivity heatmaps.
-
-    ### Helpful notes
-    - `hour_index` can start at 0 or 1; the app will align it.
-    - The app uses included defaults when you do not upload files.
-    - No grid charging is modeled—this is a PV-only pre-feasibility view.
-    - Sensitivity sweeps will clear when inputs change; rerun them after major adjustments.
-
-    **Questions or ideas?** Feedback is welcome to keep improving the tool.
-    """)
-
-
     with st.sidebar:
         st.header("Data Sources")
-        default_pv_paths = [str(BASE_DIR / 'data' / 'PV_8760_MW.csv')]
-        default_cycle_paths = [str(BASE_DIR / 'data' / 'cycle_model.xlsx')]
+        st.caption(
+            "Uploads are stored per-session. Use the landing page to preload data "
+            "or override them below."
+        )
 
-        pv_file = st.file_uploader("PV 8760 CSV (hour_index, pv_mw in MW)", type=['csv'])
-        pv_df = pd.read_csv(pv_file) if pv_file is not None else read_pv_profile(default_pv_paths)
+        pv_file = st.file_uploader(
+            "PV 8760 CSV (hour_index, pv_mw in MW)", type=["csv"], key="inputs_pv_upload"
+        )
+        cycle_file = st.file_uploader(
+            "Cycle model Excel (optional override)", type=["xlsx"], key="inputs_cycle_upload"
+        )
+        pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
 
-        cycle_file = st.file_uploader("Cycle model Excel (optional override)", type=['xlsx'])
-        cycle_df = pd.read_excel(cycle_file) if cycle_file is not None else read_cycle_model(default_cycle_paths)
-
-        st.caption("If no files are uploaded, built-in defaults are read from ./data/")
+        st.caption(
+            "If no files are uploaded, built-in defaults are read from ./data/. "
+            "Current session caches the latest uploads."
+        )
 
         st.divider()
         st.subheader("Rate limit override")
@@ -1179,6 +1133,7 @@ def run_app():
                 "Enter the configured password to disable the session rate limit. "
                 "If no secret is set, use 'besslab'."
             ),
+            key="inputs_rate_limit_password",
         )
         expected_password = get_rate_limit_password()
 
@@ -3226,5 +3181,38 @@ def run_app():
     - Design Advisor uses a conservative energy-limited view: Deliverable/day ≈ BOL usable × SOH(final) × ΔSOC × η_dis.
     """)
 
+
+def render_landing() -> None:
+    """Landing page that routes to the multipage workflow and seeds shared data."""
+
+    st.set_page_config(page_title="BESSLab", layout="wide")
+    st.title("BESSLab multipage workspace")
+    st.caption(
+        "Upload once, then navigate to configure inputs and review results without "
+        "losing your session data."
+    )
+
+    pv_file = st.file_uploader(
+        "PV 8760 CSV (hour_index, pv_mw in MW)", type=["csv"], key="landing_pv_upload"
+    )
+    cycle_file = st.file_uploader(
+        "Cycle model Excel (optional override)", type=["xlsx"], key="landing_cycle_upload"
+    )
+    pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
+
+    st.success(
+        f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
+    )
+    st.caption("Uploads are cached in the session and reused across pages.")
+
+    st.markdown("---")
+    st.subheader("Next steps")
+    st.page_link("pages/00_Home.py", label="Open guide and tips", icon="📘")
+    st.page_link(
+        "pages/01_Simulation.py", label="Configure inputs and view results", icon="⚡"
+    )
+    st.page_link("pages/02_Economics_Module.py", label="Economics helper", icon="💰")
+
+
 if __name__ == "__main__":
-    run_app()
+    render_landing()
