@@ -1998,225 +1998,146 @@ def run_app():
                         "No saved scenarios yet. Tune the inputs above and click 'Add current scenario to table'."
                     )
 
-    run_cols = st.columns([2, 1])
-    with run_cols[0]:
-        run_clicked = st.button(
-            "Run simulation",
-            use_container_width=True,
-            help="Prevents auto-reruns while you adjust inputs; click to compute results.",
-        )
-    with run_cols[1]:
+    with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
+        # Local import avoids circular dependency when the grid-search module
+        # pulls in the simulator types from this file.
+        from bess_size_sweeps import sweep_bess_sizes
+
         st.caption(
-            "Edit parameters freely, then run when ready. Scenarios can still be batch-run above."
+            "Run a simple grid search over BESS power and duration using the current "
+            "assumptions. Results reuse the main simulator so feasibility checks match "
+            "the rest of the app."
         )
 
-    comparison_placeholder = st.container()
+        st.session_state.setdefault("size_sweep_results", None)
 
-    if not run_clicked:
-        render_scenario_comparisons(comparison_placeholder)
-        st.info("Click 'Run simulation' to generate results after updating inputs.")
-        st.stop()
+        with st.form("size_sweep_form"):
+            size_col1, size_col2, size_col3 = st.columns(3)
+            with size_col1:
+                power_range = st.slider(
+                    "Power range (MW)",
+                    min_value=1.0,
+                    max_value=200.0,
+                    value=(
+                        max(1.0, cfg.initial_power_mw * 0.5),
+                        cfg.initial_power_mw * 1.5,
+                    ),
+                    step=1.0,
+                    help="Lower and upper bounds for the MW grid.",
+                )
+                power_steps = st.number_input(
+                    "Power points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced MW values between the bounds.",
+                )
 
-    enforce_rate_limit()
+            with size_col2:
+                default_duration = max(
+                    1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1)
+                )
+                duration_range = st.slider(
+                    "Duration range (hours)",
+                    min_value=0.5,
+                    max_value=12.0,
+                    value=(
+                        max(0.5, default_duration * 0.5),
+                        min(12.0, default_duration * 1.5),
+                    ),
+                    step=0.25,
+                    help="Lower and upper bounds for duration at rated power.",
+                )
+                duration_steps = st.number_input(
+                    "Duration points",
+                    min_value=1,
+                    max_value=10,
+                    value=3,
+                    help="Number of evenly spaced durations between the bounds.",
+                )
 
-    try:
-        sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
-    except ValueError as exc:  # noqa: BLE001
-        st.error(str(exc))
-        st.stop()
+            with size_col3:
+                ranking_choice = st.selectbox(
+                    "Rank feasible candidates by",
+                    options=[
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "total_project_generation_mwh",
+                        "bess_generation_mwh",
+                    ],
+                    format_func=lambda x: {
+                        "compliance_pct": "Compliance % (higher is better)",
+                        "total_shortfall_mwh": "Shortfall MWh (lower is better)",
+                        "total_project_generation_mwh": "Total generation (higher is better)",
+                        "bess_generation_mwh": "BESS discharge (higher is better)",
+                    }.get(x, x),
+                    help="Column used to pick the top feasible design.",
+                )
+                min_soh = st.number_input(
+                    "Minimum SOH for feasibility",
+                    min_value=0.2,
+                    max_value=1.0,
+                    value=0.6,
+                    step=0.05,
+                    help="Candidates falling below this total SOH are flagged as infeasible.",
+                )
 
-    results = sim_output.results
-    monthly_results_all = sim_output.monthly_results
-    first_year_logs = sim_output.first_year_logs
-    final_year_logs = sim_output.final_year_logs
-    hod_count = sim_output.hod_count
-    hod_sum_pv = sim_output.hod_sum_pv
-    hod_sum_pv_resource = sim_output.hod_sum_pv_resource
-    hod_sum_bess = sim_output.hod_sum_bess
-    hod_sum_charge = sim_output.hod_sum_charge
-    dis_hours_per_day = sim_output.discharge_hours_per_day
+            submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
 
-    # Yearly table
-    res_df = pd.DataFrame([{
-        'Year': r.year_index,
-        'Expected firm MWh': r.expected_firm_mwh,
-        'Delivered firm MWh': r.delivered_firm_mwh,
-        'Shortfall MWh': r.shortfall_mwh,
-        'Breach days (has any shortfall)': r.breach_days,
-        'Charge MWh': r.charge_mwh,
-        'Discharge MWh (from BESS)': r.discharge_mwh,
-        'Available PV MWh': r.available_pv_mwh,
-        'PV→Contract MWh': r.pv_to_contract_mwh,
-        'BESS→Contract MWh': r.bess_to_contract_mwh,
-        'Avg RTE': r.avg_rte,
-        'Eq cycles (year)': r.eq_cycles,
-        'Cum cycles': r.cum_cycles,
-        'SOH_cycle': r.soh_cycle,
-        'SOH_calendar': r.soh_calendar,
-        'SOH_total': r.soh_total,
-        'EOY usable MWh': r.eoy_usable_mwh,
-        'EOY power MW (avail-adjusted)': r.eoy_power_mw,
-        'PV curtailed MWh': r.pv_curtailed_mwh,
-    } for r in results])
+        if submitted:
+            enforce_rate_limit()
+            power_values = generate_values(power_range[0], power_range[1], int(power_steps))
+            duration_values = generate_values(
+                duration_range[0], duration_range[1], int(duration_steps)
+            )
 
-    monthly_df = pd.DataFrame([{
-        'Year': m.year_index,
-        'Month': m.month_label,
-        'Expected firm MWh': m.expected_firm_mwh,
-        'Delivered firm MWh': m.delivered_firm_mwh,
-        'Shortfall MWh': m.shortfall_mwh,
-        'Breach days (has any shortfall)': m.breach_days,
-        'Charge MWh': m.charge_mwh,
-        'Discharge MWh (from BESS)': m.discharge_mwh,
-        'Available PV MWh': m.available_pv_mwh,
-        'PV→Contract MWh': m.pv_to_contract_mwh,
-        'BESS→Contract MWh': m.bess_to_contract_mwh,
-        'Avg RTE': m.avg_rte,
-        'Eq cycles (year)': m.eq_cycles,
-        'Cum cycles': m.cum_cycles,
-        'SOH_cycle': m.soh_cycle,
-        'SOH_calendar': m.soh_calendar,
-        'SOH_total': m.soh_total,
-        'EOY usable MWh': m.eom_usable_mwh,
-        'EOY power MW (avail-adjusted)': m.eom_power_mw,
-        'PV curtailed MWh': m.pv_curtailed_mwh,
-    } for m in monthly_results_all])
+            with st.spinner("Running BESS size grid..."):
+                sweep_df = sweep_bess_sizes(
+                    base_cfg=cfg,
+                    pv_df=pv_df,
+                    cycle_df=cycle_df,
+                    dod_override=dod_override,
+                    power_mw_values=power_values,
+                    duration_h_values=duration_values,
+                    ranking_kpi=ranking_choice,
+                    min_soh=min_soh,
+                    use_case="reliability",
+                )
 
-    # --------- KPIs ---------
-    final = results[-1]
-    summary = summarize_simulation(sim_output)
-    compliance = summary.compliance
-    bess_share_of_firm = summary.bess_share_of_firm
-    charge_discharge_ratio = summary.charge_discharge_ratio
-    pv_capture_ratio = summary.pv_capture_ratio
-    discharge_capacity_factor = summary.discharge_capacity_factor
-    total_project_generation_mwh = summary.total_project_generation_mwh
-    bess_generation_mwh = summary.bess_generation_mwh
-    pv_generation_mwh = summary.pv_generation_mwh
-    pv_excess_mwh = summary.pv_excess_mwh
-    bess_losses_mwh = summary.bess_losses_mwh
-    avg_eq_cycles_per_year = summary.avg_eq_cycles_per_year
-    cap_ratio_final = summary.cap_ratio_final
-    expected_total_mwh = sum(r.expected_firm_mwh for r in results)
-    coverage_by_year = [
-        (r.delivered_firm_mwh / r.expected_firm_mwh) if r.expected_firm_mwh > 0 else float('nan')
-        for r in results
-    ]
-    min_yearly_coverage = float(np.nanmin(coverage_by_year)) if coverage_by_year else float('nan')
-    final_soh_pct = final.soh_total * 100.0
-    eoy_capacity_margin_pct = cap_ratio_final * 100.0
-    augmentation_events = sim_output.augmentation_events
-    augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
+            if sweep_df.empty:
+                st.info("No sweep results generated; widen the ranges and try again.")
+                st.session_state["size_sweep_results"] = None
+            else:
+                st.session_state["size_sweep_results"] = sweep_df
 
-    st.session_state["latest_scenario_snapshot"] = {
-        'Contracted MW': cfg.contracted_mw,
-        'Power (BOL MW)': cfg.initial_power_mw,
-        'Usable (BOL MWh)': cfg.initial_usable_mwh,
-        'Discharge windows': discharge_windows_text,
-        'Charge windows': charge_windows_text if charge_windows_text else 'Any PV hour',
-        'Compliance (%)': compliance,
-        'BESS share of firm (%)': bess_share_of_firm,
-        'Charge/Discharge ratio': charge_discharge_ratio,
-        'PV capture ratio': pv_capture_ratio,
-        'Total project generation (MWh)': total_project_generation_mwh,
-        'BESS share of generation (MWh)': bess_generation_mwh,
-        'PV share of generation (MWh)': pv_generation_mwh,
-        'PV excess (MWh)': pv_excess_mwh,
-        'BESS losses (MWh)': bess_losses_mwh,
-        'Final EOY usable (MWh)': final.eoy_usable_mwh,
-        'Final EOY power (MW)': final.eoy_power_mw,
-        'Final eq cycles (year)': final.eq_cycles,
-        'Final SOH_total': final.soh_total,
-    }
+        sweep_df = st.session_state.get("size_sweep_results")
+        if sweep_df is not None:
+            best_row = sweep_df[sweep_df["is_best"]]
+            if best_row.empty:
+                st.warning("No feasible candidates met the SOH/cycle thresholds.")
+            else:
+                best = best_row.iloc[0]
+                st.success(
+                    f"Best feasible: {best['power_mw']:.1f} MW × {best['duration_h']:.2f} h "
+                    f"({best['energy_mwh']:.1f} MWh)"
+                )
 
-    comparison_placeholder.empty()
-    render_scenario_comparisons(comparison_placeholder)
-
-    def _fmt_percent(value: float, as_fraction: bool = False) -> str:
-        if math.isnan(value):
-            return "—"
-        pct_value = value * 100.0 if as_fraction else value
-        return f"{pct_value:,.2f}%"
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Delivery compliance", _fmt_percent(compliance), help="Total firm energy delivered vs contracted across project life.")
-    c2.metric("Worst-year coverage", _fmt_percent(min_yearly_coverage, as_fraction=True), help="Lowest annual delivery vs contract shows weakest year.")
-    c3.metric("Final SOH_total", _fmt_percent(final_soh_pct, as_fraction=False), help="End-of-life usable fraction after cycle + calendar fade.")
-    c4.metric("EOY deliverable vs contract", _fmt_percent(eoy_capacity_margin_pct, as_fraction=False), help="Final-year daily deliverable vs target day (MW×h window).")
-    c5.metric(
-        "Augmentations triggered",
-        f"{augmentation_events} events",
-        help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
-    )
-
-    st.markdown("#### Augmentation impact trace")
-    augmentation_retired = getattr(
-        sim_output, "augmentation_retired_energy_mwh", [0.0 for _ in sim_output.augmentation_energy_added_mwh]
-    )
-    if len(augmentation_retired) < len(sim_output.augmentation_energy_added_mwh):
-        augmentation_retired.extend([0.0] * (len(sim_output.augmentation_energy_added_mwh) - len(augmentation_retired)))
-    elif len(augmentation_retired) > len(sim_output.augmentation_energy_added_mwh):
-        augmentation_retired = augmentation_retired[: len(sim_output.augmentation_energy_added_mwh)]
-
-    coverage_pct_by_year = [
-        (r.delivered_firm_mwh / r.expected_firm_mwh * 100.0) if r.expected_firm_mwh > 0 else float('nan')
-        for r in results
-    ]
-    delivered_by_year = [r.delivered_firm_mwh for r in results]
-
-    aug_rows: List[Dict[str, Any]] = []
-    for idx, add_e in enumerate(sim_output.augmentation_energy_added_mwh):
-        retired_e = augmentation_retired[idx] if idx < len(augmentation_retired) else 0.0
-        if add_e <= 0.0 and retired_e <= 0.0:
-            continue
-
-        coverage_pct = coverage_pct_by_year[idx]
-        coverage_delta = coverage_pct_by_year[idx] - coverage_pct_by_year[idx - 1] if idx > 0 else float('nan')
-        gen_delta = delivered_by_year[idx] - delivered_by_year[idx - 1] if idx > 0 else float('nan')
-        add_pct_bol = (add_e / cfg.initial_usable_mwh * 100.0) if cfg.initial_usable_mwh > 0 else float('nan')
-
-        aug_rows.append({
-            "Year": idx + 1,
-            "Added (MWh BOL)": add_e,
-            "Added vs BOL (%)": add_pct_bol,
-            "Retired cohorts (MWh BOL)": retired_e,
-            "Coverage (%)": coverage_pct,
-            "Coverage Δ (pp)": coverage_delta,
-            "Generation Δ (MWh)": gen_delta,
-        })
-
-    if aug_rows:
-        aug_df = pd.DataFrame(aug_rows)
-        st.caption("Per-event summary combines augmentation size, cohort retirements, and year-over-year shifts in compliance and delivered energy.")
-        st.dataframe(
-            aug_df.style.format({
-                "Added (MWh BOL)": "{:.1f}",
-                "Added vs BOL (%)": "{:.2f}",
-                "Retired cohorts (MWh BOL)": "{:.1f}",
-                "Coverage (%)": "{:.2f}",
-                "Coverage Δ (pp)": "{:.2f}",
-                "Generation Δ (MWh)": "{:.1f}",
-            }),
-            use_container_width=True,
-        )
-
-        delta_df = aug_df.melt(
-            id_vars=["Year"],
-            value_vars=["Coverage Δ (pp)", "Generation Δ (MWh)"],
-            var_name="Metric",
-            value_name="Delta",
-        ).dropna(subset=["Delta"])
-
-        if not delta_df.empty:
-            delta_chart = alt.Chart(delta_df).mark_bar().encode(
-                x=alt.X("Year:O", title="Augmentation year"),
-                y=alt.Y("Delta:Q", title="Annual change"),
-                color=alt.Color("Metric:N", title=""),
-                tooltip=["Year", "Metric", alt.Tooltip("Delta:Q", format=".2f")],
-            ).properties(title="Year-over-year shifts at augmentation points")
-            st.altair_chart(delta_chart, use_container_width=True)
-    else:
-        st.info("No augmentation or retirement events were triggered in this run.")
+            st.dataframe(
+                sweep_df[
+                    [
+                        "power_mw",
+                        "duration_h",
+                        "energy_mwh",
+                        "compliance_pct",
+                        "total_shortfall_mwh",
+                        "avg_eq_cycles_per_year",
+                        "min_soh_total",
+                        "feasible",
+                        "is_best",
+                    ]
+                ],
+                use_container_width=True,
+            )
 
     with st.expander("BESS sizing sweep (power × duration grid)", expanded=False):
         # Local import avoids circular dependency when the grid-search module
@@ -2441,27 +2362,37 @@ def run_app():
         if "sensitivity_sweep_results" not in st.session_state:
             st.session_state["sensitivity_sweep_results"] = None
 
+        base_summary = None
+        sweep_df = None
         if run_sweeps:
             enforce_rate_limit()
             with st.spinner("Running sensitivity sweep grid..."):
-                sweep_df = run_sensitivity_grid(
-                    base_cfg=cfg,
-                    pv_df=pv_df,
-                    cycle_df=cycle_df,
-                    dod_override=dod_override,
-                    pv_oversize_factors=pv_factors,
-                    soc_windows=soc_windows,
-                    rte_values=rte_values,
-                    simulate_project_fn=simulate_project,
-                    summarize_fn=summarize_simulation,
-                )
+                try:
+                    base_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+                except ValueError as exc:  # noqa: BLE001
+                    st.error(str(exc))
+                else:
+                    base_summary = summarize_simulation(base_output)
+                    sweep_df = run_sensitivity_grid(
+                        base_cfg=cfg,
+                        pv_df=pv_df,
+                        cycle_df=cycle_df,
+                        dod_override=dod_override,
+                        pv_oversize_factors=pv_factors,
+                        soc_windows=soc_windows,
+                        rte_values=rte_values,
+                        simulate_project_fn=simulate_project,
+                        summarize_fn=summarize_simulation,
+                    )
 
-            if sweep_df.empty:
+            if base_summary is None or sweep_df is None:
+                st.session_state["sensitivity_sweep_results"] = None
+            elif sweep_df.empty:
                 st.info("No sweep results generated; adjust ranges and retry.")
                 st.session_state["sensitivity_sweep_results"] = None
             else:
-                base_compliance = summary.compliance
-                base_shortfall = summary.total_shortfall_mwh
+                base_compliance = base_summary.compliance
+                base_shortfall = base_summary.total_shortfall_mwh
 
                 sweep_df = sweep_df.assign(
                     compliance_delta_pct=sweep_df["compliance_pct"] - base_compliance,
@@ -2584,37 +2515,240 @@ def run_app():
                     tooltip=[
                         alt.Tooltip("rte_roundtrip", title="RTE", format=".3f"),
                         alt.Tooltip("pv_oversize_factor", title="PV oversize", format=".2f"),
-                        alt.Tooltip("compliance_pct", title="Compliance %", format=".2f"),
-                        alt.Tooltip("bess_share_pct", title="BESS share %", format=".2f"),
-                        alt.Tooltip("shortfall_mwh", title="Shortfall (MWh)", format=",.1f"),
-                        alt.Tooltip("compliance_delta_pct", title="Δ compliance", format=".2f"),
-                        alt.Tooltip("shortfall_delta_mwh", title="Δ shortfall", format=",.0f"),
+                        alt.Tooltip(metric_field, title=metric_cfg["title"], format=metric_cfg["format"]),
+                        alt.Tooltip("soc_floor", title="SOC floor", format=".2f"),
+                        alt.Tooltip("soc_ceiling", title="SOC ceiling", format=".2f"),
+                        alt.Tooltip("bess_share_pct", title="BESS share of firm", format=".2f"),
+                        alt.Tooltip("compliance_pct", title="Compliance", format=".2f"),
                     ],
                 )
 
-                text_layer = base_chart.mark_text(color="black").encode(
-                    text=alt.Text(f"{metric_field}:Q", format=metric_cfg["format"])
+                delta_chart = base_chart.mark_rect()
+                text_layer = base_chart.mark_text(baseline="middle", fontSize=12).encode(
+                    text=alt.Text(metric_field, format=metric_cfg["format"])
                 )
 
-                best_row = (
-                    group.sort_values(metric_field, ascending=not metric_cfg["higher_is_better"])
-                    .iloc[0]
-                )
-                best_point = alt.Chart(pd.DataFrame([best_row])).mark_point(
-                    shape="star", size=120, color="black"
-                ).encode(x="rte_roundtrip:Q", y="pv_oversize_factor:Q")
+                st.altair_chart(delta_chart + text_layer, use_container_width=True)
 
-                st.altair_chart(
-                    base_chart.mark_rect() + text_layer + best_point,
-                    use_container_width=True,
-                )
+    run_cols = st.columns([2, 1])
+    with run_cols[0]:
+        run_clicked = st.button(
+            "Run simulation",
+            use_container_width=True,
+            help="Prevents auto-reruns while you adjust inputs; click to compute results.",
+        )
+    with run_cols[1]:
+        st.caption(
+            "Edit parameters freely, then run when ready. Scenarios can still be batch-run above."
+        )
 
-                st.caption(
-                    "Deltas are measured against the base run and the chart mirrors the LCOE/LCOS heatmap layout "
-                    "for faster scanning."
-                )
-        else:
-            st.info("Run the sensitivity sweeps to populate the heatmap and ranking table.")
+    comparison_placeholder = st.container()
+
+    if not run_clicked:
+        render_scenario_comparisons(comparison_placeholder)
+        st.info("Click 'Run simulation' to generate results after updating inputs.")
+        st.stop()
+
+    enforce_rate_limit()
+
+    try:
+        sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+    except ValueError as exc:  # noqa: BLE001
+        st.error(str(exc))
+        st.stop()
+
+    results = sim_output.results
+    monthly_results_all = sim_output.monthly_results
+    first_year_logs = sim_output.first_year_logs
+    final_year_logs = sim_output.final_year_logs
+    hod_count = sim_output.hod_count
+    hod_sum_pv = sim_output.hod_sum_pv
+    hod_sum_pv_resource = sim_output.hod_sum_pv_resource
+    hod_sum_bess = sim_output.hod_sum_bess
+    hod_sum_charge = sim_output.hod_sum_charge
+    dis_hours_per_day = sim_output.discharge_hours_per_day
+
+    # Yearly table
+    res_df = pd.DataFrame([{
+        'Year': r.year_index,
+        'Expected firm MWh': r.expected_firm_mwh,
+        'Delivered firm MWh': r.delivered_firm_mwh,
+        'Shortfall MWh': r.shortfall_mwh,
+        'Breach days (has any shortfall)': r.breach_days,
+        'Charge MWh': r.charge_mwh,
+        'Discharge MWh (from BESS)': r.discharge_mwh,
+        'Available PV MWh': r.available_pv_mwh,
+        'PV→Contract MWh': r.pv_to_contract_mwh,
+        'BESS→Contract MWh': r.bess_to_contract_mwh,
+        'Avg RTE': r.avg_rte,
+        'Eq cycles (year)': r.eq_cycles,
+        'Cum cycles': r.cum_cycles,
+        'SOH_cycle': r.soh_cycle,
+        'SOH_calendar': r.soh_calendar,
+        'SOH_total': r.soh_total,
+        'EOY usable MWh': r.eoy_usable_mwh,
+        'EOY power MW (avail-adjusted)': r.eoy_power_mw,
+        'PV curtailed MWh': r.pv_curtailed_mwh,
+    } for r in results])
+
+    monthly_df = pd.DataFrame([{
+        'Year': m.year_index,
+        'Month': m.month_label,
+        'Expected firm MWh': m.expected_firm_mwh,
+        'Delivered firm MWh': m.delivered_firm_mwh,
+        'Shortfall MWh': m.shortfall_mwh,
+        'Breach days (has any shortfall)': m.breach_days,
+        'Charge MWh': m.charge_mwh,
+        'Discharge MWh (from BESS)': m.discharge_mwh,
+        'Available PV MWh': m.available_pv_mwh,
+        'PV→Contract MWh': m.pv_to_contract_mwh,
+        'BESS→Contract MWh': m.bess_to_contract_mwh,
+        'Avg RTE': m.avg_rte,
+        'Eq cycles (year)': m.eq_cycles,
+        'Cum cycles': m.cum_cycles,
+        'SOH_cycle': m.soh_cycle,
+        'SOH_calendar': m.soh_calendar,
+        'SOH_total': m.soh_total,
+        'EOY usable MWh': m.eom_usable_mwh,
+        'EOY power MW (avail-adjusted)': m.eom_power_mw,
+        'PV curtailed MWh': m.pv_curtailed_mwh,
+    } for m in monthly_results_all])
+
+    # --------- KPIs ---------
+    final = results[-1]
+    summary = summarize_simulation(sim_output)
+    compliance = summary.compliance
+    bess_share_of_firm = summary.bess_share_of_firm
+    charge_discharge_ratio = summary.charge_discharge_ratio
+    pv_capture_ratio = summary.pv_capture_ratio
+    discharge_capacity_factor = summary.discharge_capacity_factor
+    total_project_generation_mwh = summary.total_project_generation_mwh
+    bess_generation_mwh = summary.bess_generation_mwh
+    pv_generation_mwh = summary.pv_generation_mwh
+    pv_excess_mwh = summary.pv_excess_mwh
+    bess_losses_mwh = summary.bess_losses_mwh
+    avg_eq_cycles_per_year = summary.avg_eq_cycles_per_year
+    cap_ratio_final = summary.cap_ratio_final
+    expected_total_mwh = sum(r.expected_firm_mwh for r in results)
+    coverage_by_year = [
+        (r.delivered_firm_mwh / r.expected_firm_mwh) if r.expected_firm_mwh > 0 else float('nan')
+        for r in results
+    ]
+    min_yearly_coverage = float(np.nanmin(coverage_by_year)) if coverage_by_year else float('nan')
+    final_soh_pct = final.soh_total * 100.0
+    eoy_capacity_margin_pct = cap_ratio_final * 100.0
+    augmentation_events = sim_output.augmentation_events
+    augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
+
+    st.session_state["latest_scenario_snapshot"] = {
+        'Contracted MW': cfg.contracted_mw,
+        'Power (BOL MW)': cfg.initial_power_mw,
+        'Usable (BOL MWh)': cfg.initial_usable_mwh,
+        'Discharge windows': discharge_windows_text,
+        'Charge windows': charge_windows_text if charge_windows_text else 'Any PV hour',
+        'Compliance (%)': compliance,
+        'BESS share of firm (%)': bess_share_of_firm,
+        'Charge/Discharge ratio': charge_discharge_ratio,
+        'PV capture ratio': pv_capture_ratio,
+        'Total project generation (MWh)': total_project_generation_mwh,
+        'BESS share of generation (MWh)': bess_generation_mwh,
+        'PV share of generation (MWh)': pv_generation_mwh,
+        'PV excess (MWh)': pv_excess_mwh,
+        'BESS losses (MWh)': bess_losses_mwh,
+        'Final EOY usable (MWh)': final.eoy_usable_mwh,
+        'Final EOY power (MW)': final.eoy_power_mw,
+        'Final eq cycles (year)': final.eq_cycles,
+        'Final SOH_total': final.soh_total,
+    }
+
+    comparison_placeholder.empty()
+    render_scenario_comparisons(comparison_placeholder)
+
+    def _fmt_percent(value: float, as_fraction: bool = False) -> str:
+        if math.isnan(value):
+            return "—"
+        pct_value = value * 100.0 if as_fraction else value
+        return f"{pct_value:,.2f}%"
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Delivery compliance", _fmt_percent(compliance), help="Total firm energy delivered vs contracted across project life.")
+    c2.metric("Worst-year coverage", _fmt_percent(min_yearly_coverage, as_fraction=True), help="Lowest annual delivery vs contract shows weakest year.")
+    c3.metric("Final SOH_total", _fmt_percent(final_soh_pct, as_fraction=False), help="End-of-life usable fraction after cycle + calendar fade.")
+    c4.metric("EOY deliverable vs contract", _fmt_percent(eoy_capacity_margin_pct, as_fraction=False), help="Final-year daily deliverable vs target day (MW×h window).")
+    c5.metric(
+        "Augmentations triggered",
+        f"{augmentation_events} events",
+        help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
+    )
+
+    st.markdown("#### Augmentation impact trace")
+    augmentation_retired = getattr(
+        sim_output, "augmentation_retired_energy_mwh", [0.0 for _ in sim_output.augmentation_energy_added_mwh]
+    )
+    if len(augmentation_retired) < len(sim_output.augmentation_energy_added_mwh):
+        augmentation_retired.extend([0.0] * (len(sim_output.augmentation_energy_added_mwh) - len(augmentation_retired)))
+    elif len(augmentation_retired) > len(sim_output.augmentation_energy_added_mwh):
+        augmentation_retired = augmentation_retired[: len(sim_output.augmentation_energy_added_mwh)]
+
+    coverage_pct_by_year = [
+        (r.delivered_firm_mwh / r.expected_firm_mwh * 100.0) if r.expected_firm_mwh > 0 else float('nan')
+        for r in results
+    ]
+    delivered_by_year = [r.delivered_firm_mwh for r in results]
+
+    aug_rows: List[Dict[str, Any]] = []
+    for idx, add_e in enumerate(sim_output.augmentation_energy_added_mwh):
+        retired_e = augmentation_retired[idx] if idx < len(augmentation_retired) else 0.0
+        if add_e <= 0.0 and retired_e <= 0.0:
+            continue
+
+        coverage_pct = coverage_pct_by_year[idx]
+        coverage_delta = coverage_pct_by_year[idx] - coverage_pct_by_year[idx - 1] if idx > 0 else float('nan')
+        gen_delta = delivered_by_year[idx] - delivered_by_year[idx - 1] if idx > 0 else float('nan')
+        add_pct_bol = (add_e / cfg.initial_usable_mwh * 100.0) if cfg.initial_usable_mwh > 0 else float('nan')
+
+        aug_rows.append({
+            "Year": idx + 1,
+            "Added (MWh BOL)": add_e,
+            "Added vs BOL (%)": add_pct_bol,
+            "Retired cohorts (MWh BOL)": retired_e,
+            "Coverage (%)": coverage_pct,
+            "Coverage Δ (pp)": coverage_delta,
+            "Generation Δ (MWh)": gen_delta,
+        })
+
+    if aug_rows:
+        aug_df = pd.DataFrame(aug_rows)
+        st.caption("Per-event summary combines augmentation size, cohort retirements, and year-over-year shifts in compliance and delivered energy.")
+        st.dataframe(
+            aug_df.style.format({
+                "Added (MWh BOL)": "{:.1f}",
+                "Added vs BOL (%)": "{:.2f}",
+                "Retired cohorts (MWh BOL)": "{:.1f}",
+                "Coverage (%)": "{:.2f}",
+                "Coverage Δ (pp)": "{:.2f}",
+                "Generation Δ (MWh)": "{:.1f}",
+            }),
+            use_container_width=True,
+        )
+
+        delta_df = aug_df.melt(
+            id_vars=["Year"],
+            value_vars=["Coverage Δ (pp)", "Generation Δ (MWh)"],
+            var_name="Metric",
+            value_name="Delta",
+        ).dropna(subset=["Delta"])
+
+        if not delta_df.empty:
+            delta_chart = alt.Chart(delta_df).mark_bar().encode(
+                x=alt.X("Year:O", title="Augmentation year"),
+                y=alt.Y("Delta:Q", title="Annual change"),
+                color=alt.Color("Metric:N", title=""),
+                tooltip=["Year", "Metric", alt.Tooltip("Delta:Q", format=".2f")],
+            ).properties(title="Year-over-year shifts at augmentation points")
+            st.altair_chart(delta_chart, use_container_width=True)
+    else:
+        st.info("No augmentation or retirement events were triggered in this run.")
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
         econ_inputs_col1, econ_inputs_col2 = st.columns(2)
