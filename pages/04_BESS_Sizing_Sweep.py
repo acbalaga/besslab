@@ -28,7 +28,7 @@ if cfg is None:
     )
     cfg = SimConfig()
 
-st.page_link("pages/01_Simulation.py", label="Back to Inputs & Results", help="Update inputs before rerunning the sweep.")
+st.page_link("app.py", label="Back to Inputs & Results", help="Update inputs before rerunning the sweep.")
 
 st.markdown("---")
 
@@ -263,5 +263,5 @@ else:
 st.markdown("---")
 st.subheader("Navigate across the workspace")
 st.page_link("pages/00_Home.py", label="Home (Guide)")
-st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
+st.page_link("app.py", label="Simulation (Inputs & Results)")
 st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
