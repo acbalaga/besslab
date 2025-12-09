@@ -282,48 +282,49 @@ if sweep_df is not None:
         use_container_width=True,
     )
 
-    chart_df = sweep_df[["energy_mwh", "lcoe_usd_per_mwh"]].copy()
-    if "irr_pct" in sweep_df.columns:
-        chart_df["irr_pct"] = sweep_df["irr_pct"]
-    else:
-        chart_df["irr_pct"] = float("nan")
-
+    chart_df = sweep_df[["energy_mwh", "npv_costs_usd"]].copy()
+    chart_df["irr_pct"] = sweep_df.get("irr_pct", float("nan"))
     chart_df = chart_df.sort_values("energy_mwh")
 
     base_chart = alt.Chart(chart_df).encode(
-        x=alt.X("energy_mwh", title="Usable energy (MWh)")
+        x=alt.X("energy_mwh", title="BESS capacity (MWh)", axis=alt.Axis(format=",.0f"))
     )
 
     point_tooltip = [
-        alt.Tooltip("energy_mwh", title="Usable energy (MWh)", format=",.0f"),
-        alt.Tooltip("lcoe_usd_per_mwh", title="LCOE ($/MWh)", format=",.0f"),
+        alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
+        alt.Tooltip("npv_costs_usd", title="NPV (USD)", format=",.0f"),
         alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
     ]
 
-    lcoe_points = base_chart.mark_point(filled=True, color="#d62728", size=80).encode(
+    npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
         y=alt.Y(
-            "lcoe_usd_per_mwh",
-            title="LCOE ($/MWh)",
-            axis=alt.Axis(titleColor="#d62728"),
+            "npv_costs_usd",
+            title="NPV (USD)",
+            axis=alt.Axis(titleColor="#0b2c66", format=",.0f"),
         ),
         tooltip=point_tooltip,
     )
 
-    irr_points = base_chart.mark_point(filled=True, color="#9467bd", size=80, shape="diamond").encode(
+    irr_line = base_chart.mark_line(color="#88c5de", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
         y=alt.Y(
             "irr_pct",
             title="IRR (%)",
-            axis=alt.Axis(titleColor="#9467bd", orient="right"),
+            axis=alt.Axis(
+                titleColor="#88c5de",
+                orient="right",
+                format=",.2f",
+                labelExpr="datum.label + '%'",
+            ),
         ),
         tooltip=point_tooltip,
     )
 
     st.altair_chart(
-        alt.layer(lcoe_points, irr_points).resolve_scale(y="independent"),
+        alt.layer(npv_line, irr_line).resolve_scale(y="independent"),
         use_container_width=True,
     )
     st.caption(
-        "Dual-axis scatter shows LCOE and IRR for each BESS size; IRR points may be omitted when unavailable."
+        "Dual-axis line chart overlays NPV (USD) and IRR (%) across BESS capacities; IRR points are omitted when unavailable."
     )
 else:
     st.info(
