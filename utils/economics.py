@@ -374,6 +374,33 @@ def compute_lcoe_lcos_with_augmentation_fallback(
         )
 
 
+def estimate_augmentation_costs_by_year(
+    augmentation_energy_added_mwh: Sequence[float],
+    initial_usable_mwh: float,
+    capex_musd: float,
+) -> list[float]:
+    """Estimate per-year augmentation spend based on the energy added.
+
+    Costs scale linearly with the proportion of new BOL-equivalent energy
+    relative to the initial usable capacity. This mirrors common augmentation
+    pricing that pegs refresh spend to the share of the original system being
+    added back. Returns an array of USD amounts aligned with the input series.
+    """
+
+    if initial_usable_mwh <= 0:
+        # Avoid division by zero while keeping alignment with the input series.
+        return [0.0 for _ in augmentation_energy_added_mwh]
+
+    base_capex_usd = capex_musd * 1_000_000.0
+    costs: list[float] = []
+    for add_energy in augmentation_energy_added_mwh:
+        add_energy_safe = max(0.0, float(add_energy))
+        share_of_bol = add_energy_safe / initial_usable_mwh
+        costs.append(base_capex_usd * share_of_bol)
+
+    return costs
+
+
 __all__ = [
     "EconomicInputs",
     "EconomicOutputs",
@@ -389,4 +416,5 @@ __all__ = [
     "_discount_augmentation_costs",
     "_compute_npv",
     "_solve_irr_pct",
+    "estimate_augmentation_costs_by_year",
 ]

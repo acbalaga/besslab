@@ -1,6 +1,3 @@
-import streamlit as st
-from streamlit.delta_generator import DeltaGenerator
-
 import math
 import calendar
 import json
@@ -8,6 +5,8 @@ from dataclasses import dataclass, field, asdict
 from io import BytesIO, StringIO
 from typing import Any, List, Tuple, Optional, Dict
 
+import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -20,6 +19,15 @@ from utils import (
     get_rate_limit_password,
     read_cycle_model,
     read_pv_profile,
+)
+from utils.economics import (
+    CashFlowOutputs,
+    EconomicOutputs,
+    EconomicInputs,
+    PriceInputs,
+    compute_cash_flows_and_irr,
+    compute_lcoe_lcos_with_augmentation_fallback,
+    estimate_augmentation_costs_by_year,
 )
 from utils.ui_state import get_base_dir, load_shared_data
 
@@ -111,6 +119,20 @@ def parse_windows(text: str) -> List[Window]:
         except Exception:
             st.warning(f"Could not parse window '{part}'. Use 'HH:MM-HH:MM'. Skipped.")
     return wins
+
+
+def _parse_numeric_series(raw_text: str, label: str) -> List[float]:
+    """Parse a comma or newline-delimited series of floats."""
+
+    tokens = [t.strip() for t in raw_text.replace(",", "\n").splitlines() if t.strip()]
+    series: List[float] = []
+    for token in tokens:
+        try:
+            series.append(float(token))
+        except ValueError as exc:  # noqa: BLE001
+            st.error(f"{label} contains a non-numeric entry: '{token}'")
+            raise
+    return series
 
 # --------- Degradation helpers ---------
 
@@ -1397,6 +1419,104 @@ def run_app():
         augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
 
+    st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
+    run_economics = st.checkbox(
+        "Compute economics using simulation outputs",
+        value=False,
+        help=(
+            "Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR "
+            "from the simulated annual energy streams."
+        ),
+    )
+    econ_inputs: Optional[EconomicInputs] = None
+    price_inputs: Optional[PriceInputs] = None
+    forex_rate_php_per_usd = 58.0
+
+    default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+    default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+
+    if run_economics:
+        econ_col1, econ_col2, econ_col3 = st.columns(3)
+        with econ_col1:
+            wacc_pct = st.number_input(
+                "WACC (%)",
+                min_value=0.0,
+                max_value=30.0,
+                value=8.0,
+                step=0.1,
+            )
+            inflation_pct = st.number_input(
+                "Inflation rate (%)",
+                min_value=0.0,
+                max_value=20.0,
+                value=3.0,
+                step=0.1,
+                help="Used to derive the real discount rate applied to costs and revenues.",
+            )
+            discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+            st.caption(f"Real discount rate derived from WACC and inflation: {discount_rate * 100:.2f}%.")
+        with econ_col2:
+            capex_musd = st.number_input(
+                "Total CAPEX (USD million)",
+                min_value=0.0,
+                value=40.0,
+                step=0.1,
+            )
+            fixed_opex_pct = (
+                st.number_input(
+                    "Fixed OPEX (% of CAPEX per year)",
+                    min_value=0.0,
+                    max_value=20.0,
+                    value=2.0,
+                    step=0.1,
+                )
+                / 100.0
+            )
+            fixed_opex_musd = st.number_input(
+                "Additional fixed OPEX (USD million/yr)",
+                min_value=0.0,
+                value=0.0,
+                step=0.1,
+            )
+        with econ_col3:
+            contract_price_php_per_kwh = st.number_input(
+                "Contract price (PHP/kWh from BESS)",
+                min_value=0.0,
+                value=default_contract_php_per_kwh,
+                step=0.05,
+                help="Price converted to USD/MWh internally using PHP 58/USD.",
+            )
+            pv_market_price_php_per_kwh = st.number_input(
+                "PV market price (PHP/kWh for excess PV)",
+                min_value=0.0,
+                value=default_pv_php_per_kwh,
+                step=0.05,
+                help="Price converted to USD/MWh internally using PHP 58/USD.",
+            )
+            escalate_prices = st.checkbox(
+                "Escalate prices with inflation",
+                value=False,
+            )
+
+            contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(
+                f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+            )
+
+        econ_inputs = EconomicInputs(
+            capex_musd=capex_musd,
+            fixed_opex_pct_of_capex=fixed_opex_pct,
+            fixed_opex_musd=fixed_opex_musd,
+            inflation_rate=inflation_pct / 100.0,
+            discount_rate=discount_rate,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=contract_price,
+            pv_market_price_usd_per_mwh=pv_market_price,
+            escalate_with_inflation=escalate_prices,
+        )
+
     # Store the latest input set for use in other pages (e.g., sweeps) without
     # tying the data to this page's widgets.
     st.session_state["latest_sim_config"] = cfg
@@ -1513,6 +1633,44 @@ def run_app():
     augmentation_events = sim_output.augmentation_events
     augmentation_energy_mwh = float(np.sum(sim_output.augmentation_energy_added_mwh)) if sim_output.augmentation_energy_added_mwh else 0.0
 
+    econ_outputs: Optional[EconomicOutputs] = None
+    cash_outputs: Optional[CashFlowOutputs] = None
+    augmentation_costs_usd: Optional[List[float]] = None
+
+    if run_economics and econ_inputs and price_inputs:
+        augmentation_costs_usd = estimate_augmentation_costs_by_year(
+            sim_output.augmentation_energy_added_mwh,
+            cfg.initial_usable_mwh,
+            econ_inputs.capex_musd,
+        )
+        if any(augmentation_costs_usd):
+            st.caption(
+                "Augmentation CAPEX derived from the strategy (proportional to the share of BOL energy added)."
+            )
+
+        annual_delivered = [r.delivered_firm_mwh for r in results]
+        annual_bess = [r.bess_to_contract_mwh for r in results]
+        annual_pv_excess = [r.pv_curtailed_mwh for r in results]
+
+        try:
+            econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
+                annual_delivered,
+                annual_bess,
+                econ_inputs,
+                augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+            )
+            cash_outputs = compute_cash_flows_and_irr(
+                annual_delivered,
+                annual_bess,
+                annual_pv_excess,
+                econ_inputs,
+                price_inputs,
+                augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+            )
+        except ValueError as exc:  # noqa: BLE001
+            st.error(str(exc))
+            st.stop()
+
     st.session_state["latest_simulation_snapshot"] = {
         'Contracted MW': cfg.contracted_mw,
         'Power (BOL MW)': cfg.initial_power_mw,
@@ -1550,6 +1708,52 @@ def run_app():
         f"{augmentation_events} events",
         help=f"Energy added over life: {augmentation_energy_mwh:,.0f} MWh (BOL basis).",
     )
+
+    if run_economics and econ_outputs and cash_outputs:
+        st.markdown("### Economics summary")
+        econ_c1, econ_c2, econ_c3 = st.columns(3)
+        econ_c1.metric(
+            "Discounted costs (USD million)",
+            f"{econ_outputs.discounted_costs_usd / 1_000_000:,.2f}",
+            help="CAPEX at year 0 plus discounted OPEX and augmentation across the project horizon.",
+        )
+        php_per_kwh_factor = forex_rate_php_per_usd / 1000.0
+        lcoe_php_per_kwh = econ_outputs.lcoe_usd_per_mwh * php_per_kwh_factor
+        lcos_php_per_kwh = econ_outputs.lcos_usd_per_mwh * php_per_kwh_factor
+
+        econ_c2.metric(
+            "LCOE (PHP/kWh delivered)",
+            f"{lcoe_php_per_kwh:,.2f}",
+            help=(
+                "Total discounted costs ÷ discounted firm energy delivered, converted using "
+                f"PHP {forex_rate_php_per_usd:,.0f}/USD."
+            ),
+        )
+        econ_c3.metric(
+            "LCOS (PHP/kWh from BESS)",
+            f"{lcos_php_per_kwh:,.2f}",
+            help=(
+                "Same cost base divided by discounted BESS contribution only, converted with the "
+                f"PHP {forex_rate_php_per_usd:,.0f}/USD rate."
+            ),
+        )
+
+        cash_c1, cash_c2, cash_c3 = st.columns(3)
+        cash_c1.metric(
+            "Discounted revenues (USD million)",
+            f"{cash_outputs.discounted_revenues_usd / 1_000_000:,.2f}",
+            help="Contract revenue from BESS deliveries plus market revenue from excess PV.",
+        )
+        cash_c2.metric(
+            "NPV (USD million)",
+            f"{cash_outputs.npv_usd / 1_000_000:,.2f}",
+            help="Discounted cash flows using the chosen discount rate (year 0 CAPEX included).",
+        )
+        cash_c3.metric(
+            "Project IRR (%)",
+            f"{cash_outputs.irr_pct:,.2f}%" if cash_outputs.irr_pct == cash_outputs.irr_pct else "—",
+            help="IRR computed from annual revenues and OPEX/augmentation outflows.",
+        )
 
     st.markdown("#### Augmentation impact trace")
     augmentation_retired = getattr(
