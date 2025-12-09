@@ -1,17 +1,17 @@
 from typing import Optional
+import math
 import streamlit as st
 
 from app import BASE_DIR, SimConfig
 from utils import enforce_rate_limit
+from utils.economics import EconomicInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_state import get_shared_data
 
 st.set_page_config(page_title="BESS sizing sweep", layout="wide")
 
-st.title("BESS sizing sweep (power × duration)")
-st.caption(
-    "Grid-search the current inputs across power and duration to highlight feasible designs and KPIs."
-)
+st.title("BESS sizing sweep (energy sensitivity)")
+st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
 
 pv_df, cycle_df = get_shared_data(BASE_DIR)
 cfg: Optional[SimConfig] = st.session_state.get("latest_sim_config")
@@ -33,44 +33,70 @@ st.session_state.setdefault("bess_size_sweep_results", None)
 with st.form("size_sweep_form_page"):
     size_col1, size_col2, size_col3 = st.columns(3)
     with size_col1:
-        power_range = st.slider(
-            "Power range (MW)",
-            min_value=1.0,
-            max_value=200.0,
-            value=(
-                max(1.0, cfg.initial_power_mw * 0.5),
-                cfg.initial_power_mw * 1.5,
-            ),
-            step=1.0,
-            help="Lower and upper bounds for the MW grid.",
+        default_energy = max(10.0, cfg.initial_usable_mwh)
+        energy_range = st.slider(
+            "Usable energy range (MWh)",
+            min_value=10.0,
+            max_value=500.0,
+            value=(max(10.0, default_energy * 0.5), min(500.0, default_energy * 1.5)),
+            step=5.0,
+            help="Lower and upper bounds for the usable MWh grid.",
         )
-        power_steps = st.number_input(
-            "Power points",
+        energy_steps = st.number_input(
+            "Energy points",
             min_value=1,
-            max_value=10,
-            value=3,
-            help="Number of evenly spaced MW values between the bounds.",
+            max_value=15,
+            value=5,
+            help="Number of evenly spaced usable-energy values between the bounds.",
+        )
+        fixed_power = st.number_input(
+            "Fixed discharge power (MW)",
+            min_value=0.1,
+            max_value=300.0,
+            value=float(cfg.initial_power_mw),
+            step=0.1,
+            help="Power rating held constant while sweeping usable energy.",
         )
 
     with size_col2:
-        default_duration = max(1.0, cfg.initial_usable_mwh / max(cfg.initial_power_mw, 0.1))
-        duration_range = st.slider(
-            "Duration range (hours)",
-            min_value=0.5,
-            max_value=12.0,
-            value=(
-                max(0.5, default_duration * 0.5),
-                min(12.0, default_duration * 1.5),
-            ),
-            step=0.25,
-            help="Lower and upper bounds for duration at rated power.",
+        wacc_pct = st.number_input(
+            "WACC (%)",
+            min_value=0.0,
+            max_value=30.0,
+            value=8.0,
+            step=0.1,
+            help="Weighted-average cost of capital (nominal).",
         )
-        duration_steps = st.number_input(
-            "Duration points",
-            min_value=1,
-            max_value=10,
-            value=3,
-            help="Number of evenly spaced durations between the bounds.",
+        inflation_pct = st.number_input(
+            "Inflation rate (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=3.0,
+            step=0.1,
+            help="Inflation assumption used to derive the real discount rate.",
+        )
+        discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+        capex_musd = st.number_input(
+            "Total CAPEX (USD million)",
+            min_value=0.0,
+            value=40.0,
+            step=0.1,
+            help="All-in CAPEX for the project. Expressed in USD millions for compact entry.",
+        )
+        fixed_opex_pct = st.number_input(
+            "Fixed OPEX (% of CAPEX per year)",
+            min_value=0.0,
+            max_value=20.0,
+            value=2.0,
+            step=0.1,
+            help="Annual fixed OPEX expressed as % of CAPEX.",
+        ) / 100.0
+        fixed_opex_musd = st.number_input(
+            "Additional fixed OPEX (USD million/yr)",
+            min_value=0.0,
+            value=0.0,
+            step=0.1,
+            help="Extra fixed OPEX not tied to CAPEX percentage.",
         )
 
     with size_col3:
@@ -81,12 +107,16 @@ with st.form("size_sweep_form_page"):
                 "total_shortfall_mwh",
                 "total_project_generation_mwh",
                 "bess_generation_mwh",
+                "lcoe_usd_per_mwh",
+                "npv_costs_usd",
             ],
             format_func=lambda x: {
                 "compliance_pct": "Compliance % (higher is better)",
                 "total_shortfall_mwh": "Shortfall MWh (lower is better)",
                 "total_project_generation_mwh": "Total generation (higher is better)",
                 "bess_generation_mwh": "BESS discharge (higher is better)",
+                "lcoe_usd_per_mwh": "LCOE ($/MWh, lower is better)",
+                "npv_costs_usd": "NPV of costs (USD, lower is better)",
             }.get(x, x),
             help="Column used to pick the top feasible design.",
         )
@@ -98,26 +128,55 @@ with st.form("size_sweep_form_page"):
             step=0.05,
             help="Candidates falling below this total SOH are flagged as infeasible.",
         )
+        st.caption(
+            "Discount rate is derived from WACC and inflation to align with the economics helper."
+        )
 
-    submitted = st.form_submit_button("Run BESS size sweep", use_container_width=True)
+    submitted = st.form_submit_button("Run BESS energy sweep", use_container_width=True)
 
 if submitted:
     enforce_rate_limit()
-    power_values = generate_values(power_range[0], power_range[1], int(power_steps))
-    duration_values = generate_values(duration_range[0], duration_range[1], int(duration_steps))
+    energy_values = generate_values(energy_range[0], energy_range[1], int(energy_steps))
+    economics_inputs = EconomicInputs(
+        capex_musd=capex_musd,
+        fixed_opex_pct_of_capex=fixed_opex_pct,
+        fixed_opex_musd=fixed_opex_musd,
+        inflation_rate=inflation_pct / 100.0,
+        discount_rate=discount_rate,
+    )
 
-    with st.spinner("Running BESS size grid..."):
-        sweep_df = sweep_bess_sizes(
-            base_cfg=cfg,
-            pv_df=pv_df,
-            cycle_df=cycle_df,
-            dod_override=dod_override,
-            power_mw_values=power_values,
-            duration_h_values=duration_values,
-            ranking_kpi=ranking_choice,
-            min_soh=min_soh,
-            use_case="reliability",
-        )
+    with st.spinner("Running BESS energy sweep..."):
+        try:
+            sweep_df = sweep_bess_sizes(
+                base_cfg=cfg,
+                pv_df=pv_df,
+                cycle_df=cycle_df,
+                dod_override=dod_override,
+                energy_mwh_values=energy_values,
+                fixed_power_mw=fixed_power,
+                economics_inputs=economics_inputs,
+                ranking_kpi=ranking_choice,
+                min_soh=min_soh,
+                use_case="reliability",
+            )
+        except TypeError as exc:
+            # Backwards-compatibility for environments still running an older sweep implementation
+            # that lacks the ``energy_mwh_values`` keyword argument.
+            if "energy_mwh_values" not in str(exc):
+                raise
+            duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
+            sweep_df = sweep_bess_sizes(
+                base_cfg,
+                pv_df,
+                cycle_df,
+                dod_override,
+                power_mw_values=[fixed_power],
+                duration_h_values=duration_values,
+                economics_inputs=economics_inputs,
+                ranking_kpi=ranking_choice,
+                min_soh=min_soh,
+                use_case="reliability",
+            )
 
     if sweep_df.empty:
         st.info("No sweep results generated; widen the ranges and try again.")
@@ -132,9 +191,13 @@ if sweep_df is not None:
         st.warning("No feasible candidates met the SOH/cycle thresholds.")
     else:
         best = best_row.iloc[0]
+        lcoe_text = ""
+        if not math.isnan(best.get("lcoe_usd_per_mwh", float("nan"))):
+            lcoe_text = f" — LCOE {best['lcoe_usd_per_mwh']:.0f} $/MWh"
         st.success(
-            f"Best feasible: {best['power_mw']:.1f} MW × {best['duration_h']:.2f} h "
-            f"({best['energy_mwh']:.1f} MWh)"
+            "Best feasible: "
+            f"{best['energy_mwh']:.1f} MWh usable @ {best['power_mw']:.1f} MW "
+            f"({best['duration_h']:.2f} h){lcoe_text}"
         )
 
     st.dataframe(
@@ -147,6 +210,8 @@ if sweep_df is not None:
                 "total_shortfall_mwh",
                 "avg_eq_cycles_per_year",
                 "min_soh_total",
+                "lcoe_usd_per_mwh",
+                "npv_costs_usd",
                 "feasible",
                 "is_best",
             ]
