@@ -73,3 +73,16 @@ def get_shared_data(base_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         _set_session_df(CYCLE_SESSION_KEY, cycle_df)
 
     return pv_df, cycle_df
+
+
+def hide_root_page_from_sidebar() -> None:
+    """Hide the launcher script entry from Streamlit's sidebar navigation."""
+
+    st.markdown(
+        """
+        <style>
+        [data-testid="stSidebarNav"] li:first-child { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
