@@ -93,21 +93,3 @@ def get_latest_economics_payload() -> Optional[Dict[str, Any]]:
     return st.session_state.get(ECON_PAYLOAD_KEY)
 
 
-def hide_root_page_from_sidebar() -> None:
-    """Hide the implicit root page entry in the Streamlit sidebar navigation.
-
-    Streamlit includes a placeholder entry for the `app.py` root file in multipage
-    apps. The pages in this workspace link to each other directly, so the extra
-    sidebar row is redundant. Injecting a small CSS snippet keeps the navigation
-    focused on the explicit pages while remaining safe if Streamlit changes the
-    underlying markup.
-    """
-
-    st.markdown(
-        """
-        <style>
-            [data-testid="stSidebarNav"] ul li:first-child { display: none; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
