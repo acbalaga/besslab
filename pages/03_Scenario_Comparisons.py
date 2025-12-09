@@ -42,7 +42,7 @@ with cols[0]:
 
 with cols[1]:
     st.page_link(
-        "pages/01_Simulation.py",
+        "app.py",
         label="Back to Inputs & Results",
         help="Adjust inputs and rerun the simulation to refresh the snapshot.",
     )
@@ -95,5 +95,5 @@ else:
 st.markdown("---")
 st.subheader("Navigate across the workspace")
 st.page_link("pages/00_Home.py", label="Home (Guide)")
-st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
+st.page_link("app.py", label="Simulation (Inputs & Results)")
 st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
