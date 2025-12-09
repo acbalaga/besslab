@@ -2346,4 +2346,4 @@ def render_landing() -> None:
 
 
 if __name__ == "__main__":
-    render_landing()
+    run_app()
