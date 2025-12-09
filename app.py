@@ -2366,7 +2366,8 @@ def render_landing() -> None:
     st.subheader("Next steps")
     st.page_link("pages/00_Home.py", label="Open guide and tips")
     st.page_link("pages/01_Simulation.py", label="Configure inputs and view results")
-    st.page_link("pages/02_Economics_Module.py", label="Economics helper")
+    st.page_link("pages/03_Scenario_Comparisons.py", label="Compare scenarios")
+    st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
 
 
 if __name__ == "__main__":
