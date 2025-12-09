@@ -16,8 +16,11 @@ from fpdf import FPDF
 from utils.economics import (
     EconomicInputs,
     EconomicOutputs,
+    CashFlowOutputs,
     compute_lcoe_lcos,
+    compute_cash_flows_and_irr,
     compute_lcoe_lcos_with_augmentation_fallback,
+    PriceInputs,
 )
 from utils.sweeps import build_soc_windows, generate_values, run_sensitivity_grid
 from utils import (
@@ -2195,7 +2198,7 @@ def run_app():
         st.info("No augmentation or retirement events were triggered in this run.")
 
     with st.expander("Economics — LCOE / LCOS (separate module)", expanded=False):
-        econ_inputs_col1, econ_inputs_col2 = st.columns(2)
+        econ_inputs_col1, econ_inputs_col2, econ_inputs_col3 = st.columns(3)
         with econ_inputs_col1:
             wacc_pct = st.number_input(
                 "WACC (%)",
@@ -2241,10 +2244,28 @@ def run_app():
                 step=0.1,
                 help="Extra fixed OPEX not tied to CAPEX percentage.",
             )
+        with econ_inputs_col3:
+            contract_price = st.number_input(
+                "Contract price (USD/MWh from BESS)",
+                min_value=0.0,
+                value=120.0,
+                step=1.0,
+                help="Fixed selling price applied to BESS energy delivered to the contract.",
+            )
+            pv_market_price = st.number_input(
+                "PV market price (USD/MWh for excess PV)",
+                min_value=0.0,
+                value=55.0,
+                step=1.0,
+                help="Spot/merchant price used for curtailed PV that can be sold to the market.",
+            )
+            escalate_prices = st.checkbox(
+                "Escalate prices with inflation", value=False, help="Apply the inflation assumption to both price streams."
+            )
 
         def build_economics_output_for_run(
             sim_output: SimulationOutput, cfg_for_run: SimConfig
-        ) -> Tuple[float, float, List[float], Any]:
+        ) -> Tuple[float, float, List[float], Any, CashFlowOutputs]:
             """Compute economics for a simulation using current discount and cost inputs."""
 
             results_for_run = sim_output.results
@@ -2276,6 +2297,11 @@ def run_app():
                 inflation_rate=inflation_pct / 100.0,
                 discount_rate=discount_rate,
             )
+            price_inputs = PriceInputs(
+                contract_price_usd_per_mwh=contract_price,
+                pv_market_price_usd_per_mwh=pv_market_price,
+                escalate_with_inflation=escalate_prices,
+            )
 
             economics_output_run = compute_lcoe_lcos_with_augmentation_fallback(
                 [r.delivered_firm_mwh for r in results_for_run],
@@ -2284,11 +2310,21 @@ def run_app():
                 augmentation_costs_usd=augmentation_costs_usd,
             )
 
+            cashflow_output_run = compute_cash_flows_and_irr(
+                [r.delivered_firm_mwh for r in results_for_run],
+                [r.bess_to_contract_mwh for r in results_for_run],
+                [r.pv_curtailed_mwh for r in results_for_run],
+                economics_inputs,
+                price_inputs,
+                augmentation_costs_usd=augmentation_costs_usd,
+            )
+
             return (
                 capex_musd_run,
                 augmentation_unit_rate_usd_per_kwh,
                 augmentation_costs_usd,
                 economics_output_run,
+                cashflow_output_run,
             )
 
         (
@@ -2296,6 +2332,7 @@ def run_app():
             augmentation_unit_rate_usd_per_kwh,
             augmentation_costs_usd,
             economics_output,
+            cashflow_output,
         ) = build_economics_output_for_run(sim_output, cfg)
 
         # Reuse simulation-year outputs for downstream economics sensitivity charts.
@@ -2303,6 +2340,9 @@ def run_app():
 
         def _fmt_optional(value: float, scale: float = 1.0, prefix: str = "") -> str:
             return "—" if math.isnan(value) else f"{prefix}{value / scale:,.2f}"
+
+        def _fmt_percent(value: float) -> str:
+            return "—" if math.isnan(value) else f"{value:,.2f}%"
 
         def _usd_per_mwh_to_php_per_kwh(value: float) -> float:
             if not math.isfinite(value):
@@ -2342,6 +2382,27 @@ def run_app():
         st.caption(
             f"Real discount rate derived from WACC {wacc_pct:.2f}% and inflation {inflation_pct:.2f}%: {discount_rate * 100:.2f}%. "
             "Discounting starts in year 1 for OPEX and energy; CAPEX is treated as a year-0 spend."
+        )
+
+        cashflow_c1, cashflow_c2, cashflow_c3 = st.columns(3)
+        cashflow_c1.metric(
+            "Discounted revenues (USD million)",
+            _fmt_optional(cashflow_output.discounted_revenues_usd, scale=1_000_000),
+            help="Contract revenue from BESS deliveries plus market revenue from excess PV.",
+        )
+        cashflow_c2.metric(
+            "NPV (USD million)",
+            _fmt_optional(cashflow_output.npv_usd, scale=1_000_000),
+            help="Discounted cash flows using the derived real discount rate (year 0 CAPEX included).",
+        )
+        cashflow_c3.metric(
+            "Project IRR (%)",
+            _fmt_percent(cashflow_output.irr_pct),
+            help="IRR computed from annual revenues and OPEX/augmentation outflows.",
+        )
+        st.caption(
+            f"Price assumptions: ${contract_price:,.0f}/MWh for BESS contract deliveries and ${pv_market_price:,.0f}/MWh for excess PV. "
+            + ("Prices escalate with inflation." if escalate_prices else "Prices held constant in nominal terms.")
         )
 
         st.markdown("**Break-even selling rates (PHP/kWh @ 58 PHP/USD)**")
