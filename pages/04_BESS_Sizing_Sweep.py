@@ -8,9 +8,11 @@ from app import BASE_DIR, SimConfig
 from utils import enforce_rate_limit
 from utils.economics import EconomicInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
-from utils.ui_state import get_shared_data
+from utils.ui_state import get_shared_data, hide_root_page_from_sidebar
 
 st.set_page_config(page_title="BESS sizing sweep", layout="wide")
+
+hide_root_page_from_sidebar()
 
 st.title("BESS sizing sweep (energy sensitivity)")
 st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
