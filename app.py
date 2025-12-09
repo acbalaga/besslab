@@ -42,13 +42,6 @@ def hide_root_page_from_sidebar() -> None:
         unsafe_allow_html=True,
     )
 
-# Streamlit sometimes reloads modules between page navigations. Explicitly
-# provide a no-op fallback so calls to the sidebar-hiding helper never raise
-# a NameError if the import above is skipped by the reloader.
-if "hide_root_page_from_sidebar" not in globals():
-    def hide_root_page_from_sidebar() -> None:
-        return None
-
 BASE_DIR = get_base_dir()
 
 
