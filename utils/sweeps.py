@@ -8,6 +8,8 @@ from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from utils.economics import EconomicInputs, compute_lcoe_lcos_with_augmentation_fallback
+
 if TYPE_CHECKING:
     from app import SimConfig, SimulationOutput, SimulationSummary
 
@@ -153,6 +155,49 @@ def run_candidate_simulation(
     return sim_output, summary
 
 
+def _compute_candidate_economics(
+    sim_output: "SimulationOutput",
+    economics_inputs: EconomicInputs,
+) -> tuple[float, float]:
+    """Return LCOE and discounted-cost NPV for a simulation.
+
+    The helper mirrors the standalone economics module by computing an implied
+    augmentation unit rate from the initial usable energy. Augmentation spend
+    is converted to USD and discounted inside the LCOE calculation to keep
+    sensitivity runs aligned with the main app.
+    """
+
+    results = sim_output.results
+    if not results:
+        return float("nan"), float("nan")
+
+    base_cfg = sim_output.cfg
+    augmentation_unit_rate_usd_per_kwh = 0.0
+    if base_cfg.initial_usable_mwh > 0 and economics_inputs.capex_musd > 0:
+        augmentation_unit_rate_usd_per_kwh = (
+            economics_inputs.capex_musd * 1_000_000.0
+        ) / (base_cfg.initial_usable_mwh * 1_000.0)
+
+    augmentation_energy_added = list(getattr(sim_output, "augmentation_energy_added_mwh", []))
+    if len(augmentation_energy_added) < len(results):
+        augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
+    elif len(augmentation_energy_added) > len(results):
+        augmentation_energy_added = augmentation_energy_added[: len(results)]
+
+    augmentation_costs_usd = [
+        add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh for add_e in augmentation_energy_added
+    ]
+
+    economics_outputs = compute_lcoe_lcos_with_augmentation_fallback(
+        [r.delivered_firm_mwh for r in results],
+        [r.bess_to_contract_mwh for r in results],
+        economics_inputs,
+        augmentation_costs_usd=augmentation_costs_usd,
+    )
+
+    return economics_outputs.lcoe_usd_per_mwh, economics_outputs.discounted_costs_usd
+
+
 def _evaluate_feasibility(
     sim_output: "SimulationOutput",
     summary: "SimulationSummary",
@@ -189,7 +234,12 @@ def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str
     }
 
     if ranking_kpi:
-        return ranking_kpi, False
+        low_is_better = {
+            "total_shortfall_mwh",
+            "lcoe_usd_per_mwh",
+            "npv_costs_usd",
+        }
+        return ranking_kpi, ranking_kpi in low_is_better
     return defaults.get(use_case, ("compliance_pct", False))
 
 
@@ -198,65 +248,104 @@ def sweep_bess_sizes(
     pv_df: pd.DataFrame,
     cycle_df: pd.DataFrame,
     dod_override: str,
-    power_mw_values: Iterable[float],
-    duration_h_values: Iterable[float],
+    power_mw_values: Iterable[float] | None = None,
+    duration_h_values: Iterable[float] | None = None,
+    *,
+    energy_mwh_values: Iterable[float] | None = None,
+    fixed_power_mw: float | None = None,
+    economics_inputs: EconomicInputs | None = None,
     use_case: str = "reliability",
     ranking_kpi: str | None = None,
     min_soh: float = 0.6,
     simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
 ) -> pd.DataFrame:
-    """Run a simple grid search over power/duration candidates.
+    """Run a simple grid search over BESS sizes.
 
     The grid is fully enumerated (no heuristics) and returns one row per
-    candidate with core KPIs, feasibility markers, and the top-ranked option
-    flagged.
+    candidate with core KPIs, feasibility markers, economics (optional), and
+    the top-ranked option flagged. When ``energy_mwh_values`` is provided the
+    sweep fixes power at ``fixed_power_mw`` (defaulting to ``base_cfg``) and
+    derives the duration from each energy candidate.
     """
 
     rows: List[dict[str, float | bool | str]] = []
 
-    for power_mw in power_mw_values:
-        for duration_h in duration_h_values:
-            candidate_energy_mwh = float(power_mw * duration_h)
-            sim_output, summary = run_candidate_simulation(
-                base_cfg,
-                pv_df,
-                cycle_df,
-                dod_override,
-                power_mw,
-                duration_h,
-                simulate_fn=simulate_fn,
-                summarize_fn=summarize_fn,
-            )
+    # When an explicit energy sweep is requested, collapse the grid to one power value
+    # and derive the matching duration for each energy point.
+    if energy_mwh_values is not None:
+        power_mw_values = [
+            float(fixed_power_mw)
+            if fixed_power_mw is not None
+            else float(base_cfg.initial_power_mw)
+        ]
+        if power_mw_values[0] <= 0:
+            return pd.DataFrame(rows)
+        duration_h_values = [float(energy / power_mw_values[0]) for energy in energy_mwh_values]
 
-            (
-                max_eq_cycles,
-                min_soh_total,
-                cycle_limit_hit,
-                soh_below_min,
-                feasible,
-            ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
+    power_mw_values = list(power_mw_values or [])
+    duration_h_values = list(duration_h_values or [])
 
-            rows.append(
-                {
-                    "power_mw": float(power_mw),
-                    "duration_h": float(duration_h),
-                    "energy_mwh": candidate_energy_mwh,
-                    "compliance_pct": summary.compliance,
-                    "total_project_generation_mwh": summary.total_project_generation_mwh,
-                    "bess_generation_mwh": summary.bess_generation_mwh,
-                    "pv_generation_mwh": summary.pv_generation_mwh,
-                    "pv_excess_mwh": summary.pv_excess_mwh,
-                    "bess_losses_mwh": summary.bess_losses_mwh,
-                    "total_shortfall_mwh": summary.total_shortfall_mwh,
-                    "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
-                    "max_eq_cycles_per_year": max_eq_cycles,
-                    "min_soh_total": min_soh_total,
-                    "cycle_limit_hit": cycle_limit_hit,
-                    "soh_below_min": soh_below_min,
-                    "feasible": feasible,
-                }
-            )
+    if energy_mwh_values is not None:
+        energy_candidates = list(energy_mwh_values)
+        if not power_mw_values or not duration_h_values:
+            return pd.DataFrame(rows)
+        power_mw_values = [power_mw_values[0] for _ in energy_candidates]
+        duration_h_values = [float(energy / power_mw_values[0]) for energy in energy_candidates]
+    else:
+        energy_candidates = [float(p * d) for p in power_mw_values for d in duration_h_values]
+        power_mw_values = [p for p in power_mw_values for _ in duration_h_values]
+        duration_h_values = duration_h_values * (len(power_mw_values) // len(duration_h_values) if duration_h_values else 0)
+
+    for power_mw, duration_h, candidate_energy_mwh in zip(
+        power_mw_values, duration_h_values, energy_candidates
+    ):
+        sim_output, summary = run_candidate_simulation(
+            base_cfg,
+            pv_df,
+            cycle_df,
+            dod_override,
+            power_mw,
+            duration_h,
+            simulate_fn=simulate_fn,
+            summarize_fn=summarize_fn,
+        )
+
+        (
+            max_eq_cycles,
+            min_soh_total,
+            cycle_limit_hit,
+            soh_below_min,
+            feasible,
+        ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
+
+        lcoe = float("nan")
+        discounted_costs = float("nan")
+        if economics_inputs is not None:
+            lcoe, discounted_costs = _compute_candidate_economics(sim_output, economics_inputs)
+
+        rows.append(
+            {
+                "power_mw": float(power_mw),
+                "duration_h": float(duration_h),
+                "energy_mwh": candidate_energy_mwh,
+                "compliance_pct": summary.compliance,
+                "total_project_generation_mwh": summary.total_project_generation_mwh,
+                "bess_generation_mwh": summary.bess_generation_mwh,
+                "pv_generation_mwh": summary.pv_generation_mwh,
+                "pv_excess_mwh": summary.pv_excess_mwh,
+                "bess_losses_mwh": summary.bess_losses_mwh,
+                "total_shortfall_mwh": summary.total_shortfall_mwh,
+                "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
+                "max_eq_cycles_per_year": max_eq_cycles,
+                "min_soh_total": min_soh_total,
+                "cycle_limit_hit": cycle_limit_hit,
+                "soh_below_min": soh_below_min,
+                "feasible": feasible,
+                "lcoe_usd_per_mwh": lcoe,
+                "npv_costs_usd": discounted_costs,
+            }
+        )
 
     df = pd.DataFrame(rows)
     if df.empty:
