@@ -1717,15 +1717,25 @@ def run_app():
             f"{econ_outputs.discounted_costs_usd / 1_000_000:,.2f}",
             help="CAPEX at year 0 plus discounted OPEX and augmentation across the project horizon.",
         )
+        php_per_kwh_factor = forex_rate_php_per_usd / 1000.0
+        lcoe_php_per_kwh = econ_outputs.lcoe_usd_per_mwh * php_per_kwh_factor
+        lcos_php_per_kwh = econ_outputs.lcos_usd_per_mwh * php_per_kwh_factor
+
         econ_c2.metric(
-            "LCOE ($/MWh delivered)",
-            f"{econ_outputs.lcoe_usd_per_mwh:,.2f}",
-            help="Total discounted costs ÷ discounted firm energy delivered.",
+            "LCOE (PHP/kWh delivered)",
+            f"{lcoe_php_per_kwh:,.2f}",
+            help=(
+                "Total discounted costs ÷ discounted firm energy delivered, converted using "
+                f"PHP {forex_rate_php_per_usd:,.0f}/USD."
+            ),
         )
         econ_c3.metric(
-            "LCOS ($/MWh from BESS)",
-            f"{econ_outputs.lcos_usd_per_mwh:,.2f}",
-            help="Same cost base divided by discounted BESS contribution only.",
+            "LCOS (PHP/kWh from BESS)",
+            f"{lcos_php_per_kwh:,.2f}",
+            help=(
+                "Same cost base divided by discounted BESS contribution only, converted with the "
+                f"PHP {forex_rate_php_per_usd:,.0f}/USD rate."
+            ),
         )
 
         cash_c1, cash_c2, cash_c3 = st.columns(3)
