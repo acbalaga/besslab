@@ -73,3 +73,23 @@ def get_shared_data(base_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         _set_session_df(CYCLE_SESSION_KEY, cycle_df)
 
     return pv_df, cycle_df
+
+
+def hide_root_page_from_sidebar() -> None:
+    """Hide the implicit root page entry in the Streamlit sidebar navigation.
+
+    Streamlit includes a placeholder entry for the `app.py` root file in multipage
+    apps. The pages in this workspace link to each other directly, so the extra
+    sidebar row is redundant. Injecting a small CSS snippet keeps the navigation
+    focused on the explicit pages while remaining safe if Streamlit changes the
+    underlying markup.
+    """
+
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebarNav"] ul li:first-child { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
