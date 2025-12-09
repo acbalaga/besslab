@@ -21,7 +21,7 @@ from utils import (
     read_cycle_model,
     read_pv_profile,
 )
-from utils.ui_state import get_base_dir, load_shared_data
+from utils.ui_state import get_base_dir, hide_root_page_from_sidebar, load_shared_data
 
 BASE_DIR = get_base_dir()
 
