@@ -5,6 +5,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 
+import math
+
 import numpy as np
 import pandas as pd
 
@@ -158,18 +160,20 @@ def run_candidate_simulation(
 def _compute_candidate_economics(
     sim_output: "SimulationOutput",
     economics_inputs: EconomicInputs,
-) -> tuple[float, float]:
-    """Return LCOE and discounted-cost NPV for a simulation.
+) -> tuple[float, float, float]:
+    """Return LCOE, discounted-cost NPV, and an implied IRR for a simulation.
 
     The helper mirrors the standalone economics module by computing an implied
     augmentation unit rate from the initial usable energy. Augmentation spend
     is converted to USD and discounted inside the LCOE calculation to keep
-    sensitivity runs aligned with the main app.
+    sensitivity runs aligned with the main app. An IRR is then derived from the
+    same cash-flow stream using LCOE as the assumed tariff so the IRR reflects
+    how those costs perform when energy is monetized at its breakeven price.
     """
 
     results = sim_output.results
     if not results:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan")
 
     base_cfg = sim_output.cfg
     augmentation_unit_rate_usd_per_kwh = 0.0
@@ -195,7 +199,70 @@ def _compute_candidate_economics(
         augmentation_costs_usd=augmentation_costs_usd,
     )
 
-    return economics_outputs.lcoe_usd_per_mwh, economics_outputs.discounted_costs_usd
+    irr_pct = float("nan")
+    # Use LCOE as an implied tariff to create a revenue stream that balances costs.
+    # This keeps the IRR interpretable without requiring a separate price input.
+    capex_usd = economics_inputs.capex_musd * 1_000_000.0
+    inflation_rate = economics_inputs.inflation_rate
+    fixed_opex_from_capex = economics_inputs.capex_musd * (
+        economics_inputs.fixed_opex_pct_of_capex / 100.0
+    )
+
+    if capex_usd > 0 and math.isfinite(economics_outputs.lcoe_usd_per_mwh):
+        cash_flows: List[float] = [-capex_usd]
+        for year_idx, annual_result in enumerate(results, start=1):
+            inflation_multiplier = (1.0 + inflation_rate) ** (year_idx - 1)
+            annual_fixed_opex_usd = (fixed_opex_from_capex + economics_inputs.fixed_opex_musd) * 1_000_000
+            annual_fixed_opex_usd *= inflation_multiplier
+            augmentation_cost = float(augmentation_costs_usd[year_idx - 1]) if year_idx - 1 < len(augmentation_costs_usd) else 0.0
+            revenue = economics_outputs.lcoe_usd_per_mwh * float(annual_result.delivered_firm_mwh)
+            cash_flows.append(revenue - annual_fixed_opex_usd - augmentation_cost)
+        irr_pct = _solve_irr_pct(cash_flows)
+
+    return economics_outputs.lcoe_usd_per_mwh, economics_outputs.discounted_costs_usd, irr_pct
+
+
+def _solve_irr_pct(cash_flows: Sequence[float], max_iterations: int = 100) -> float:
+    """Compute IRR (%) using a robust bisection search.
+
+    ``numpy.irr`` was removed in NumPy 2.0, and numpy_financial may not be
+    available in all environments. This helper performs a simple bisection
+    search for a rate that drives NPV to zero. It returns NaN when cash flows do
+    not change sign or when a root cannot be located within the search bounds.
+    """
+
+    if not any(cf < 0 for cf in cash_flows) or not any(cf > 0 for cf in cash_flows):
+        return float("nan")
+
+    def npv(rate: float) -> float:
+        return sum(cf / ((1.0 + rate) ** idx) for idx, cf in enumerate(cash_flows))
+
+    low = -0.99
+    high = 1.0
+    npv_low = npv(low)
+    npv_high = npv(high)
+
+    # Expand the upper bound until the NPV changes sign or the range becomes unreasonable.
+    while npv_low * npv_high > 0 and high < 1000:
+        high *= 2.0
+        npv_high = npv(high)
+
+    if npv_low * npv_high > 0:
+        return float("nan")
+
+    for _ in range(max_iterations):
+        mid = (low + high) / 2.0
+        npv_mid = npv(mid)
+        if abs(npv_mid) < 1e-6:
+            return mid * 100.0
+        if npv_low * npv_mid < 0:
+            high = mid
+            npv_high = npv_mid
+        else:
+            low = mid
+            npv_low = npv_mid
+
+    return mid * 100.0 if math.isfinite(mid) else float("nan")
 
 
 def _evaluate_feasibility(
@@ -321,8 +388,9 @@ def sweep_bess_sizes(
 
         lcoe = float("nan")
         discounted_costs = float("nan")
+        irr_pct = float("nan")
         if economics_inputs is not None:
-            lcoe, discounted_costs = _compute_candidate_economics(sim_output, economics_inputs)
+            lcoe, discounted_costs, irr_pct = _compute_candidate_economics(sim_output, economics_inputs)
 
         rows.append(
             {
@@ -344,6 +412,7 @@ def sweep_bess_sizes(
                 "feasible": feasible,
                 "lcoe_usd_per_mwh": lcoe,
                 "npv_costs_usd": discounted_costs,
+                "irr_pct": irr_pct,
             }
         )
 

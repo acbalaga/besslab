@@ -196,3 +196,4 @@ def test_sweep_computes_economics_when_inputs_provided():
 
     assert df.loc[0, "lcoe_usd_per_mwh"] == 10100.0
     assert df.loc[0, "npv_costs_usd"] == 1_010_000.0
+    assert abs(df.loc[0, "irr_pct"] - 0.0) < 1e-6
