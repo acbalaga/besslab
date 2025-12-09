@@ -25,6 +25,14 @@ from utils.ui_state import get_base_dir, hide_root_page_from_sidebar, load_share
 
 BASE_DIR = get_base_dir()
 
+
+def hide_root_page_if_available() -> None:
+    """Call the sidebar hide helper when present without raising."""
+
+    helper = globals().get("hide_root_page_from_sidebar")
+    if callable(helper):
+        helper()
+
 @dataclass
 class Window:
     start: float  # hour-of-day, inclusive
@@ -1087,7 +1095,7 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
 
 def run_app():
     st.set_page_config(page_title="BESSLab by ACB", layout="wide")
-    hide_root_page_from_sidebar()
+    hide_root_page_if_available()
     st.title("BESS LAB — PV-only charging, AC-coupled")
     with st.sidebar:
         st.header("Data Sources")
