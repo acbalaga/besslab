@@ -1,5 +1,7 @@
 from typing import Optional
 import math
+
+import altair as alt
 import streamlit as st
 
 from app import BASE_DIR, SimConfig
@@ -217,6 +219,38 @@ if sweep_df is not None:
             ]
         ],
         use_container_width=True,
+    )
+
+    chart_df = sweep_df[["energy_mwh", "lcoe_usd_per_mwh"]].copy()
+    if "irr_pct" in sweep_df.columns:
+        chart_df["irr_pct"] = sweep_df["irr_pct"]
+    else:
+        chart_df["irr_pct"] = float("nan")
+
+    chart_df = chart_df.sort_values("energy_mwh")
+
+    base_chart = alt.Chart(chart_df).encode(x=alt.X("energy_mwh", title="Usable energy (MWh)"))
+
+    lcoe_line = base_chart.mark_line(color="#d62728").encode(
+        y=alt.Y(
+            "lcoe_usd_per_mwh",
+            title="LCOE ($/MWh)",
+            axis=alt.Axis(titleColor="#d62728"),
+        )
+    )
+
+    irr_line = base_chart.mark_line(color="#9467bd", strokeDash=[6, 3]).encode(
+        y=alt.Y(
+            "irr_pct",
+            title="IRR (%)",
+            axis=alt.Axis(titleColor="#9467bd", orient="right"),
+        )
+    )
+
+    st.altair_chart(alt.layer(lcoe_line, irr_line).resolve_scale(y="independent"), use_container_width=True)
+    st.caption(
+        "Secondary IRR axis is shown when that metric is available from the sweep results;"
+        " otherwise only the LCOE series is rendered."
     )
 else:
     st.info(
