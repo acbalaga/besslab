@@ -85,7 +85,7 @@ if st.session_state["scenario_comparisons"]:
 else:
     st.info(
         "No saved scenarios yet. Run the main simulation, then click 'Add current scenario to table'.",
-        icon="🛈",
+        icon="ℹ️",
     )
 
 st.markdown("---")
