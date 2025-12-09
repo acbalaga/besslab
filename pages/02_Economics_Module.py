@@ -165,16 +165,19 @@ with st.form("economics_form"):
             value=float(econ_defaults.get("capex_musd", 40.0)),
             step=0.1,
         )
-        fixed_opex_pct = (
-            st.number_input(
-                "Fixed OPEX (% of CAPEX per year)",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(econ_defaults.get("fixed_opex_pct_of_capex", 2.0)),
-                step=0.1,
-            )
-            / 100.0
-        )
+        fixed_opex_pct_default = float(econ_defaults.get("fixed_opex_pct_of_capex", 2.0))
+        if econ_defaults:
+            # Simulation defaults store the percent value as a fraction (e.g., 0.02 for 2%).
+            # Convert back to percent for display to avoid double-dividing by 100 below.
+            fixed_opex_pct_default *= 100.0
+
+        fixed_opex_pct = st.number_input(
+            "Fixed OPEX (% of CAPEX per year)",
+            min_value=0.0,
+            max_value=20.0,
+            value=fixed_opex_pct_default,
+            step=0.1,
+        ) / 100.0
         fixed_opex_musd = st.number_input(
             "Additional fixed OPEX (USD million/yr)",
             min_value=0.0,
