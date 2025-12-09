@@ -166,6 +166,7 @@ def _compute_candidate_economics(
     sim_output: "SimulationOutput",
     economics_inputs: EconomicInputs,
     price_inputs: PriceInputs | None = None,
+    base_initial_energy_mwh: float | None = None,
 ) -> tuple[float, float, float]:
     """Return LCOE, discounted-cost NPV, and an implied IRR for a simulation.
 
@@ -182,10 +183,22 @@ def _compute_candidate_economics(
         return float("nan"), float("nan"), float("nan")
 
     base_cfg = sim_output.cfg
+    size_scale = 1.0
+    if base_initial_energy_mwh and base_initial_energy_mwh > 0:
+        size_scale = max(sim_output.cfg.initial_usable_mwh / base_initial_energy_mwh, 0.0)
+
+    scaled_economics = EconomicInputs(
+        capex_musd=economics_inputs.capex_musd * size_scale,
+        fixed_opex_pct_of_capex=economics_inputs.fixed_opex_pct_of_capex,
+        fixed_opex_musd=economics_inputs.fixed_opex_musd * size_scale,
+        inflation_rate=economics_inputs.inflation_rate,
+        discount_rate=economics_inputs.discount_rate,
+    )
+
     augmentation_unit_rate_usd_per_kwh = 0.0
-    if base_cfg.initial_usable_mwh > 0 and economics_inputs.capex_musd > 0:
+    if base_cfg.initial_usable_mwh > 0 and scaled_economics.capex_musd > 0:
         augmentation_unit_rate_usd_per_kwh = (
-            economics_inputs.capex_musd * 1_000_000.0
+            scaled_economics.capex_musd * 1_000_000.0
         ) / (base_cfg.initial_usable_mwh * 1_000.0)
 
     augmentation_energy_added = list(getattr(sim_output, "augmentation_energy_added_mwh", []))
@@ -201,7 +214,7 @@ def _compute_candidate_economics(
     economics_outputs = compute_lcoe_lcos_with_augmentation_fallback(
         [r.delivered_firm_mwh for r in results],
         [r.bess_to_contract_mwh for r in results],
-        economics_inputs,
+        scaled_economics,
         augmentation_costs_usd=augmentation_costs_usd,
     )
 
@@ -211,7 +224,7 @@ def _compute_candidate_economics(
             [r.delivered_firm_mwh for r in results],
             [r.bess_to_contract_mwh for r in results],
             [r.pv_curtailed_mwh for r in results],
-            economics_inputs,
+            scaled_economics,
             price_inputs,
             augmentation_costs_usd=augmentation_costs_usd,
         )
@@ -219,17 +232,17 @@ def _compute_candidate_economics(
     else:
         # Use LCOE as an implied tariff to create a revenue stream that balances costs.
         # This keeps the IRR interpretable without requiring a separate price input.
-        capex_usd = economics_inputs.capex_musd * 1_000_000.0
-        inflation_rate = economics_inputs.inflation_rate
-        fixed_opex_from_capex = economics_inputs.capex_musd * (
-            economics_inputs.fixed_opex_pct_of_capex / 100.0
+        capex_usd = scaled_economics.capex_musd * 1_000_000.0
+        inflation_rate = scaled_economics.inflation_rate
+        fixed_opex_from_capex = scaled_economics.capex_musd * (
+            scaled_economics.fixed_opex_pct_of_capex / 100.0
         )
 
         if capex_usd > 0 and math.isfinite(economics_outputs.lcoe_usd_per_mwh):
             cash_flows: List[float] = [-capex_usd]
             for year_idx, annual_result in enumerate(results, start=1):
                 inflation_multiplier = (1.0 + inflation_rate) ** (year_idx - 1)
-                annual_fixed_opex_usd = (fixed_opex_from_capex + economics_inputs.fixed_opex_musd) * 1_000_000
+                annual_fixed_opex_usd = (fixed_opex_from_capex + scaled_economics.fixed_opex_musd) * 1_000_000
                 annual_fixed_opex_usd *= inflation_multiplier
                 augmentation_cost = (
                     float(augmentation_costs_usd[year_idx - 1])
@@ -365,6 +378,7 @@ def sweep_bess_sizes(
     """
 
     rows: List[dict[str, float | bool | str]] = []
+    base_initial_energy_mwh = float(base_cfg.initial_usable_mwh)
 
     # When an explicit energy sweep is requested, collapse the grid to one power value
     # and derive the matching duration for each energy point.
@@ -419,7 +433,10 @@ def sweep_bess_sizes(
         irr_pct = float("nan")
         if economics_inputs is not None:
             lcoe, discounted_costs, irr_pct = _compute_candidate_economics(
-                sim_output, economics_inputs, price_inputs
+                sim_output,
+                economics_inputs,
+                price_inputs,
+                base_initial_energy_mwh=base_initial_energy_mwh,
             )
 
         rows.append(
