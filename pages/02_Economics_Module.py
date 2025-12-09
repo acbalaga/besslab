@@ -8,8 +8,11 @@ import pandas as pd
 import streamlit as st
 
 from utils.economics import EconomicInputs, compute_lcoe_lcos
+from utils.ui_state import hide_root_page_from_sidebar
 
 st.set_page_config(page_title="Economics module — LCOE/LCOS helper", layout="wide")
+
+hide_root_page_from_sidebar()
 
 st.title("Economics helper module (LCOE / LCOS)")
 st.caption(
