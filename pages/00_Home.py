@@ -35,7 +35,7 @@ This guide summarizes the multipage workflow for the PV-only, AC-coupled BESS mo
 - A scenario table for saving and comparing input sets, plus hourly/monthly/yearly downloads.
 
 ### Helpful extras
-- Use the sidebar link to open the economics helper page (LCOE/LCOS) and download the module.
+- Enable the optional economics block in the Inputs page to compute LCOE/LCOS, NPV, and IRR alongside simulation outputs.
 - Disable the rate limit by entering the password in the sidebar (default: `besslab`).
 - Window strings accept minutes (e.g., `05:30-09:00`), parsed as fractional hours.
 
@@ -58,6 +58,5 @@ st.page_link("pages/01_Simulation.py", label="Jump to Inputs & Results")
 st.markdown("---")
 st.subheader("Navigate across the workspace")
 st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
-st.page_link("pages/02_Economics_Module.py", label="Economics helper")
 st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
 st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
