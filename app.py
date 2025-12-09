@@ -2365,7 +2365,7 @@ def render_landing() -> None:
     st.markdown("---")
     st.subheader("Next steps")
     st.page_link("pages/00_Home.py", label="Open guide and tips")
-    st.page_link("pages/01_Simulation.py", label="Configure inputs and view results")
+    st.page_link("app.py", label="Configure inputs and view results")
     st.page_link("pages/03_Scenario_Comparisons.py", label="Compare scenarios")
     st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
 
