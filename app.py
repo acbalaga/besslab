@@ -21,7 +21,26 @@ from utils import (
     read_cycle_model,
     read_pv_profile,
 )
-from utils.ui_state import get_base_dir, hide_root_page_from_sidebar, load_shared_data
+from utils.ui_state import get_base_dir, load_shared_data
+
+
+def hide_root_page_from_sidebar() -> None:
+    """Hide the implicit root page entry from the Streamlit sidebar.
+
+    Streamlit sometimes reloads modules between page navigations, which can
+    drop imported symbols. Defining the helper locally guarantees it is
+    available whenever `run_app` executes while keeping the CSS tweak in one
+    place.
+    """
+
+    st.markdown(
+        """
+        <style>
+            [data-testid="stSidebarNav"] ul li:first-child { display: none; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # Streamlit sometimes reloads modules between page navigations. Explicitly
 # provide a no-op fallback so calls to the sidebar-hiding helper never raise
@@ -36,9 +55,7 @@ BASE_DIR = get_base_dir()
 def hide_root_page_if_available() -> None:
     """Call the sidebar hide helper when present without raising."""
 
-    helper = globals().get("hide_root_page_from_sidebar")
-    if callable(helper):
-        helper()
+    hide_root_page_from_sidebar()
 
 @dataclass
 class Window:
