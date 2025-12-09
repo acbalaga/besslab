@@ -76,27 +76,20 @@ def get_shared_data(base_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def hide_root_page_from_sidebar() -> None:
-    """Hide the launcher script entry from Streamlit's sidebar navigation."""
+    """Hide the implicit root page entry in the Streamlit sidebar navigation.
+
+    Streamlit includes a placeholder entry for the `app.py` root file in multipage
+    apps. The pages in this workspace link to each other directly, so the extra
+    sidebar row is redundant. Injecting a small CSS snippet keeps the navigation
+    focused on the explicit pages while remaining safe if Streamlit changes the
+    underlying markup.
+    """
 
     st.markdown(
         """
         <style>
-        /* Fall back to simply hiding the first nav item. */
-        [data-testid="stSidebarNav"] li:first-child { display: none; }
-
-        /* Also hide any link that points to the root app script. */
-        [data-testid="stSidebarNav"] a[href="/"] { display: none !important; }
-        [data-testid="stSidebarNav"] li a[href="/"] { display: none !important; }
+            [data-testid="stSidebarNav"] ul li:first-child { display: none; }
         </style>
-        <script>
-        // Remove the launcher link if Streamlit renders it with a root href.
-        const nav = window.parent?.document?.querySelector('[data-testid="stSidebarNav"]');
-        if (nav) {
-            const rootLink = nav.querySelector('a[href="/"]');
-            const rootItem = rootLink?.closest('li');
-            if (rootItem) rootItem.style.display = 'none';
-        }
-        </script>
         """,
         unsafe_allow_html=True,
     )
