@@ -215,7 +215,13 @@ def _compute_candidate_economics(
             annual_fixed_opex_usd = (fixed_opex_from_capex + economics_inputs.fixed_opex_musd) * 1_000_000
             annual_fixed_opex_usd *= inflation_multiplier
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1]) if year_idx - 1 < len(augmentation_costs_usd) else 0.0
-            revenue = economics_outputs.lcoe_usd_per_mwh * float(annual_result.delivered_firm_mwh)
+            # Escalate the breakeven tariff with inflation so larger (or more productive)
+            # designs reflect higher nominal cash inflows when computing IRR.
+            revenue = (
+                economics_outputs.lcoe_usd_per_mwh
+                * float(annual_result.delivered_firm_mwh)
+                * inflation_multiplier
+            )
             cash_flows.append(revenue - annual_fixed_opex_usd - augmentation_cost)
         irr_pct = _solve_irr_pct(cash_flows)
 
