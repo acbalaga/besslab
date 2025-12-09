@@ -27,6 +27,7 @@ from utils.economics import (
     PriceInputs,
     compute_cash_flows_and_irr,
     compute_lcoe_lcos_with_augmentation_fallback,
+    estimate_augmentation_costs_by_year,
 )
 from utils.ui_state import get_base_dir, load_shared_data
 
@@ -1429,7 +1430,10 @@ def run_app():
     )
     econ_inputs: Optional[EconomicInputs] = None
     price_inputs: Optional[PriceInputs] = None
-    augmentation_costs_text = ""
+    forex_rate_php_per_usd = 58.0
+
+    default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+    default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
     if run_economics:
         econ_col1, econ_col2, econ_col3 = st.columns(3)
@@ -1475,30 +1479,30 @@ def run_app():
                 step=0.1,
             )
         with econ_col3:
-            contract_price = st.number_input(
-                "Contract price (USD/MWh from BESS)",
+            contract_price_php_per_kwh = st.number_input(
+                "Contract price (PHP/kWh from BESS)",
                 min_value=0.0,
-                value=120.0,
-                step=1.0,
+                value=default_contract_php_per_kwh,
+                step=0.05,
+                help="Price converted to USD/MWh internally using PHP 58/USD.",
             )
-            pv_market_price = st.number_input(
-                "PV market price (USD/MWh for excess PV)",
+            pv_market_price_php_per_kwh = st.number_input(
+                "PV market price (PHP/kWh for excess PV)",
                 min_value=0.0,
-                value=55.0,
-                step=1.0,
+                value=default_pv_php_per_kwh,
+                step=0.05,
+                help="Price converted to USD/MWh internally using PHP 58/USD.",
             )
             escalate_prices = st.checkbox(
                 "Escalate prices with inflation",
                 value=False,
             )
 
-        augmentation_costs_text = st.text_area(
-            "Optional augmentation CAPEX by year (USD)",
-            value="",
-            placeholder=f"Enter up to {int(years)} values, comma or newline separated",
-            help="Leave blank to omit augmentation spend from the cash flows.",
-            height=80,
-        )
+            contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(
+                f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+            )
 
         econ_inputs = EconomicInputs(
             capex_musd=capex_musd,
@@ -1634,16 +1638,15 @@ def run_app():
     augmentation_costs_usd: Optional[List[float]] = None
 
     if run_economics and econ_inputs and price_inputs:
-        if augmentation_costs_text.strip():
-            try:
-                augmentation_costs_usd = _parse_numeric_series(
-                    augmentation_costs_text, "Augmentation costs"
-                )
-            except ValueError:
-                st.stop()
-            if augmentation_costs_usd and len(augmentation_costs_usd) != len(results):
-                st.error("Augmentation costs must have one value per simulation year or be left blank.")
-                st.stop()
+        augmentation_costs_usd = estimate_augmentation_costs_by_year(
+            sim_output.augmentation_energy_added_mwh,
+            cfg.initial_usable_mwh,
+            econ_inputs.capex_musd,
+        )
+        if any(augmentation_costs_usd):
+            st.caption(
+                "Augmentation CAPEX derived from the strategy (proportional to the share of BOL energy added)."
+            )
 
         annual_delivered = [r.delivered_firm_mwh for r in results]
         annual_bess = [r.bess_to_contract_mwh for r in results]
