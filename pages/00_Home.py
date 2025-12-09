@@ -52,3 +52,10 @@ This guide summarizes the multipage workflow for the PV-only, AC-coupled BESS mo
 )
 
 st.page_link("pages/01_Simulation.py", label="Jump to Inputs & Results")
+
+st.markdown("---")
+st.subheader("Navigate across the workspace")
+st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
+st.page_link("pages/02_Economics_Module.py", label="Economics helper")
+st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
+st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")

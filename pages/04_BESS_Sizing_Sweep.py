@@ -158,3 +158,10 @@ else:
         "Run the sweep with your latest inputs. Results persist in the session for quick iteration.",
         icon="ℹ️",
     )
+
+st.markdown("---")
+st.subheader("Navigate across the workspace")
+st.page_link("pages/00_Home.py", label="Home (Guide)")
+st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
+st.page_link("pages/02_Economics_Module.py", label="Economics helper")
+st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
