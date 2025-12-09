@@ -146,18 +146,37 @@ if submitted:
     )
 
     with st.spinner("Running BESS energy sweep..."):
-        sweep_df = sweep_bess_sizes(
-            base_cfg=cfg,
-            pv_df=pv_df,
-            cycle_df=cycle_df,
-            dod_override=dod_override,
-            energy_mwh_values=energy_values,
-            fixed_power_mw=fixed_power,
-            economics_inputs=economics_inputs,
-            ranking_kpi=ranking_choice,
-            min_soh=min_soh,
-            use_case="reliability",
-        )
+        try:
+            sweep_df = sweep_bess_sizes(
+                base_cfg=cfg,
+                pv_df=pv_df,
+                cycle_df=cycle_df,
+                dod_override=dod_override,
+                energy_mwh_values=energy_values,
+                fixed_power_mw=fixed_power,
+                economics_inputs=economics_inputs,
+                ranking_kpi=ranking_choice,
+                min_soh=min_soh,
+                use_case="reliability",
+            )
+        except TypeError as exc:
+            # Backwards-compatibility for environments still running an older sweep implementation
+            # that lacks the ``energy_mwh_values`` keyword argument.
+            if "energy_mwh_values" not in str(exc):
+                raise
+            duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
+            sweep_df = sweep_bess_sizes(
+                base_cfg,
+                pv_df,
+                cycle_df,
+                dod_override,
+                power_mw_values=[fixed_power],
+                duration_h_values=duration_values,
+                economics_inputs=economics_inputs,
+                ranking_kpi=ranking_choice,
+                min_soh=min_soh,
+                use_case="reliability",
+            )
 
     if sweep_df.empty:
         st.info("No sweep results generated; widen the ranges and try again.")
