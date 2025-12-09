@@ -2426,9 +2426,9 @@ def run_app():
             "LCOE and LCOS respond."
         )
 
-        annual_delivered_mwh = [r.delivered_firm_mwh for r in results_for_run]
-        annual_bess_mwh = [r.bess_to_contract_mwh for r in results_for_run]
-        annual_pv_excess_mwh = [r.pv_curtailed_mwh for r in results_for_run]
+        annual_delivered_mwh = res_df["Delivered firm MWh"].tolist()
+        annual_bess_mwh = res_df["BESS→Contract MWh"].tolist()
+        annual_pv_excess_mwh = res_df["PV curtailed MWh"].tolist()
 
         cache_latest_economics_payload(
             {
