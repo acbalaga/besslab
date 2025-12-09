@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -12,6 +12,7 @@ from utils import read_cycle_model, read_pv_profile
 
 PV_SESSION_KEY = "shared_pv_profile_df"
 CYCLE_SESSION_KEY = "shared_cycle_model_df"
+ECON_PAYLOAD_KEY = "latest_economics_payload"
 
 
 def get_base_dir() -> Path:
@@ -73,6 +74,23 @@ def get_shared_data(base_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         _set_session_df(CYCLE_SESSION_KEY, cycle_df)
 
     return pv_df, cycle_df
+
+
+def cache_latest_economics_payload(payload: Dict[str, Any]) -> None:
+    """Store the latest economics-ready payload for reuse across pages.
+
+    The Simulation page seeds this with energy series and price/economic
+    assumptions so other pages (e.g., the standalone Economics helper) can
+    rehydrate the same inputs without rerunning the dispatch model.
+    """
+
+    st.session_state[ECON_PAYLOAD_KEY] = payload
+
+
+def get_latest_economics_payload() -> Optional[Dict[str, Any]]:
+    """Return the most recent economics payload cached in the session."""
+
+    return st.session_state.get(ECON_PAYLOAD_KEY)
 
 
 def hide_root_page_from_sidebar() -> None:

@@ -31,7 +31,7 @@ from utils import (
     read_cycle_model,
     read_pv_profile,
 )
-from utils.ui_state import get_base_dir, hide_root_page_from_sidebar, load_shared_data
+from utils.ui_state import cache_latest_economics_payload, get_base_dir, load_shared_data
 
 BASE_DIR = get_base_dir()
 USD_TO_PHP = 58.0
@@ -2430,25 +2430,27 @@ def run_app():
         annual_bess_mwh = [r.bess_to_contract_mwh for r in results_for_run]
         annual_pv_excess_mwh = [r.pv_curtailed_mwh for r in results_for_run]
 
-        st.session_state["latest_economics_payload"] = {
-            "annual_delivered_mwh": list(annual_delivered_mwh),
-            "annual_bess_mwh": list(annual_bess_mwh),
-            "annual_pv_excess_mwh": list(annual_pv_excess_mwh),
-            "augmentation_costs_usd": list(augmentation_costs_usd),
-            "economic_inputs": {
-                "capex_musd": capex_musd,
-                "fixed_opex_pct_of_capex": fixed_opex_pct,
-                "fixed_opex_musd": fixed_opex_musd,
-                "inflation_rate_pct": inflation_pct,
-                "discount_rate_pct": discount_rate * 100.0,
-                "wacc_pct": wacc_pct,
-            },
-            "price_inputs": {
-                "contract_price_usd_per_mwh": contract_price,
-                "pv_market_price_usd_per_mwh": pv_market_price,
-                "escalate_with_inflation": escalate_prices,
-            },
-        }
+        cache_latest_economics_payload(
+            {
+                "annual_delivered_mwh": list(annual_delivered_mwh),
+                "annual_bess_mwh": list(annual_bess_mwh),
+                "annual_pv_excess_mwh": list(annual_pv_excess_mwh),
+                "augmentation_costs_usd": list(augmentation_costs_usd),
+                "economic_inputs": {
+                    "capex_musd": capex_musd,
+                    "fixed_opex_pct_of_capex": fixed_opex_pct,
+                    "fixed_opex_musd": fixed_opex_musd,
+                    "inflation_rate_pct": inflation_pct,
+                    "discount_rate_pct": discount_rate * 100.0,
+                    "wacc_pct": wacc_pct,
+                },
+                "price_inputs": {
+                    "contract_price_usd_per_mwh": contract_price,
+                    "pv_market_price_usd_per_mwh": pv_market_price,
+                    "escalate_with_inflation": escalate_prices,
+                },
+            }
+        )
 
         def _recompute_economics(
             capex_musd_override: float,
