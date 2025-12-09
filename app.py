@@ -32,31 +32,7 @@ from utils.economics import (
 from utils.ui_state import get_base_dir, load_shared_data
 
 
-def hide_root_page_from_sidebar() -> None:
-    """Hide the implicit root page entry from the Streamlit sidebar.
-
-    Streamlit sometimes reloads modules between page navigations, which can
-    drop imported symbols. Defining the helper locally guarantees it is
-    available whenever `run_app` executes while keeping the CSS tweak in one
-    place.
-    """
-
-    st.markdown(
-        """
-        <style>
-            [data-testid="stSidebarNav"] ul li:first-child { display: none; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 BASE_DIR = get_base_dir()
-
-
-def hide_root_page_if_available() -> None:
-    """Call the sidebar hide helper when present without raising."""
-
-    hide_root_page_from_sidebar()
 
 @dataclass
 class Window:
@@ -1133,8 +1109,7 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
 
 
 def run_app():
-    st.set_page_config(page_title="BESSLab by ACB", layout="wide")
-    hide_root_page_if_available()
+    st.set_page_config(page_title="Simulation", layout="wide")
     st.title("BESS LAB — PV-only charging, AC-coupled")
     with st.sidebar:
         st.header("Data Sources")
@@ -2371,4 +2346,4 @@ def render_landing() -> None:
 
 
 if __name__ == "__main__":
-    render_landing()
+    run_app()

@@ -1,11 +1,7 @@
 import pandas as pd
 import streamlit as st
 
-from utils.ui_state import hide_root_page_from_sidebar
-
-st.set_page_config(page_title="Scenario comparisons", layout="wide")
-
-hide_root_page_from_sidebar()
+st.set_page_config(page_title="Scenario Comparison", layout="wide")
 
 st.title("Scenario comparisons")
 st.caption(

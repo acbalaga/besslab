@@ -1,11 +1,9 @@
 import streamlit as st
 
 from app import BASE_DIR
-from utils.ui_state import get_shared_data, hide_root_page_from_sidebar
+from utils.ui_state import get_shared_data
 
-st.set_page_config(page_title="BESSLab — Guide", layout="wide")
-
-hide_root_page_from_sidebar()
+st.set_page_config(page_title="Home", layout="wide")
 
 st.title("BESSLab guide and tips")
 
