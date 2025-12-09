@@ -6,7 +6,7 @@ import streamlit as st
 
 from app import BASE_DIR, SimConfig
 from utils import enforce_rate_limit
-from utils.economics import EconomicInputs
+from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_state import get_shared_data
 
@@ -18,6 +18,9 @@ st.caption("Sweep over usable energy (MWh) while holding power constant to see f
 pv_df, cycle_df = get_shared_data(BASE_DIR)
 cfg: Optional[SimConfig] = st.session_state.get("latest_sim_config")
 dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
+forex_rate_php_per_usd = 58.0
+default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
 if cfg is None:
     st.warning(
@@ -33,7 +36,7 @@ st.markdown("---")
 st.session_state.setdefault("bess_size_sweep_results", None)
 
 with st.form("size_sweep_form_page"):
-    size_col1, size_col2, size_col3 = st.columns(3)
+    size_col1, size_col2, size_col3, price_col = st.columns(4)
     with size_col1:
         default_energy = max(10.0, cfg.initial_usable_mwh)
         energy_range = st.slider(
@@ -134,6 +137,32 @@ with st.form("size_sweep_form_page"):
             "Discount rate is derived from WACC and inflation to align with the economics helper."
         )
 
+    with price_col:
+        contract_price_php_per_kwh = st.number_input(
+            "Contract price (PHP/kWh from BESS)",
+            min_value=0.0,
+            value=default_contract_php_per_kwh,
+            step=0.05,
+            help="Price converted to USD/MWh internally using PHP 58/USD.",
+        )
+        pv_market_price_php_per_kwh = st.number_input(
+            "PV market price (PHP/kWh for excess PV)",
+            min_value=0.0,
+            value=default_pv_php_per_kwh,
+            step=0.05,
+            help="Price converted to USD/MWh internally using PHP 58/USD.",
+        )
+        escalate_prices = st.checkbox(
+            "Escalate prices with inflation",
+            value=False,
+        )
+
+        contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+        pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+        st.caption(
+            f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+        )
+
     submitted = st.form_submit_button("Run BESS energy sweep", use_container_width=True)
 
 if submitted:
@@ -146,39 +175,71 @@ if submitted:
         inflation_rate=inflation_pct / 100.0,
         discount_rate=discount_rate,
     )
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=contract_price,
+        pv_market_price_usd_per_mwh=pv_market_price,
+        escalate_with_inflation=escalate_prices,
+    )
 
     with st.spinner("Running BESS energy sweep..."):
+        sweep_kwargs = dict(
+            base_cfg=cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            dod_override=dod_override,
+            energy_mwh_values=energy_values,
+            fixed_power_mw=fixed_power,
+            economics_inputs=economics_inputs,
+            price_inputs=price_inputs,
+            ranking_kpi=ranking_choice,
+            min_soh=min_soh,
+            use_case="reliability",
+        )
+
         try:
-            sweep_df = sweep_bess_sizes(
-                base_cfg=cfg,
-                pv_df=pv_df,
-                cycle_df=cycle_df,
-                dod_override=dod_override,
-                energy_mwh_values=energy_values,
-                fixed_power_mw=fixed_power,
-                economics_inputs=economics_inputs,
-                ranking_kpi=ranking_choice,
-                min_soh=min_soh,
-                use_case="reliability",
-            )
+            sweep_df = sweep_bess_sizes(**sweep_kwargs)
         except TypeError as exc:
             # Backwards-compatibility for environments still running an older sweep implementation
-            # that lacks the ``energy_mwh_values`` keyword argument.
-            if "energy_mwh_values" not in str(exc):
+            # that lacks newer keyword arguments. Gracefully retry without the missing inputs.
+            message = str(exc)
+            if "price_inputs" in message:
+                sweep_kwargs.pop("price_inputs", None)
+                try:
+                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
+                except TypeError as inner_exc:
+                    if "energy_mwh_values" not in str(inner_exc):
+                        raise
+                    duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
+                    sweep_df = sweep_bess_sizes(
+                        cfg,
+                        pv_df,
+                        cycle_df,
+                        dod_override,
+                        power_mw_values=[fixed_power],
+                        duration_h_values=duration_values,
+                        economics_inputs=economics_inputs,
+                        ranking_kpi=ranking_choice,
+                        min_soh=min_soh,
+                        use_case="reliability",
+                    )
+                sweep_kwargs["price_inputs"] = price_inputs
+            elif "energy_mwh_values" in message:
+                duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
+                sweep_df = sweep_bess_sizes(
+                    cfg,
+                    pv_df,
+                    cycle_df,
+                    dod_override,
+                    power_mw_values=[fixed_power],
+                    duration_h_values=duration_values,
+                    economics_inputs=economics_inputs,
+                    price_inputs=price_inputs,
+                    ranking_kpi=ranking_choice,
+                    min_soh=min_soh,
+                    use_case="reliability",
+                )
+            else:
                 raise
-            duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
-            sweep_df = sweep_bess_sizes(
-                base_cfg,
-                pv_df,
-                cycle_df,
-                dod_override,
-                power_mw_values=[fixed_power],
-                duration_h_values=duration_values,
-                economics_inputs=economics_inputs,
-                ranking_kpi=ranking_choice,
-                min_soh=min_soh,
-                use_case="reliability",
-            )
 
     if sweep_df.empty:
         st.info("No sweep results generated; widen the ranges and try again.")
@@ -221,36 +282,49 @@ if sweep_df is not None:
         use_container_width=True,
     )
 
-    chart_df = sweep_df[["energy_mwh", "lcoe_usd_per_mwh"]].copy()
-    if "irr_pct" in sweep_df.columns:
-        chart_df["irr_pct"] = sweep_df["irr_pct"]
-    else:
-        chart_df["irr_pct"] = float("nan")
-
+    chart_df = sweep_df[["energy_mwh", "npv_costs_usd"]].copy()
+    chart_df["irr_pct"] = sweep_df.get("irr_pct", float("nan"))
     chart_df = chart_df.sort_values("energy_mwh")
 
-    base_chart = alt.Chart(chart_df).encode(x=alt.X("energy_mwh", title="Usable energy (MWh)"))
-
-    lcoe_line = base_chart.mark_line(color="#d62728").encode(
-        y=alt.Y(
-            "lcoe_usd_per_mwh",
-            title="LCOE ($/MWh)",
-            axis=alt.Axis(titleColor="#d62728"),
-        )
+    base_chart = alt.Chart(chart_df).encode(
+        x=alt.X("energy_mwh", title="BESS capacity (MWh)", axis=alt.Axis(format=",.0f"))
     )
 
-    irr_line = base_chart.mark_line(color="#9467bd", strokeDash=[6, 3]).encode(
+    point_tooltip = [
+        alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
+        alt.Tooltip("npv_costs_usd", title="NPV (USD)", format=",.0f"),
+        alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
+    ]
+
+    npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
+        y=alt.Y(
+            "npv_costs_usd",
+            title="NPV (USD)",
+            axis=alt.Axis(titleColor="#0b2c66", format=",.0f"),
+        ),
+        tooltip=point_tooltip,
+    )
+
+    irr_line = base_chart.mark_line(color="#88c5de", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
         y=alt.Y(
             "irr_pct",
             title="IRR (%)",
-            axis=alt.Axis(titleColor="#9467bd", orient="right"),
-        )
+            axis=alt.Axis(
+                titleColor="#88c5de",
+                orient="right",
+                format=",.2f",
+                labelExpr="datum.label + '%'",
+            ),
+        ),
+        tooltip=point_tooltip,
     )
 
-    st.altair_chart(alt.layer(lcoe_line, irr_line).resolve_scale(y="independent"), use_container_width=True)
+    st.altair_chart(
+        alt.layer(npv_line, irr_line).resolve_scale(y="independent"),
+        use_container_width=True,
+    )
     st.caption(
-        "Secondary IRR axis is shown when that metric is available from the sweep results;"
-        " otherwise only the LCOE series is rendered."
+        "Dual-axis line chart overlays NPV (USD) and IRR (%) across BESS capacities; IRR points are omitted when unavailable."
     )
 else:
     st.info(
