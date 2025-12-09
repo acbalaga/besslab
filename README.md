@@ -18,39 +18,42 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the provided local URL in your browser to launch the app.
+Open the provided local URL in your browser to launch the app. To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
 
-To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
+### Installation tips
+- Use a virtual environment to isolate dependencies: `python -m venv .venv && source .venv/bin/activate` before installing.
+- The bundled sample data lives in `data/` and loads automatically if you skip uploads.
 
-### Run a quick BESS sizing sweep from the CLI
+## Inputs and file formats
+- **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). The app auto-aligns a 1-based index and drops out-of-range values.
+- **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
+- **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser (e.g., `05:30-09:00`).
+- **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and Design-Advisor bounds.
+
+If no files are uploaded, the app uses the sample data in `./data/`.
+
+## Using the app
+1. **Upload or use defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses included sample data.
+2. **Set your target.** Enter the contracted power (MW) and desired duration (hours), plus discharge and optional charge windows.
+3. **Adjust assumptions.** Use sidebar controls for efficiency, state-of-charge limits, availability, and augmentation options. Enable the economics helper to compute LCOE/LCOS, NPV, and IRR alongside the simulation.
+4. **Review results.** Check compliance, flags, end-of-year capability, daily profiles, and energy split between PV and the BESS.
+5. **Run sensitivities.** Generate SOC-window sweeps, economics heatmaps, and the physics-bounded Design Advisor suggestions when the system misses the target.
+6. **Save & export.** Capture scenarios to the comparison table, download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing.
+
+## App pages and workflows
+- **Inputs & Results (main page):** Run simulations, view KPIs and charts, download CSV/PDF outputs, and trigger SOC/economics sensitivities plus the Design Advisor.
+- **Home (guide):** In-app walkthrough of the multipage workflow with data-format reminders and troubleshooting tips.
+- **Scenario comparisons:** Save the latest run as a snapshot, adjust inputs on the main page, and build a table of labeled scenarios for side-by-side review.
+- **BESS sizing sweep:** Sweep usable energy (holding power fixed) using the latest inputs, rank feasible candidates by compliance, shortfall, generation, LCOE, or cost metrics, and visualize LCOE/IRR trends.
+
+## Run a quick BESS sizing sweep from the CLI
 The grid-search helper can be exercised without Streamlit using the bundled sample data:
 
 ```bash
 python -m utils.legacy.bess_size_sweeps
 ```
 
-The command will sweep a handful of power/duration combinations, print the KPI table, and flag the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
-
-### Run the sizing sweep inside Streamlit
-- Launch the app with `streamlit run app.py` and load your inputs as usual.
-- Open the **“BESS sizing sweep (power × duration grid)”** expander near the results section.
-- Set the MW/duration ranges, choose how to rank candidates, and click **Run BESS size sweep** to execute the grid search and view the KPIs in-app.
-
-## Inputs
-- **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). The app auto-aligns a 1-based index and drops out-of-range values.
-- **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
-- **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser.
-- **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and design-advisor bounds.
-
-If no files are uploaded, the app uses the sample data in `./data/`.
-
-## Using the app
-1. **Upload or use defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses included sample data.
-2. **Set your target.** Enter the contracted power (MW) and desired duration (hours).
-3. **Adjust assumptions.** Use sidebar controls for efficiency, state-of-charge limits, availability, and augmentation options.
-4. **Review results.** Check the compliance summary, flags, and charts to see how well the setup holds over time.
-5. **Run sensitivities.** Generate SOC-window sweeps and LCOE/LCOS sensitivity heatmaps to see which levers matter most.
-6. **Save & export.** Capture scenarios, download CSV/PDF summaries, and share results with your team.
+The command sweeps a handful of power/duration combinations, prints the KPI table, and flags the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
 
 ## Tips for best results
 - Keep `hour_index` consecutive (0–8759 or 1–8760); the app auto-corrects the starting index.
