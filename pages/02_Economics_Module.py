@@ -77,6 +77,66 @@ def _render_outputs(econ_output, cash_output: CashFlowOutputs) -> None:
         help="IRR computed from annual revenues and OPEX/augmentation outflows.",
     )
 
+    st.markdown("### Economic and price assumptions")
+    econ_col1, econ_col2, econ_col3 = st.columns(3)
+    with econ_col1:
+        wacc_pct = st.number_input(
+            "WACC (%)",
+            min_value=0.0,
+            max_value=30.0,
+            value=float(econ_defaults.get("wacc_pct", 8.0)),
+            step=0.1,
+        )
+        inflation_pct = st.number_input(
+            "Inflation rate (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(econ_defaults.get("inflation_rate_pct", 3.0)),
+            step=0.1,
+            help="Used to derive the real discount rate applied to costs and revenues.",
+        )
+        discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+        st.caption(f"Real discount rate derived from WACC and inflation: {discount_rate * 100:.2f}%.")
+    with econ_col2:
+        capex_musd = st.number_input(
+            "Total CAPEX (USD million)",
+            min_value=0.0,
+            value=float(econ_defaults.get("capex_musd", 40.0)),
+            step=0.1,
+        )
+        fixed_opex_pct = (
+            st.number_input(
+                "Fixed OPEX (% of CAPEX per year)",
+                min_value=0.0,
+                max_value=20.0,
+                value=float(econ_defaults.get("fixed_opex_pct_of_capex", 2.0)),
+                step=0.1,
+            )
+            / 100.0
+        )
+        fixed_opex_musd = st.number_input(
+            "Additional fixed OPEX (USD million/yr)",
+            min_value=0.0,
+            value=float(econ_defaults.get("fixed_opex_musd", 0.0)),
+            step=0.1,
+        )
+    with econ_col3:
+        contract_price = st.number_input(
+            "Contract price (USD/MWh from BESS)",
+            min_value=0.0,
+            value=float(price_defaults.get("contract_price_usd_per_mwh", 120.0)),
+            step=1.0,
+        )
+        pv_market_price = st.number_input(
+            "PV market price (USD/MWh for excess PV)",
+            min_value=0.0,
+            value=float(price_defaults.get("pv_market_price_usd_per_mwh", 55.0)),
+            step=1.0,
+        )
+        escalate_prices = st.checkbox(
+            "Escalate prices with inflation",
+            value=bool(price_defaults.get("escalate_with_inflation", False)),
+        )
 
 latest_payload = get_latest_economics_payload()
 if latest_payload:

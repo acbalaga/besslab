@@ -1106,6 +1106,7 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
 
 def run_app():
     st.set_page_config(page_title="BESSLab by ACB", layout="wide")
+    hide_root_page_from_sidebar()
     st.title("BESS LAB — PV-only charging, AC-coupled")
     with st.sidebar:
         st.header("Data Sources")
