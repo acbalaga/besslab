@@ -14,6 +14,8 @@ from utils.economics import (
 
 st.set_page_config(page_title="Economics module — LCOE/LCOS helper", layout="wide")
 
+hide_root_page_from_sidebar()
+
 st.title("Economics helper module (LCOE / LCOS)")
 st.caption(
     "Run the same economics engine used in the Simulation page with any energy series. "
