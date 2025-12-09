@@ -87,3 +87,10 @@ else:
         "No saved scenarios yet. Run the main simulation, then click 'Add current scenario to table'.",
         icon="🛈",
     )
+
+st.markdown("---")
+st.subheader("Navigate across the workspace")
+st.page_link("pages/00_Home.py", label="Home (Guide)")
+st.page_link("pages/01_Simulation.py", label="Simulation (Inputs & Results)")
+st.page_link("pages/02_Economics_Module.py", label="Economics helper")
+st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
