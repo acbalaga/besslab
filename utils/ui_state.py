@@ -73,3 +73,30 @@ def get_shared_data(base_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame]:
         _set_session_df(CYCLE_SESSION_KEY, cycle_df)
 
     return pv_df, cycle_df
+
+
+def hide_root_page_from_sidebar() -> None:
+    """Hide the launcher script entry from Streamlit's sidebar navigation."""
+
+    st.markdown(
+        """
+        <style>
+        /* Fall back to simply hiding the first nav item. */
+        [data-testid="stSidebarNav"] li:first-child { display: none; }
+
+        /* Also hide any link that points to the root app script. */
+        [data-testid="stSidebarNav"] a[href="/"] { display: none !important; }
+        [data-testid="stSidebarNav"] li a[href="/"] { display: none !important; }
+        </style>
+        <script>
+        // Remove the launcher link if Streamlit renders it with a root href.
+        const nav = window.parent?.document?.querySelector('[data-testid="stSidebarNav"]');
+        if (nav) {
+            const rootLink = nav.querySelector('a[href="/"]');
+            const rootItem = rootLink?.closest('li');
+            if (rootItem) rootItem.style.display = 'none';
+        }
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
