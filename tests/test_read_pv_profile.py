@@ -58,6 +58,18 @@ class ReadPvProfileTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             read_pv_profile([csv_buf])
 
+    def test_timestamp_profile_preserves_length_and_order(self) -> None:
+        timestamps = pd.date_range("2020-01-01", periods=8, freq="30min")
+        df = pd.DataFrame({"timestamp": timestamps, "pv_mw": range(8)})
+        csv_buf = self._make_csv_buffer(df)
+
+        result = read_pv_profile([csv_buf], freq="30min")
+
+        self.assertEqual(len(result), 8)
+        self.assertIn("timestamp", result.columns)
+        self.assertEqual(result.loc[0, "pv_mw"], 0.0)
+        self.assertEqual(result.loc[7, "pv_mw"], 7.0)
+
 
 if __name__ == "__main__":
     unittest.main()
