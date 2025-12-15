@@ -1,7 +1,8 @@
-from typing import Optional
+from typing import Optional, Tuple
 import math
 
 import altair as alt
+import pandas as pd
 import streamlit as st
 
 from app import BASE_DIR, SimConfig
@@ -14,6 +15,48 @@ st.set_page_config(page_title="BESS Sizing Sweep", layout="wide")
 
 st.title("BESS sizing sweep (energy sensitivity)")
 st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
+
+
+def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
+    """Identify the BESS capacity where NPV and IRR curves overlap after scaling.
+
+    The NPV and IRR charts use different axes, so we normalize each series to a
+    0–1 range and locate the energy point where the curves are closest. A small
+    penalty is applied to negative NPVs to avoid recommending designs with weak
+    economics even if their normalized values cross. Returns ``(energy_mwh,
+    npv_usd, irr_pct)`` when a convergence point can be inferred.
+    """
+
+    columns = ["energy_mwh", "npv_costs_usd", "irr_pct"]
+    if not set(columns).issubset(df.columns):
+        return None
+
+    clean_df = df[columns].replace([math.inf, -math.inf], float("nan")).dropna()
+    if clean_df.empty:
+        return None
+
+    npv_min, npv_max = clean_df["npv_costs_usd"].min(), clean_df["npv_costs_usd"].max()
+    irr_min, irr_max = clean_df["irr_pct"].min(), clean_df["irr_pct"].max()
+    if npv_max == npv_min or irr_max == irr_min:
+        return None
+
+    normalized = clean_df.assign(
+        npv_norm=lambda x: (x["npv_costs_usd"] - npv_min) / (npv_max - npv_min),
+        irr_norm=lambda x: (x["irr_pct"] - irr_min) / (irr_max - irr_min),
+    )
+
+    penalty_scale = max(abs(npv_min), abs(npv_max), 1.0)
+    normalized["intersection_score"] = (
+        (normalized["npv_norm"] - normalized["irr_norm"]).abs()
+        + (normalized["npv_costs_usd"].clip(upper=0.0).abs() / penalty_scale) * 0.1
+    )
+
+    best_row = normalized.nsmallest(1, "intersection_score")
+    if best_row.empty:
+        return None
+
+    chosen = best_row.iloc[0]
+    return float(chosen["energy_mwh"]), float(chosen["npv_costs_usd"]), float(chosen["irr_pct"])
 
 pv_df, cycle_df = get_shared_data(BASE_DIR)
 cfg: Optional[SimConfig] = st.session_state.get("latest_sim_config")
@@ -261,6 +304,17 @@ if sweep_df is not None:
             "Best feasible: "
             f"{best['energy_mwh']:.1f} MWh usable @ {best['power_mw']:.1f} MW "
             f"({best['duration_h']:.2f} h){lcoe_text}"
+        )
+
+    convergence_point = recommend_convergence_point(sweep_df)
+    if convergence_point:
+        energy_mwh, npv_usd, irr_pct = convergence_point
+        st.info(
+            "Convergence point (NPV vs IRR): "
+            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and NPV ${npv_usd:,.0f}. "
+            "Curves are normalized to locate where returns and discounted costs align, "
+            "favoring options that avoid very negative NPVs when CAPEX scales linearly "
+            "with BESS size and resource availability limits upside energy."
         )
 
     st.dataframe(
