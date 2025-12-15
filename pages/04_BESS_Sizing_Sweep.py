@@ -292,18 +292,15 @@ if submitted:
 
 sweep_df = st.session_state.get("bess_size_sweep_results")
 if sweep_df is not None:
-    best_row = sweep_df[sweep_df["is_best"]]
-    if best_row.empty:
-        st.warning("No feasible candidates met the SOH/cycle thresholds.")
-    else:
-        best = best_row.iloc[0]
-        lcoe_text = ""
-        if not math.isnan(best.get("lcoe_usd_per_mwh", float("nan"))):
-            lcoe_text = f" — LCOE {best['lcoe_usd_per_mwh']:.0f} $/MWh"
-        st.success(
-            "Best feasible: "
-            f"{best['energy_mwh']:.1f} MWh usable @ {best['power_mw']:.1f} MW "
-            f"({best['duration_h']:.2f} h){lcoe_text}"
+    convergence_point = recommend_convergence_point(sweep_df)
+    if convergence_point:
+        energy_mwh, npv_usd, irr_pct = convergence_point
+        st.info(
+            "Convergence point (NPV vs IRR): "
+            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and NPV ${npv_usd:,.0f}. "
+            "Curves are normalized to locate where returns and discounted costs align, "
+            "favoring options that avoid very negative NPVs when CAPEX scales linearly "
+            "with BESS size and resource availability limits upside energy."
         )
 
     convergence_point = recommend_convergence_point(sweep_df)
