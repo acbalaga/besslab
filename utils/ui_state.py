@@ -37,7 +37,7 @@ def load_shared_data(
     cycle_df: Optional[pd.DataFrame] = None
 
     if pv_file is not None:
-        pv_df = pd.read_csv(pv_file)
+        pv_df = read_pv_profile([pv_file])
         _set_session_df(PV_SESSION_KEY, pv_df)
     elif PV_SESSION_KEY in st.session_state:
         pv_df = st.session_state[PV_SESSION_KEY]

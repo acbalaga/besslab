@@ -22,10 +22,10 @@ Open the provided local URL in your browser to launch the app. To remove the ses
 
 ### Installation tips
 - Use a virtual environment to isolate dependencies: `python -m venv .venv && source .venv/bin/activate` before installing.
-- The bundled sample data lives in `data/` and loads automatically if you skip uploads.
+- The bundled sample data lives in `data/` and loads automatically if you skip uploads. The sample PV profile is hourly (8,760 rows); timestamped uploads can be sub-hourly or leap-year length.
 
 ## Inputs and file formats
-- **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). The app auto-aligns a 1-based index and drops out-of-range values.
+- **PV profile (CSV):** `hour_index, pv_mw` with consecutive hours (0–8759 or 1–8760). Include a `timestamp` column or supply a frequency when loading to preserve sub-hourly cadences and leap years; the app fills missing periods with 0 MW and reuses the one-year profile for multi-year projects.
 - **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
 - **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser (e.g., `05:30-09:00`).
 - **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and Design-Advisor bounds.
@@ -56,7 +56,7 @@ python -m utils.legacy.bess_size_sweeps
 The command sweeps a handful of power/duration combinations, prints the KPI table, and flags the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
 
 ## Tips for best results
-- Keep `hour_index` consecutive (0–8759 or 1–8760); the app auto-corrects the starting index.
+- Keep `hour_index` consecutive (0–8759 or 1–8760); the app auto-corrects the starting index. Timestamped uploads can be sub-hourly and can include leap-year days—the timestep is inferred automatically.
 - If you see frequent shortfalls, try widening the SOC range, improving efficiency, or enabling augmentation.
 - Use the Design Advisor panel for quick, bounded suggestions when the system struggles to meet the contract.
 - Minutes in window strings (e.g., `05:30-09:00`) are supported and parsed into fractional hours.

@@ -10,6 +10,7 @@ from streamlit.delta_generator import DeltaGenerator
 import numpy as np
 import pandas as pd
 from pathlib import Path
+from pandas.tseries.frequencies import to_offset
 import altair as alt
 from fpdf import FPDF
 from utils import (
@@ -109,6 +110,65 @@ def _parse_numeric_series(raw_text: str, label: str) -> List[float]:
             st.error(f"{label} contains a non-numeric entry: '{token}'")
             raise
     return series
+
+
+def infer_step_hours_from_pv(pv_df: pd.DataFrame, timestamp_col: str = "timestamp") -> Optional[float]:
+    """Infer the timestep (hours) from PV timestamps when present."""
+
+    if timestamp_col not in pv_df.columns:
+        return None
+
+    timestamps = pd.to_datetime(pv_df[timestamp_col], errors="coerce").dropna().sort_values()
+    if len(timestamps) < 2:
+        return None
+
+    inferred = pd.infer_freq(timestamps)
+    freq_td = None
+    if inferred is not None:
+        try:
+            offset = to_offset(inferred)
+            freq_td = pd.Timedelta(offset.nanos)
+        except ValueError:
+            freq_td = pd.Timedelta(inferred)
+    if freq_td is None:
+        diffs = timestamps.diff().dropna()
+        if diffs.empty:
+            return None
+        freq_td = diffs.median()
+
+    if freq_td <= pd.Timedelta(0):
+        return None
+
+    return float(freq_td / pd.Timedelta(hours=1))
+
+
+def validate_pv_profile_duration(
+    pv_df: pd.DataFrame, step_hours: float, timestamp_col: str = "timestamp"
+) -> Optional[str]:
+    """Return an error message if PV rows do not cover one year at the given step."""
+
+    if step_hours <= 0:
+        return "Timestep (step_hours) must be positive."
+
+    expected_365 = int(round(24.0 * 365.0 / step_hours))
+    expected_366 = int(round(24.0 * 366.0 / step_hours))
+    allowed_counts = {expected_365, expected_366}
+
+    if timestamp_col in pv_df.columns:
+        timestamps = pd.to_datetime(pv_df[timestamp_col], errors="coerce").dropna().sort_values()
+        if len(timestamps) >= 2:
+            freq_td = pd.Timedelta(hours=step_hours)
+            expected_range = pd.date_range(timestamps.min(), timestamps.max(), freq=freq_td)
+            allowed_counts.add(len(expected_range))
+
+    if len(pv_df) not in allowed_counts:
+        return (
+            "PV profile should represent one year. "
+            f"Received {len(pv_df):,} rows, expected {expected_365:,} (365-day) or "
+            f"{expected_366:,} (leap-year) rows for a {step_hours}-hour timestep."
+        )
+
+    return None
 
 # --------- Degradation helpers ---------
 
@@ -588,11 +648,20 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     soc_max = usable_mwh_start * cfg.soc_ceiling
 
     n_hours = len(pv_mw)
-    day_index = np.array([i // 24 for i in range(n_hours)])
-    calendar_index = pd.date_range("2020-01-01", periods=n_hours, freq=pd.Timedelta(hours=dt))
+    if "timestamp" in state.pv_df.columns:
+        calendar_index = pd.to_datetime(state.pv_df["timestamp"], errors="coerce")
+    else:
+        calendar_index = pd.date_range(
+            "2020-01-01", periods=n_hours, freq=pd.Timedelta(hours=dt)
+        )
+    calendar_index = pd.DatetimeIndex(calendar_index)
+    if calendar_index.isna().any():
+        raise ValueError("PV timestamps contain invalid entries after cleaning.")
+
+    day_index = ((calendar_index.normalize() - calendar_index[0].normalize()) / pd.Timedelta("1D")).astype(int)
     month_index = calendar_index.month - 1
     daily_dis_mwh = np.zeros(day_index.max() + 1)
-    hod = np.arange(n_hours) % 24
+    hod = (calendar_index.hour + calendar_index.minute / 60.0 + calendar_index.second / 3600.0).to_numpy()
 
     pv_to_contract_mw_log = np.zeros(n_hours)
     bess_to_contract_mw_log = np.zeros(n_hours)
@@ -1393,6 +1462,15 @@ def run_app():
         aug_retire_soh_pct=float(retire_soh),
         augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
+
+    inferred_step = infer_step_hours_from_pv(pv_df)
+    if inferred_step is not None:
+        cfg.step_hours = inferred_step
+
+    duration_error = validate_pv_profile_duration(pv_df, cfg.step_hours)
+    if duration_error:
+        st.error(duration_error)
+        st.stop()
 
     st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
     run_economics = st.checkbox(

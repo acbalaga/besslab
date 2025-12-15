@@ -18,7 +18,7 @@ st.markdown(
 Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its multipage workflow.
 
 ### Prepare your data
-- PV profile CSV with columns `hour_index, pv_mw` (0–8759 or 1–8760). The app auto-aligns the starting index.
+- PV profile CSV with columns `hour_index, pv_mw` (0–8759 or 1–8760). Add a `timestamp` column to keep sub-hourly cadences or leap-year coverage; the app infers the timestep and fills gaps.
 - Optional cycle-model Excel file to override the built-in degradation table.
 - Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours.
 
@@ -37,7 +37,7 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 - **BESS sizing sweep:** Sweep usable energy, rank feasible designs, and chart LCOE/IRR trends.
 
 ### Troubleshooting and tips
-- Keep `hour_index` consecutive; the app warns on gaps/out-of-range rows and drops them automatically.
+- Keep `hour_index` consecutive; the app warns on gaps/out-of-range rows and drops them automatically. Timestamped uploads are also supported for sub-hourly or leap-year data.
 - For persistent shortfalls, widen the SOC window, improve efficiency, or enable augmentation.
 - If charge opportunities look tight, widen charge windows or raise the SOC ceiling.
 - Sensitivities clear when inputs change—rerun them after major edits.

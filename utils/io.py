@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 
-def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
-    """Read and validate a PV profile with ['hour_index','pv_mw'] columns in MW."""
+def read_pv_profile(
+    path_candidates: List[Any],
+    *,
+    freq: Optional[str] = None,
+    timestamp_col: str = "timestamp",
+) -> pd.DataFrame:
+    """Read and validate a PV profile.
 
-    def _clean(df: pd.DataFrame) -> pd.DataFrame:
+    Defaults to the legacy hourly behavior (0–8759 hour_index, padded to 8,760
+    rows). When a timestamp column or an explicit ``freq`` is provided, the
+    function preserves the native resolution and validates against the implied
+    cadence without coercing to 8,760 points. Missing periods in a detected
+    range are filled with 0 MW to keep downstream arrays aligned.
+    """
+
+    def _clean_hour_index(df: pd.DataFrame, freq_td: Optional[pd.Timedelta]) -> pd.DataFrame:
         if not {"hour_index", "pv_mw"}.issubset(df.columns):
             raise ValueError("CSV must contain columns: hour_index, pv_mw")
 
@@ -32,7 +44,7 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
             raise ValueError("No valid PV rows after cleaning.")
 
         if (df["hour_index"] % 1 != 0).any():
-            st.error("hour_index must be integer hours (0-8759).")
+            st.error("hour_index must be integer hours when no timestamp column is provided.")
             raise ValueError("Non-integer hour_index encountered.")
 
         df["hour_index"] = df["hour_index"].astype(int)
@@ -40,10 +52,12 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         if df["hour_index"].min() == 1 and 0 not in df["hour_index"].values:
             df["hour_index"] = df["hour_index"] - 1
 
-        out_of_range = (df["hour_index"] < 0) | (df["hour_index"] >= 8760)
+        out_of_range = df["hour_index"] < 0
+        if freq_td is None:
+            out_of_range |= df["hour_index"] >= 8760
         if out_of_range.any():
             st.warning(
-                "hour_index values outside 0-8759 were dropped: "
+                "hour_index values outside the expected range were dropped: "
                 f"{sorted(df.loc[out_of_range, 'hour_index'].unique().tolist())}"
             )
             df = df.loc[~out_of_range].copy()
@@ -54,7 +68,7 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         duplicate_mask = df["hour_index"].duplicated(keep=False)
         if duplicate_mask.any():
             st.warning(
-                "Duplicate hour_index values found; averaging pv_mw for each hour."
+                "Duplicate hour_index values found; averaging pv_mw for each step."
             )
             df = (
                 df.groupby("hour_index", as_index=False)["pv_mw"].mean()
@@ -64,18 +78,25 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         else:
             df = df.sort_values("hour_index").drop_duplicates("hour_index")
 
-        full_index = pd.Index(range(8760), name="hour_index")
+        if freq_td is None:
+            full_index = pd.Index(range(8760), name="hour_index")
+        else:
+            full_index = pd.Index(
+                range(df["hour_index"].min(), df["hour_index"].max() + 1),
+                name="hour_index",
+            )
+
         df = df.set_index("hour_index")
-        missing_hours = full_index.difference(df.index)
-        if len(missing_hours) > 0:
+        missing_steps = full_index.difference(df.index)
+        if len(missing_steps) > 0:
             st.warning(
-                f"PV CSV is missing {len(missing_hours)} hours; filling gaps with 0 MW."
+                f"PV CSV is missing {len(missing_steps)} steps; filling gaps with 0 MW."
             )
             df = df.reindex(full_index, fill_value=0.0)
         else:
             df = df.reindex(full_index)
 
-        if len(df) != 8760:
+        if freq_td is None and len(df) != 8760:
             st.warning(
                 f"PV CSV has {len(df)} rows after cleaning (expected 8760). Proceeding anyway."
             )
@@ -84,11 +105,71 @@ def read_pv_profile(path_candidates: List[Any]) -> pd.DataFrame:
         df["pv_mw"] = df["pv_mw"].astype(float)
         return df
 
+    def _clean_timestamp(df: pd.DataFrame, freq_td: Optional[pd.Timedelta]) -> pd.DataFrame:
+        if "pv_mw" not in df.columns:
+            raise ValueError("CSV must contain column: pv_mw")
+        if timestamp_col not in df.columns:
+            raise ValueError(f"CSV must contain a '{timestamp_col}' column when using timestamps.")
+
+        df = df[[timestamp_col, "pv_mw"]].copy()
+        df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+        df["pv_mw"] = pd.to_numeric(df["pv_mw"], errors="coerce")
+
+        invalid_rows = df[timestamp_col].isna() | ~np.isfinite(df["pv_mw"])
+        if invalid_rows.any():
+            st.error(
+                "PV CSV contains invalid timestamps or non-numeric pv_mw entries; "
+                f"dropping {invalid_rows.sum()} rows."
+            )
+            df = df.loc[~invalid_rows].copy()
+
+        if df.empty:
+            raise ValueError("No valid PV rows after cleaning.")
+
+        df = (
+            df.groupby(timestamp_col, as_index=False)["pv_mw"].mean()
+            .sort_values(timestamp_col)
+            .reset_index(drop=True)
+        )
+        df = df.set_index(timestamp_col)
+
+        inferred = freq_td
+        if inferred is None:
+            inferred_str = pd.infer_freq(df.index)
+            inferred = pd.Timedelta(inferred_str) if inferred_str is not None else None
+
+        if inferred is None:
+            diffs = df.index.to_series().diff().dropna()
+            inferred = diffs.median() if not diffs.empty else None
+
+        if inferred is None or inferred <= pd.Timedelta(0):
+            raise ValueError("Could not infer PV timestamp frequency.")
+
+        expected_index = pd.date_range(df.index.min(), df.index.max(), freq=inferred)
+        missing_steps = expected_index.difference(df.index)
+        if len(missing_steps) > 0:
+            st.warning(
+                f"PV CSV is missing {len(missing_steps)} timestamps; filling gaps with 0 MW."
+            )
+            df = df.reindex(expected_index, fill_value=0.0)
+        else:
+            df = df.reindex(expected_index)
+
+        df = df.rename_axis("timestamp").reset_index()
+        df["hour_index"] = range(len(df))
+        df["pv_mw"] = df["pv_mw"].astype(float)
+        return df[["hour_index", "timestamp", "pv_mw"]]
+
     last_err = None
     for candidate in path_candidates:
         try:
             df = pd.read_csv(candidate)
-            return _clean(df)
+            freq_td = pd.Timedelta(freq) if freq is not None else None
+            if timestamp_col in df.columns or freq_td is not None:
+                if timestamp_col in df.columns:
+                    return _clean_timestamp(df, freq_td)
+                return _clean_hour_index(df, freq_td)
+            return _clean_hour_index(df, freq_td)
         except Exception as e:  # pragma: no cover - errors handled via last_err
             last_err = e
     raise RuntimeError(
