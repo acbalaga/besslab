@@ -2,8 +2,12 @@ import numpy as np
 import pandas as pd
 
 from app import SimConfig, SimulationOutput, SimulationSummary, YearResult
-from utils.economics import EconomicInputs
-from utils.sweeps import sweep_bess_sizes
+from utils.economics import EconomicInputs, PriceInputs
+from utils.sweeps import (
+    BessEconomicCandidate,
+    compute_static_bess_sweep_economics,
+    sweep_bess_sizes,
+)
 
 
 def _fake_simulation_factory(
@@ -291,3 +295,55 @@ def test_sweep_scales_economics_with_energy_size():
 
     assert double_cost > base_cost
     assert abs(double_cost - 2 * base_cost) < 1e-6
+
+
+def test_static_economic_sweep_penalizes_deficits():
+    candidates = [
+        BessEconomicCandidate(
+            energy_mwh=50.0,
+            capex_musd=1.0,
+            fixed_opex_musd=0.05,
+            compliance_mwh=2500.0,
+            deficit_mwh=0.0,
+            surplus_mwh=200.0,
+        ),
+        BessEconomicCandidate(
+            energy_mwh=80.0,
+            capex_musd=1.0,
+            fixed_opex_musd=0.05,
+            compliance_mwh=2500.0,
+            deficit_mwh=-500.0,
+            surplus_mwh=200.0,
+        ),
+    ]
+
+    economics_template = EconomicInputs(
+        capex_musd=0.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.08,
+    )
+
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=50.0,
+    )
+
+    df = compute_static_bess_sweep_economics(
+        candidates,
+        economics_template,
+        price_inputs,
+        wesm_price_usd_per_mwh=90.0,
+        years=5,
+    )
+
+    base_npv = df.loc[df["deficit_mwh"] == 0.0, "npv_usd"].iloc[0]
+    deficit_npv = df.loc[df["deficit_mwh"] < 0.0, "npv_usd"].iloc[0]
+    base_irr = df.loc[df["deficit_mwh"] == 0.0, "irr_pct"].iloc[0]
+    deficit_irr = df.loc[df["deficit_mwh"] < 0.0, "irr_pct"].iloc[0]
+
+    assert base_npv > 0
+    assert deficit_npv < base_npv
+    assert base_irr > 0
+    assert deficit_irr < base_irr

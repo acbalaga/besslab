@@ -1,7 +1,7 @@
 """Sweep utilities used by both the Streamlit app and tests."""
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 
@@ -19,6 +19,25 @@ from utils.economics import (
 
 if TYPE_CHECKING:
     from app import SimConfig, SimulationOutput, SimulationSummary
+
+
+@dataclass(frozen=True)
+class BessEconomicCandidate:
+    """Static BESS sizing economics used when simulations are pre-computed.
+
+    The structure mirrors the minimal fields needed to calculate cash flows
+    when generation outcomes (e.g., compliance, deficit, surplus) are already
+    known. Monetary values are expected in USD. ``deficit_mwh`` may be
+    negative to indicate energy that must be procured at the WESM price and is
+    treated as a cost in the cash-flow stream.
+    """
+
+    energy_mwh: float
+    capex_musd: float
+    fixed_opex_musd: float
+    compliance_mwh: float
+    deficit_mwh: float
+    surplus_mwh: float
 
 
 def generate_values(min_value: float, max_value: float, steps: int) -> List[float]:
@@ -160,6 +179,69 @@ def run_candidate_simulation(
     sim_output = simulate_fn(cfg_for_run, pv_df, cycle_df, dod_override, False)
     summary = summarize_fn(sim_output)
     return sim_output, summary
+
+
+def compute_static_bess_sweep_economics(
+    candidates: Sequence[BessEconomicCandidate],
+    economics_template: EconomicInputs,
+    price_inputs: PriceInputs,
+    wesm_price_usd_per_mwh: float,
+    *,
+    years: int = 1,
+) -> pd.DataFrame:
+    """Compute NPV/IRR for pre-computed BESS sizing candidates.
+
+    This helper mirrors the economics applied during full simulations but
+    operates on pre-aggregated generation outcomes. It assumes the provided
+    generation volumes repeat each year; callers can pre-scale the inputs when
+    modeling degradation or growth. Deficits are treated as an annual cost
+    using the supplied WESM price so negative compliance impacts project value
+    explicitly.
+    """
+
+    rows: list[dict[str, float]] = []
+    inflation_rate = float(economics_template.inflation_rate)
+    discount_rate = float(economics_template.discount_rate)
+
+    for candidate in candidates:
+        cash_flows: list[float] = [-max(candidate.capex_musd, 0.0) * 1_000_000.0]
+        discounted_npv = cash_flows[0]
+
+        for year_idx in range(1, years + 1):
+            inflation_multiplier = (1.0 + inflation_rate) ** (year_idx - 1)
+
+            # Positive compliance/surplus yield revenue; deficits represent market purchases
+            # at the assumed WESM price. Negative values are treated as a cost to avoid
+            # overstating project value when the profile misses contract energy.
+            contract_revenue = max(candidate.compliance_mwh, 0.0) * price_inputs.contract_price_usd_per_mwh
+            surplus_revenue = max(candidate.surplus_mwh, 0.0) * price_inputs.pv_market_price_usd_per_mwh
+            deficit_penalty = abs(candidate.deficit_mwh) * wesm_price_usd_per_mwh
+
+            annual_revenue = contract_revenue + surplus_revenue - deficit_penalty
+            if price_inputs.escalate_with_inflation:
+                annual_revenue *= inflation_multiplier
+
+            annual_opex_usd = max(candidate.fixed_opex_musd, 0.0) * 1_000_000.0 * inflation_multiplier
+            net_cash_flow = annual_revenue - annual_opex_usd
+
+            cash_flows.append(net_cash_flow)
+            discounted_npv += net_cash_flow / ((1.0 + discount_rate) ** year_idx)
+
+        irr_pct = _solve_irr_pct(cash_flows)
+        rows.append(
+            {
+                "energy_mwh": float(candidate.energy_mwh),
+                "npv_usd": float(discounted_npv),
+                "irr_pct": float(irr_pct),
+                "capex_musd": float(candidate.capex_musd),
+                "fixed_opex_musd": float(candidate.fixed_opex_musd),
+                "compliance_mwh": float(candidate.compliance_mwh),
+                "deficit_mwh": float(candidate.deficit_mwh),
+                "surplus_mwh": float(candidate.surplus_mwh),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def _compute_candidate_economics(
@@ -525,10 +607,12 @@ def _main_example() -> None:
 
 
 __all__ = [
+    "BessEconomicCandidate",
     "build_soc_windows",
     "generate_values",
     "run_sensitivity_grid",
     "run_candidate_simulation",
+    "compute_static_bess_sweep_economics",
     "sweep_bess_sizes",
 ]
 
