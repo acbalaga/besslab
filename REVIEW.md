@@ -12,6 +12,10 @@
 - **Impact:** Users cannot distinguish between a single missed hour and systematic multi-day shortfalls, which undermines the usefulness of the summary table and any downstream analytics.
 - **Suggestion:** Track shortfall occurrences per day (similar to how `daily_dis_mwh` is accumulated) and count the number of unique days where `flag_shortfall_hours` occurred, or at least return the total count of shortfall hours.
 
+## Multi-scenario batch runner smoke test
+- **Location:** `pages/05_Multi_Scenario_Batch.py`.
+- **Suggestion:** Populate two rows with distinct power/energy pairs, adjust augmentation and economics inputs (e.g., change augmentation mode and CAPEX), click **Run scenarios**, and confirm the progress bar completes and the results table (including economics columns) appears without exceeding memory on the default 4GB environment.
+
 ## Dispatch window parser ignores minutes
 - **Location:** `app.py`, `parse_windows`, lines 96–110.
 - **Issue:** Inputs are documented as `"HH:MM-HH:MM"`, but the parser drops everything after the colon by casting only the hour component to `int`. Any minute component silently truncates to the hour, so an input like `"05:30-09:00"` becomes `05:00-09:00` without warning.
