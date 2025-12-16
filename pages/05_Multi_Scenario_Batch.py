@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +15,11 @@ from app import (
     summarize_simulation,
 )
 from utils import enforce_rate_limit
-from utils.economics import compute_lcoe_lcos_with_augmentation_fallback
+from utils.economics import (
+    EconomicInputs,
+    PriceInputs,
+    compute_lcoe_lcos_with_augmentation_fallback,
+)
 from utils.ui_state import get_shared_data
 
 st.set_page_config(page_title="Multi-scenario batch", layout="wide")
@@ -58,8 +62,22 @@ def _seed_rows(cfg: SimConfig) -> pd.DataFrame:
         "rte": cfg.rte_roundtrip,
         "soc_floor": cfg.soc_floor,
         "soc_ceiling": cfg.soc_ceiling,
+        "calendar_fade_rate": cfg.calendar_fade_rate,
+        "use_calendar_exp_model": cfg.use_calendar_exp_model,
         "discharge_windows": _windows_to_text(cfg.discharge_windows),
         "charge_windows": cfg.charge_windows_text or "",
+        "augmentation": cfg.augmentation,
+        "aug_trigger_type": cfg.aug_trigger_type,
+        "aug_threshold_margin": cfg.aug_threshold_margin,
+        "aug_topup_margin": cfg.aug_topup_margin,
+        "aug_soh_trigger_pct": cfg.aug_soh_trigger_pct,
+        "aug_soh_add_frac_initial": cfg.aug_soh_add_frac_initial,
+        "aug_periodic_every_years": cfg.aug_periodic_every_years,
+        "aug_periodic_add_frac_of_bol": cfg.aug_periodic_add_frac_of_bol,
+        "aug_add_mode": cfg.aug_add_mode,
+        "aug_fixed_energy_mwh": cfg.aug_fixed_energy_mwh,
+        "aug_retire_old_cohort": cfg.aug_retire_old_cohort,
+        "aug_retire_soh_pct": cfg.aug_retire_soh_pct,
     }
     return pd.DataFrame([defaults])
 
@@ -92,8 +110,32 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     config.rte_roundtrip = float(row.get("rte") or template.rte_roundtrip)
     config.soc_floor = soc_floor
     config.soc_ceiling = soc_ceiling
+    config.calendar_fade_rate = float(row.get("calendar_fade_rate") or template.calendar_fade_rate)
+    use_exp_value = row.get("use_calendar_exp_model")
+    config.use_calendar_exp_model = (
+        template.use_calendar_exp_model if pd.isna(use_exp_value) else bool(use_exp_value)
+    )
     config.discharge_windows = dis_windows
     config.charge_windows_text = charge_windows_text
+    config.augmentation = str(row.get("augmentation") or template.augmentation)
+    config.aug_trigger_type = str(row.get("aug_trigger_type") or template.aug_trigger_type)
+    config.aug_threshold_margin = float(row.get("aug_threshold_margin") or template.aug_threshold_margin)
+    config.aug_topup_margin = float(row.get("aug_topup_margin") or template.aug_topup_margin)
+    config.aug_soh_trigger_pct = float(row.get("aug_soh_trigger_pct") or template.aug_soh_trigger_pct)
+    config.aug_soh_add_frac_initial = float(
+        row.get("aug_soh_add_frac_initial") or template.aug_soh_add_frac_initial
+    )
+    config.aug_periodic_every_years = int(
+        row.get("aug_periodic_every_years") or template.aug_periodic_every_years
+    )
+    config.aug_periodic_add_frac_of_bol = float(
+        row.get("aug_periodic_add_frac_of_bol") or template.aug_periodic_add_frac_of_bol
+    )
+    config.aug_add_mode = str(row.get("aug_add_mode") or template.aug_add_mode)
+    config.aug_fixed_energy_mwh = float(row.get("aug_fixed_energy_mwh") or template.aug_fixed_energy_mwh)
+    retire_value = row.get("aug_retire_old_cohort")
+    config.aug_retire_old_cohort = template.aug_retire_old_cohort if pd.isna(retire_value) else bool(retire_value)
+    config.aug_retire_soh_pct = float(row.get("aug_retire_soh_pct") or template.aug_retire_soh_pct)
 
     return label, config
 
@@ -101,12 +143,103 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
 pv_df, cycle_df = get_shared_data(BASE_DIR)
 cached_cfg: SimConfig = st.session_state.get("latest_sim_config", SimConfig())
 dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
+forex_rate_php_per_usd = 58.0
+default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
 st.page_link("app.py", label="Back to Inputs & Results", help="Tune inputs before batching scenarios.")
 st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons table")
 st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
 st.page_link("pages/00_Home.py", label="Home (Guide)")
 st.markdown("---")
+
+econ_defaults = st.session_state.get("latest_economics_payload", {})
+econ_inputs_default: Optional[EconomicInputs] = econ_defaults.get("economic_inputs")
+econ_price_default: Optional[PriceInputs] = econ_defaults.get("price_inputs")
+
+with st.expander("Economics (optional)", expanded=False):
+    econ_col1, econ_col2 = st.columns(2)
+    with econ_col1:
+        capex_musd = st.number_input(
+            "Total CAPEX (USD million)",
+            min_value=0.0,
+            value=float(econ_inputs_default.capex_musd) if econ_inputs_default else 40.0,
+            step=0.1,
+        )
+        fixed_opex_pct = st.number_input(
+            "Fixed OPEX (% of CAPEX per year)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(econ_inputs_default.fixed_opex_pct_of_capex) if econ_inputs_default else 2.0,
+            step=0.1,
+        )
+        fixed_opex_musd = st.number_input(
+            "Additional fixed OPEX (USD million/yr)",
+            min_value=0.0,
+            value=float(econ_inputs_default.fixed_opex_musd) if econ_inputs_default else 0.0,
+            step=0.1,
+        )
+    with econ_col2:
+        inflation_pct = st.number_input(
+            "Inflation rate (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(econ_inputs_default.inflation_rate * 100) if econ_inputs_default else 3.0,
+            step=0.1,
+        )
+        discount_rate_pct = st.number_input(
+            "Discount rate (%)",
+            min_value=0.0,
+            max_value=30.0,
+            value=float(econ_inputs_default.discount_rate * 100) if econ_inputs_default else 5.0,
+            step=0.1,
+        )
+        st.caption(
+            "Discount rate is applied directly. Use WACC-derived values if you prefer real/nominal alignment."
+        )
+
+    price_col1, price_col2 = st.columns(2)
+    with price_col1:
+        contract_price_php_per_kwh = st.number_input(
+            "Contract price (PHP/kWh from BESS)",
+            min_value=0.0,
+            value=float(econ_price_default.contract_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
+            if econ_price_default
+            else default_contract_php_per_kwh,
+            step=0.05,
+        )
+    with price_col2:
+        pv_market_price_php_per_kwh = st.number_input(
+            "PV market price (PHP/kWh for excess PV)",
+            min_value=0.0,
+            value=float(econ_price_default.pv_market_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
+            if econ_price_default
+            else default_pv_php_per_kwh,
+            step=0.05,
+        )
+    escalate_prices = st.checkbox(
+        "Escalate prices with inflation",
+        value=bool(econ_price_default.escalate_with_inflation) if econ_price_default else False,
+    )
+
+contract_price_usd_per_mwh = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+pv_market_price_usd_per_mwh = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+economic_inputs = EconomicInputs(
+    capex_musd=capex_musd,
+    fixed_opex_pct_of_capex=fixed_opex_pct,
+    fixed_opex_musd=fixed_opex_musd,
+    inflation_rate=inflation_pct / 100.0,
+    discount_rate=discount_rate_pct / 100.0,
+)
+price_inputs = PriceInputs(
+    contract_price_usd_per_mwh=contract_price_usd_per_mwh,
+    pv_market_price_usd_per_mwh=pv_market_price_usd_per_mwh,
+    escalate_with_inflation=escalate_prices,
+)
+st.session_state["latest_economics_payload"] = {
+    "economic_inputs": economic_inputs,
+    "price_inputs": price_inputs,
+}
 
 table_placeholder = st.empty()
 default_rows = _seed_rows(cached_cfg)
@@ -144,6 +277,16 @@ edited_df = table_placeholder.data_editor(
         "soc_ceiling": st.column_config.NumberColumn(
             "SOC ceiling", min_value=0.05, max_value=1.0, step=0.01, help="Maximum SOC as a fraction."
         ),
+        "calendar_fade_rate": st.column_config.NumberColumn(
+            "Calendar fade (frac/yr)",
+            min_value=0.0,
+            max_value=0.1,
+            step=0.001,
+            help="Annual calendar fade rate applied to usable energy.",
+        ),
+        "use_calendar_exp_model": st.column_config.CheckboxColumn(
+            "Use exponential fade", help="Use exponential decay for calendar fade instead of linear."
+        ),
         "discharge_windows": st.column_config.TextColumn(
             "Discharge windows",
             help="Comma-separated HH:MM-HH:MM ranges (e.g., 10:00-14:00, 18:00-22:00).",
@@ -151,6 +294,81 @@ edited_df = table_placeholder.data_editor(
         "charge_windows": st.column_config.TextColumn(
             "Charge windows (optional)",
             help="Leave blank to allow any PV hour; uses the same HH:MM-HH:MM format.",
+        ),
+        "augmentation": st.column_config.SelectboxColumn(
+            "Augmentation mode",
+            options=["None", "Threshold", "Periodic"],
+            help="Choose the augmentation strategy applied across years.",
+        ),
+        "aug_trigger_type": st.column_config.SelectboxColumn(
+            "Trigger type",
+            options=["Capability", "SOH"],
+            help="Used when augmentation mode is Threshold.",
+        ),
+        "aug_threshold_margin": st.column_config.NumberColumn(
+            "Capability margin (frac)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            help="Allowed margin below contracted energy before triggering augmentation (capability mode).",
+        ),
+        "aug_topup_margin": st.column_config.NumberColumn(
+            "Top-up margin (frac)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            help="Energy added when augmenting under capability mode.",
+        ),
+        "aug_soh_trigger_pct": st.column_config.NumberColumn(
+            "SOH trigger (%)",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            help="SOH threshold for augmentation when trigger type is SOH (fraction).",
+        ),
+        "aug_soh_add_frac_initial": st.column_config.NumberColumn(
+            "SOH add frac of BOL",
+            min_value=0.0,
+            max_value=2.0,
+            step=0.01,
+            help="Fraction of initial BOL energy to add when augmenting under SOH trigger.",
+        ),
+        "aug_periodic_every_years": st.column_config.NumberColumn(
+            "Periodic interval (yrs)",
+            min_value=1,
+            max_value=40,
+            step=1,
+            help="Augment every N years when mode is Periodic.",
+        ),
+        "aug_periodic_add_frac_of_bol": st.column_config.NumberColumn(
+            "Periodic add (frac of BOL)",
+            min_value=0.0,
+            max_value=2.0,
+            step=0.01,
+            help="Energy added each period as a fraction of initial BOL energy.",
+        ),
+        "aug_add_mode": st.column_config.SelectboxColumn(
+            "Aug add mode",
+            options=["Percent", "Fixed"],
+            help="Percent of BOL vs fixed MWh when augmenting.",
+        ),
+        "aug_fixed_energy_mwh": st.column_config.NumberColumn(
+            "Fixed aug size (MWh)",
+            min_value=0.0,
+            max_value=2_000.0,
+            step=1.0,
+            help="Used when Aug add mode is Fixed.",
+        ),
+        "aug_retire_old_cohort": st.column_config.CheckboxColumn(
+            "Retire old cohort",
+            help="When augmenting, retire the oldest cohort instead of layering capacity.",
+        ),
+        "aug_retire_soh_pct": st.column_config.NumberColumn(
+            "Retire below SOH",
+            min_value=0.0,
+            max_value=1.0,
+            step=0.01,
+            help="Retire cohorts whose SOH falls below this fraction.",
         ),
     },
     key="multi_scenario_table",
@@ -231,6 +449,11 @@ def _run_batch() -> pd.DataFrame | None:
                 "Charge/Discharge ratio": summary.charge_discharge_ratio,
                 "PV capture ratio": summary.pv_capture_ratio,
                 "Shortfall MWh": summary.total_shortfall_mwh,
+                "Total generation (MWh)": summary.total_project_generation_mwh,
+                "BESS discharge (MWh)": summary.bess_generation_mwh,
+                "PV contribution (MWh)": summary.pv_generation_mwh,
+                "PV excess (MWh)": summary.pv_excess_mwh,
+                "BESS losses (MWh)": summary.bess_losses_mwh,
                 "Avg eq cycles/yr": summary.avg_eq_cycles_per_year,
                 "Final SOH_total": final_year.soh_total,
                 "EOY usable MWh": final_year.eoy_usable_mwh,
@@ -264,6 +487,11 @@ with results_container:
                 "Charge/Discharge ratio": "{:,.3f}",
                 "PV capture ratio": "{:,.3f}",
                 "Shortfall MWh": "{:,.1f}",
+                "Total generation (MWh)": "{:,.1f}",
+                "BESS discharge (MWh)": "{:,.1f}",
+                "PV contribution (MWh)": "{:,.1f}",
+                "PV excess (MWh)": "{:,.1f}",
+                "BESS losses (MWh)": "{:,.1f}",
                 "Avg eq cycles/yr": "{:,.2f}",
                 "Final SOH_total": "{:,.3f}",
                 "EOY usable MWh": "{:,.1f}",

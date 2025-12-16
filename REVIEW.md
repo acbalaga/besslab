@@ -14,7 +14,7 @@
 
 ## Multi-scenario batch runner smoke test
 - **Location:** `pages/05_Multi_Scenario_Batch.py`.
-- **Suggestion:** Populate two rows with distinct power/energy pairs, click **Run scenarios**, and confirm the progress bar completes and the results table appears without exceeding memory on the default 4GB environment.
+- **Suggestion:** Populate two rows with distinct power/energy pairs, adjust augmentation and economics inputs (e.g., change augmentation mode and CAPEX), click **Run scenarios**, and confirm the progress bar completes and the results table (including economics columns) appears without exceeding memory on the default 4GB environment.
 
 ## Dispatch window parser ignores minutes
 - **Location:** `app.py`, `parse_windows`, lines 96–110.
