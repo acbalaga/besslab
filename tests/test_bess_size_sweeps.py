@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pandas as pd
 
@@ -347,3 +348,41 @@ def test_static_economic_sweep_penalizes_deficits():
     assert deficit_npv < base_npv
     assert base_irr > 0
     assert deficit_irr < base_irr
+
+
+def test_static_economic_sweep_uses_blended_price() -> None:
+    candidates = [
+        BessEconomicCandidate(
+            energy_mwh=50.0,
+            capex_musd=0.0,
+            fixed_opex_musd=0.0,
+            compliance_mwh=100.0,
+            deficit_mwh=0.0,
+            surplus_mwh=50.0,
+        )
+    ]
+
+    economics_template = EconomicInputs(
+        capex_musd=0.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=60.0,
+        blended_price_usd_per_mwh=50.0,
+    )
+
+    df = compute_static_bess_sweep_economics(
+        candidates,
+        economics_template,
+        price_inputs,
+        wesm_price_usd_per_mwh=90.0,
+        years=1,
+    )
+
+    expected_revenue = (100.0 + 50.0) * 50.0
+    assert math.isclose(df.loc[0, "npv_usd"], expected_revenue)

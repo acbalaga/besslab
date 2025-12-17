@@ -59,6 +59,18 @@ def generate_values(min_value: float, max_value: float, steps: int) -> List[floa
     return [float(min_value + i * step) for i in range(steps)]
 
 
+def _resolve_energy_prices(price_inputs: PriceInputs) -> tuple[float, float]:
+    """Return effective contract and PV prices, honoring a blended override."""
+
+    if price_inputs.blended_price_usd_per_mwh is not None:
+        blended_price = float(price_inputs.blended_price_usd_per_mwh)
+        return blended_price, blended_price
+    return (
+        float(price_inputs.contract_price_usd_per_mwh),
+        float(price_inputs.pv_market_price_usd_per_mwh),
+    )
+
+
 def build_soc_windows(
     floor_range: Tuple[float, float],
     ceiling_range: Tuple[float, float],
@@ -202,6 +214,7 @@ def compute_static_bess_sweep_economics(
     rows: list[dict[str, float]] = []
     inflation_rate = float(economics_template.inflation_rate)
     discount_rate = float(economics_template.discount_rate)
+    contract_price_usd_per_mwh, pv_market_price_usd_per_mwh = _resolve_energy_prices(price_inputs)
 
     for candidate in candidates:
         cash_flows: list[float] = [-max(candidate.capex_musd, 0.0) * 1_000_000.0]
@@ -213,8 +226,8 @@ def compute_static_bess_sweep_economics(
             # Positive compliance/surplus yield revenue; deficits represent market purchases
             # at the assumed WESM price. Negative values are treated as a cost to avoid
             # overstating project value when the profile misses contract energy.
-            contract_revenue = max(candidate.compliance_mwh, 0.0) * price_inputs.contract_price_usd_per_mwh
-            surplus_revenue = max(candidate.surplus_mwh, 0.0) * price_inputs.pv_market_price_usd_per_mwh
+            contract_revenue = max(candidate.compliance_mwh, 0.0) * contract_price_usd_per_mwh
+            surplus_revenue = max(candidate.surplus_mwh, 0.0) * pv_market_price_usd_per_mwh
             deficit_penalty = abs(candidate.deficit_mwh) * wesm_price_usd_per_mwh
 
             annual_revenue = contract_revenue + surplus_revenue - deficit_penalty

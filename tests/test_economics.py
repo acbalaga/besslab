@@ -174,6 +174,67 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
         self.assertAlmostEqual(cashflow_outputs.irr_pct, 13.5, places=3)
 
+    def test_cash_flows_and_irr_respects_blended_price_override(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.10,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.05,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=110.0,
+            pv_market_price_usd_per_mwh=35.0,
+            escalate_with_inflation=False,
+            blended_price_usd_per_mwh=80.0,
+        )
+
+        cashflow_outputs = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[1_000.0],
+            annual_bess_mwh=[1_000.0],
+            annual_pv_excess_mwh=[100.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+        )
+
+        expected_revenue = (1_000.0 + 100.0) * 80.0
+        expected_pv_revenue = 100.0 * 80.0
+        expected_discounted_revenue = expected_revenue / 1.05
+        expected_npv = -100_000.0 + expected_discounted_revenue
+
+        self.assertAlmostEqual(cashflow_outputs.discounted_revenues_usd, expected_discounted_revenue)
+        self.assertAlmostEqual(
+            cashflow_outputs.discounted_pv_excess_revenue_usd, expected_pv_revenue / 1.05
+        )
+        self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
+        self.assertAlmostEqual(cashflow_outputs.irr_pct, -12.0, places=1)
+
+    def test_blended_price_monetizes_pv_contribution_to_contract(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=0.0,
+            pv_market_price_usd_per_mwh=0.0,
+            blended_price_usd_per_mwh=50.0,
+        )
+
+        cashflow_outputs = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[1_200.0],  # PV + BESS meeting firm deliveries
+            annual_bess_mwh=[1_000.0],
+            annual_pv_excess_mwh=[50.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+        )
+
+        expected_revenue = (1_200.0 + 50.0) * 50.0
+        self.assertAlmostEqual(cashflow_outputs.discounted_revenues_usd, expected_revenue)
+        self.assertAlmostEqual(cashflow_outputs.discounted_pv_excess_revenue_usd, 50.0 * 50.0)
+
     def test_devex_flows_into_initial_cash_flow_and_npv(self) -> None:
         inputs = EconomicInputs(
             capex_musd=0.0,

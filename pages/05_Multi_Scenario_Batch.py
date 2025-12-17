@@ -212,8 +212,24 @@ with st.expander("Economics (optional)", expanded=False):
             "Discount rate is applied directly. Use WACC-derived values if you prefer real/nominal alignment."
         )
 
+    blended_price_default_php_per_kwh = (
+        float(econ_price_default.blended_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
+        if econ_price_default and econ_price_default.blended_price_usd_per_mwh is not None
+        else default_contract_php_per_kwh
+    )
+    blended_price_default_active = bool(
+        econ_price_default and econ_price_default.blended_price_usd_per_mwh is not None
+    )
     price_col1, price_col2 = st.columns(2)
     with price_col1:
+        use_blended_price = st.checkbox(
+            "Use blended energy price",
+            value=blended_price_default_active,
+            help=(
+                "Apply a single price to all delivered firm energy and excess PV. "
+                "Contract/PV-specific inputs are ignored while enabled."
+            ),
+        )
         contract_price_php_per_kwh = st.number_input(
             "Contract price (PHP/kWh from BESS)",
             min_value=0.0,
@@ -221,6 +237,7 @@ with st.expander("Economics (optional)", expanded=False):
             if econ_price_default
             else default_contract_php_per_kwh,
             step=0.05,
+            disabled=use_blended_price,
         )
     with price_col2:
         pv_market_price_php_per_kwh = st.number_input(
@@ -230,11 +247,35 @@ with st.expander("Economics (optional)", expanded=False):
             if econ_price_default
             else default_pv_php_per_kwh,
             step=0.05,
+            disabled=use_blended_price,
+        )
+        blended_price_php_per_kwh = st.number_input(
+            "Blended energy price (PHP/kWh)",
+            min_value=0.0,
+            value=blended_price_default_php_per_kwh,
+            step=0.05,
+            help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
+            disabled=not use_blended_price,
         )
     escalate_prices = st.checkbox(
         "Escalate prices with inflation",
         value=bool(econ_price_default.escalate_with_inflation) if econ_price_default else False,
     )
+    blended_price_usd_per_mwh: Optional[float] = None
+    contract_price_usd_per_mwh = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+    pv_market_price_usd_per_mwh = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+    if use_blended_price:
+        blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+        st.caption(
+            "Blended price active for revenues: "
+            f"PHP {blended_price_php_per_kwh:,.2f}/kWh "
+            f"(≈${blended_price_usd_per_mwh:,.2f}/MWh). Contract/PV prices are ignored."
+        )
+    else:
+        st.caption(
+            f"Converted contract price: ${contract_price_usd_per_mwh:,.2f}/MWh | "
+            f"PV market price: ${pv_market_price_usd_per_mwh:,.2f}/MWh"
+        )
 
     variable_opex_default_php = (
         float(econ_inputs_default.variable_opex_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
@@ -325,8 +366,6 @@ with st.expander("Economics (optional)", expanded=False):
             else:
                 variable_opex_schedule_usd = None
 
-contract_price_usd_per_mwh = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-pv_market_price_usd_per_mwh = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
 economic_inputs = EconomicInputs(
     capex_musd=capex_musd,
     fixed_opex_pct_of_capex=fixed_opex_pct,
@@ -342,6 +381,7 @@ price_inputs = PriceInputs(
     contract_price_usd_per_mwh=contract_price_usd_per_mwh,
     pv_market_price_usd_per_mwh=pv_market_price_usd_per_mwh,
     escalate_with_inflation=escalate_prices,
+    blended_price_usd_per_mwh=blended_price_usd_per_mwh,
 )
 st.session_state["latest_economics_payload"] = {
     "economic_inputs": economic_inputs,
