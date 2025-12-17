@@ -23,6 +23,7 @@ from utils import (
 )
 from utils.economics import (
     CashFlowOutputs,
+    DEVEX_COST_PHP,
     EconomicOutputs,
     EconomicInputs,
     PriceInputs,
@@ -1484,6 +1485,7 @@ def run_app():
     econ_inputs: Optional[EconomicInputs] = None
     price_inputs: Optional[PriceInputs] = None
     forex_rate_php_per_usd = 58.0
+    devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd
 
     default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
     default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
@@ -1530,6 +1532,15 @@ def run_app():
                 min_value=0.0,
                 value=0.0,
                 step=0.1,
+            )
+            include_devex_year0 = st.checkbox(
+                "Include ₱100M DevEx at year 0",
+                value=False,
+                help=(
+                    "Adds a fixed ₱100 million development expenditure upfront (≈"
+                    f"${devex_cost_usd / 1_000_000:,.2f}M using PHP {forex_rate_php_per_usd:,.0f}/USD). "
+                    "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+                ),
             )
         with econ_col3:
             contract_price_php_per_kwh = st.number_input(
@@ -1631,6 +1642,8 @@ def run_app():
             variable_opex_schedule_usd=variable_opex_schedule_usd,
             periodic_variable_opex_usd=periodic_variable_opex_usd,
             periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
+            devex_cost_usd=devex_cost_usd,
+            include_devex_year0=include_devex_year0,
         )
         price_inputs = PriceInputs(
             contract_price_usd_per_mwh=contract_price,
@@ -1858,6 +1871,15 @@ def run_app():
                 f"PHP {forex_rate_php_per_usd:,.0f}/USD rate."
             ),
         )
+
+        if econ_inputs.include_devex_year0:
+            st.caption(
+                "DevEx: Included an additional ₱100M "
+                f"(≈${econ_inputs.devex_cost_usd / 1_000_000:,.2f}M) at year 0 across discounted costs, "
+                "LCOE/LCOS, NPV, and IRR."
+            )
+        else:
+            st.caption("DevEx not included; upfront spend reflects CAPEX only.")
 
         cash_c1, cash_c2, cash_c3 = st.columns(3)
         cash_c1.metric(

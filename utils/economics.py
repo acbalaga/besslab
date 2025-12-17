@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from typing import Callable, Sequence
 
 
+DEFAULT_FOREX_RATE_PHP_PER_USD = 58.0
+# DevEx is modeled as a PHP-denominated amount to align with other UI inputs.
+# A default USD conversion is retained for callers that do not override
+# ``devex_cost_usd`` explicitly (e.g., during tests or CLI usage).
+DEVEX_COST_PHP = 100_000_000.0
+DEVEX_COST_USD = DEVEX_COST_PHP / DEFAULT_FOREX_RATE_PHP_PER_USD
+
+
 @dataclass
 class EconomicInputs:
     """High-level project economics.
@@ -25,6 +33,8 @@ class EconomicInputs:
     variable_opex_schedule_usd: tuple[float, ...] | None = None
     periodic_variable_opex_usd: float | None = None
     periodic_variable_opex_interval_years: int | None = None
+    devex_cost_usd: float = DEVEX_COST_USD
+    include_devex_year0: bool = False
 
 
 @dataclass
@@ -150,6 +160,15 @@ def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[
     return None
 
 
+def _initial_project_spend(inputs: EconomicInputs) -> float:
+    """Return the upfront spend applied at year 0 including optional DevEx."""
+
+    base_capex_usd = inputs.capex_musd * 1_000_000.0
+    if inputs.include_devex_year0:
+        return base_capex_usd + inputs.devex_cost_usd
+    return base_capex_usd
+
+
 def compute_lcoe_lcos(
     annual_delivered_mwh: Sequence[float],
     annual_bess_mwh: Sequence[float],
@@ -193,7 +212,7 @@ def compute_lcoe_lcos(
             float("nan"), float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
         )
 
-    discounted_costs = inputs.capex_musd * 1_000_000
+    discounted_costs = _initial_project_spend(inputs)
     discounted_augmentation_costs = 0.0
     discounted_energy = 0.0
     discounted_bess_energy = 0.0
@@ -288,7 +307,7 @@ def compute_cash_flows_and_irr(
 
     discounted_revenues = 0.0
     discounted_pv_revenue = 0.0
-    cash_flows = [-inputs.capex_musd * 1_000_000.0]
+    cash_flows = [-_initial_project_spend(inputs)]
 
     fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
@@ -479,6 +498,9 @@ def estimate_augmentation_costs_by_year(
 
 
 __all__ = [
+    "DEFAULT_FOREX_RATE_PHP_PER_USD",
+    "DEVEX_COST_PHP",
+    "DEVEX_COST_USD",
     "EconomicInputs",
     "EconomicOutputs",
     "PriceInputs",

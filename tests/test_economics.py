@@ -3,6 +3,7 @@ import unittest
 
 from utils.economics import (
     CashFlowOutputs,
+    DEVEX_COST_USD,
     EconomicInputs,
     PriceInputs,
     compute_cash_flows_and_irr,
@@ -100,6 +101,44 @@ class EconomicModuleTests(unittest.TestCase):
         expected_discounted_energy = (100.0 / 1.1) + (100.0 / (1.1**2))
         self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, expected_discounted_aug_costs / expected_discounted_energy)
 
+    def test_devex_is_added_upfront(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            include_devex_year0=True,
+        )
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0],
+            annual_bess_mwh=[100.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, DEVEX_COST_USD)
+        self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, DEVEX_COST_USD / 100.0)
+
+    def test_devex_respects_custom_usd_amount(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            devex_cost_usd=2_000_000.0,
+            include_devex_year0=True,
+        )
+
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[200.0],
+            annual_bess_mwh=[200.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, inputs.devex_cost_usd)
+        self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, inputs.devex_cost_usd / 200.0)
+
     def test_cash_flows_and_irr_handles_contract_and_pv_revenue(self) -> None:
         inputs = EconomicInputs(
             capex_musd=0.10,
@@ -134,6 +173,33 @@ class EconomicModuleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
         self.assertAlmostEqual(cashflow_outputs.irr_pct, 13.5, places=3)
+
+    def test_devex_flows_into_initial_cash_flow_and_npv(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            include_devex_year0=True,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=50.0,
+            pv_market_price_usd_per_mwh=0.0,
+            escalate_with_inflation=False,
+        )
+
+        cashflow_outputs = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[1_000.0],
+            annual_bess_mwh=[1_000.0],
+            annual_pv_excess_mwh=[0.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+        )
+
+        expected_revenue = 50.0 * 1_000.0
+        self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_revenue - DEVEX_COST_USD)
+        self.assertTrue(math.isnan(cashflow_outputs.irr_pct) or cashflow_outputs.irr_pct < 0)
 
     def test_variable_opex_per_mwh_overrides_fixed_costs(self) -> None:
         inputs = EconomicInputs(
