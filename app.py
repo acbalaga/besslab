@@ -1543,12 +1543,21 @@ def run_app():
                 ),
             )
         with econ_col3:
+            use_blended_price = st.checkbox(
+                "Use blended energy price",
+                value=False,
+                help=(
+                    "Apply a single price to all delivered firm energy and excess PV. "
+                    "Contract/PV-specific inputs are ignored while enabled."
+                ),
+            )
             contract_price_php_per_kwh = st.number_input(
                 "Contract price (PHP/kWh from BESS)",
                 min_value=0.0,
                 value=default_contract_php_per_kwh,
                 step=0.05,
                 help="Price converted to USD/MWh internally using PHP 58/USD.",
+                disabled=use_blended_price,
             )
             pv_market_price_php_per_kwh = st.number_input(
                 "PV market price (PHP/kWh for excess PV)",
@@ -1556,6 +1565,17 @@ def run_app():
                 value=default_pv_php_per_kwh,
                 step=0.05,
                 help="Price converted to USD/MWh internally using PHP 58/USD.",
+                disabled=use_blended_price,
+            )
+            blended_price_php_per_kwh = st.number_input(
+                "Blended energy price (PHP/kWh)",
+                min_value=0.0,
+                value=default_contract_php_per_kwh,
+                step=0.05,
+                help=(
+                    "Applied to all delivered firm energy and marketed PV when blended pricing is enabled."
+                ),
+                disabled=not use_blended_price,
             )
             escalate_prices = st.checkbox(
                 "Escalate prices with inflation",
@@ -1564,9 +1584,18 @@ def run_app():
 
             contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
             pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-            st.caption(
-                f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
-            )
+            blended_price_usd_per_mwh: Optional[float] = None
+            if use_blended_price:
+                blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                st.caption(
+                    "Blended price active for revenues: "
+                    f"PHP {blended_price_php_per_kwh:,.2f}/kWh "
+                    f"(≈${blended_price_usd_per_mwh:,.2f}/MWh). Contract/PV prices are ignored."
+                )
+            else:
+                st.caption(
+                    f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+                )
 
         variable_col1, variable_col2 = st.columns(2)
         with variable_col1:
@@ -1649,6 +1678,7 @@ def run_app():
             contract_price_usd_per_mwh=contract_price,
             pv_market_price_usd_per_mwh=pv_market_price,
             escalate_with_inflation=escalate_prices,
+            blended_price_usd_per_mwh=blended_price_usd_per_mwh,
         )
 
     # Store the latest input set for use in other pages (e.g., sweeps) without
@@ -1882,10 +1912,16 @@ def run_app():
             st.caption("DevEx not included; upfront spend reflects CAPEX only.")
 
         cash_c1, cash_c2, cash_c3 = st.columns(3)
+        revenue_help = (
+            "Revenues apply the blended energy price to all BESS deliveries and excess PV; "
+            "contract/PV-specific rates are ignored in this mode."
+            if price_inputs.blended_price_usd_per_mwh is not None
+            else "Contract revenue from BESS deliveries plus market revenue from excess PV."
+        )
         cash_c1.metric(
             "Discounted revenues (USD million)",
             f"{cash_outputs.discounted_revenues_usd / 1_000_000:,.2f}",
-            help="Contract revenue from BESS deliveries plus market revenue from excess PV.",
+            help=revenue_help,
         )
         cash_c2.metric(
             "NPV (USD million)",

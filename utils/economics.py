@@ -51,11 +51,16 @@ class EconomicOutputs:
 
 @dataclass
 class PriceInputs:
-    """Energy price assumptions used for cash-flow based metrics."""
+    """Energy price assumptions used for cash-flow based metrics.
+
+    When ``blended_price_usd_per_mwh`` is provided it overrides the individual
+    contract and PV rates so all energy is monetized at the blended value.
+    """
 
     contract_price_usd_per_mwh: float
     pv_market_price_usd_per_mwh: float
     escalate_with_inflation: bool = False
+    blended_price_usd_per_mwh: float | None = None
 
 
 @dataclass
@@ -127,6 +132,10 @@ def _validate_price_inputs(price_inputs: PriceInputs) -> None:
     _ensure_non_negative_finite(
         price_inputs.pv_market_price_usd_per_mwh, "pv_market_price_usd_per_mwh"
     )
+    if price_inputs.blended_price_usd_per_mwh is not None:
+        _ensure_non_negative_finite(
+            price_inputs.blended_price_usd_per_mwh, "blended_price_usd_per_mwh"
+        )
 
 
 def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[float] | None:
@@ -278,9 +287,12 @@ def compute_cash_flows_and_irr(
     * Market revenue from excess PV that would otherwise be curtailed.
 
     Contract and market prices can optionally escalate with the same inflation
-    rate used for OPEX. Augmentation costs are treated as a year-specific cash
-    outflow alongside fixed OPEX. The IRR calculation uses the undiscounted
-    cash-flow list to avoid dependence on the chosen discount rate.
+    rate used for OPEX. When a blended energy price is provided, it overrides
+    the individual contract and PV rates and is applied to all delivered and
+    marketed energy streams. Augmentation costs are treated as a year-specific
+    cash outflow alongside fixed OPEX. The IRR calculation uses the
+    undiscounted cash-flow list to avoid dependence on the chosen discount
+    rate.
 
     When provided, variable OPEX schedules override per-MWh costs, which in turn
     override fixed OPEX derived from CAPEX-based percentages and adders.
@@ -311,6 +323,17 @@ def compute_cash_flows_and_irr(
 
     fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
+    blended_price = price_inputs.blended_price_usd_per_mwh
+    contract_price = (
+        price_inputs.contract_price_usd_per_mwh
+        if blended_price is None
+        else float(blended_price)
+    )
+    pv_market_price = (
+        price_inputs.pv_market_price_usd_per_mwh
+        if blended_price is None
+        else float(blended_price)
+    )
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
@@ -333,8 +356,8 @@ def compute_cash_flows_and_irr(
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
-        bess_revenue = bess_mwh * price_inputs.contract_price_usd_per_mwh
-        pv_revenue = pv_excess_mwh * price_inputs.pv_market_price_usd_per_mwh
+        bess_revenue = bess_mwh * contract_price
+        pv_revenue = pv_excess_mwh * pv_market_price
         if price_inputs.escalate_with_inflation:
             bess_revenue *= inflation_multiplier
             pv_revenue *= inflation_multiplier
