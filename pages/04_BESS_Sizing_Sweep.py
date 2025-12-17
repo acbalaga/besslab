@@ -195,12 +195,21 @@ with st.form("size_sweep_form_page"):
         )
 
     with price_col:
+        use_blended_price = st.checkbox(
+            "Use blended energy price",
+            value=False,
+            help=(
+                "Apply a single price to all delivered firm energy and excess PV. "
+                "Contract/PV-specific inputs are ignored while enabled."
+            ),
+        )
         contract_price_php_per_kwh = st.number_input(
             "Contract price (PHP/kWh from BESS)",
             min_value=0.0,
             value=default_contract_php_per_kwh,
             step=0.05,
             help="Price converted to USD/MWh internally using PHP 58/USD.",
+            disabled=use_blended_price,
         )
         pv_market_price_php_per_kwh = st.number_input(
             "PV market price (PHP/kWh for excess PV)",
@@ -208,6 +217,15 @@ with st.form("size_sweep_form_page"):
             value=default_pv_php_per_kwh,
             step=0.05,
             help="Price converted to USD/MWh internally using PHP 58/USD.",
+            disabled=use_blended_price,
+        )
+        blended_price_php_per_kwh = st.number_input(
+            "Blended energy price (PHP/kWh)",
+            min_value=0.0,
+            value=default_contract_php_per_kwh,
+            step=0.05,
+            help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
+            disabled=not use_blended_price,
         )
         escalate_prices = st.checkbox(
             "Escalate prices with inflation",
@@ -216,9 +234,18 @@ with st.form("size_sweep_form_page"):
 
         contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
         pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-        st.caption(
-            f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
-        )
+        blended_price_usd_per_mwh: Optional[float] = None
+        if use_blended_price:
+            blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(
+                "Blended price active for revenues: "
+                f"PHP {blended_price_php_per_kwh:,.2f}/kWh "
+                f"(≈${blended_price_usd_per_mwh:,.2f}/MWh). Contract/PV prices are ignored."
+            )
+        else:
+            st.caption(
+                f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+            )
 
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
@@ -301,6 +328,7 @@ if submitted:
         contract_price_usd_per_mwh=contract_price,
         pv_market_price_usd_per_mwh=pv_market_price,
         escalate_with_inflation=escalate_prices,
+        blended_price_usd_per_mwh=blended_price_usd_per_mwh,
     )
 
     with st.spinner("Running BESS energy sweep..."):
