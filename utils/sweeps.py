@@ -275,6 +275,16 @@ def _compute_candidate_economics(
         fixed_opex_musd=economics_inputs.fixed_opex_musd * size_scale,
         inflation_rate=economics_inputs.inflation_rate,
         discount_rate=economics_inputs.discount_rate,
+        variable_opex_usd_per_mwh=economics_inputs.variable_opex_usd_per_mwh,
+        variable_opex_schedule_usd=
+            tuple(v * size_scale for v in economics_inputs.variable_opex_schedule_usd)
+            if economics_inputs.variable_opex_schedule_usd is not None
+            else None,
+        periodic_variable_opex_usd=
+            economics_inputs.periodic_variable_opex_usd * size_scale
+            if economics_inputs.periodic_variable_opex_usd is not None
+            else None,
+        periodic_variable_opex_interval_years=economics_inputs.periodic_variable_opex_interval_years,
     )
 
     augmentation_unit_rate_usd_per_kwh = 0.0
