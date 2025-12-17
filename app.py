@@ -1489,8 +1489,14 @@ def run_app():
 
     default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
     default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+    default_wesm_php_per_kwh = default_pv_php_per_kwh
 
     if run_economics:
+        wesm_price_usd_per_mwh: Optional[float] = None
+        wesm_price_php_per_kwh = default_wesm_php_per_kwh
+        wesm_pricing_enabled = False
+        sell_to_wesm = False
+
         econ_col1, econ_col2, econ_col3 = st.columns(3)
         with econ_col1:
             wacc_pct = st.number_input(
@@ -1581,6 +1587,30 @@ def run_app():
                 "Escalate prices with inflation",
                 value=False,
             )
+            wesm_pricing_enabled = st.checkbox(
+                "Apply WESM price to shortfalls",
+                value=False,
+                help=(
+                    "Deduct contract shortfalls at the WESM average rate below."
+                ),
+            )
+            wesm_price_php_per_kwh = st.number_input(
+                "Average WESM price (PHP/kWh)",
+                min_value=0.0,
+                value=default_wesm_php_per_kwh,
+                step=0.05,
+                help="Applied to shortfall MWh as either a purchase cost or sale credit.",
+                disabled=not wesm_pricing_enabled,
+            )
+            sell_to_wesm = st.checkbox(
+                "Sell PV surplus to WESM",
+                value=False,
+                help=(
+                    "When enabled, PV surplus (excess MWh) is credited at the WESM price; otherwise surplus"
+                    " is excluded from revenue. Shortfalls always incur a WESM cost while this section is enabled."
+                ),
+                disabled=not wesm_pricing_enabled,
+            )
 
             contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
             pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
@@ -1595,6 +1625,12 @@ def run_app():
             else:
                 st.caption(
                     f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+                )
+            if wesm_pricing_enabled:
+                wesm_price_usd_per_mwh = wesm_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                st.caption(
+                    "WESM pricing active for shortfalls: "
+                    f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
                 )
 
         variable_col1, variable_col2 = st.columns(2)
@@ -1679,6 +1715,9 @@ def run_app():
             pv_market_price_usd_per_mwh=pv_market_price,
             escalate_with_inflation=escalate_prices,
             blended_price_usd_per_mwh=blended_price_usd_per_mwh,
+            wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+            apply_wesm_to_shortfall=wesm_pricing_enabled,
+            sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
         )
 
     # Store the latest input set for use in other pages (e.g., sweeps) without
@@ -1815,6 +1854,7 @@ def run_app():
         annual_delivered = [r.delivered_firm_mwh for r in results]
         annual_bess = [r.bess_to_contract_mwh for r in results]
         annual_pv_excess = [r.pv_curtailed_mwh for r in results]
+        annual_shortfall = [r.shortfall_mwh for r in results]
 
         try:
             econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
@@ -1829,6 +1869,7 @@ def run_app():
                 annual_pv_excess,
                 econ_inputs,
                 price_inputs,
+                annual_shortfall_mwh=annual_shortfall,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
             )
         except ValueError as exc:  # noqa: BLE001
@@ -1918,6 +1959,14 @@ def run_app():
             if price_inputs.blended_price_usd_per_mwh is not None
             else "Contract revenue from BESS deliveries plus market revenue from excess PV."
         )
+        if price_inputs.apply_wesm_to_shortfall and price_inputs.wesm_price_usd_per_mwh is not None:
+            revenue_help += (
+                f" Shortfall MWh are deducted as a WESM cost at ${price_inputs.wesm_price_usd_per_mwh:,.2f}/MWh."
+            )
+            if price_inputs.sell_to_wesm:
+                revenue_help += (
+                    " PV surplus is credited at the same WESM rate; otherwise surplus is excluded from revenue."
+                )
         cash_c1.metric(
             "Discounted revenues (USD million)",
             f"{cash_outputs.discounted_revenues_usd / 1_000_000:,.2f}",
@@ -1933,6 +1982,24 @@ def run_app():
             f"{cash_outputs.irr_pct:,.2f}%" if cash_outputs.irr_pct == cash_outputs.irr_pct else "—",
             help="IRR computed from annual revenues and OPEX/augmentation outflows.",
         )
+
+        wesm_caption = (
+            "WESM pricing disabled; contract shortfalls are not monetized in revenues, NPV, or IRR."
+        )
+        if price_inputs.apply_wesm_to_shortfall and price_inputs.wesm_price_usd_per_mwh is not None:
+            wesm_impact_musd = cash_outputs.discounted_wesm_value_usd / 1_000_000
+            surplus_note = (
+                " PV surplus credited at WESM due to the sell toggle."
+                if price_inputs.sell_to_wesm
+                else " PV surplus excluded from revenue while WESM pricing is active."
+            )
+            wesm_caption = (
+                "WESM shortfall cost applied at PHP "
+                f"{wesm_price_php_per_kwh:,.2f}/kWh (≈${price_inputs.wesm_price_usd_per_mwh:,.2f}/MWh)."
+                f" Discounted WESM impact on revenues/NPV/IRR: {wesm_impact_musd:,.2f} USD million." + surplus_note
+            )
+
+        st.caption(wesm_caption)
 
     st.markdown("#### Augmentation impact trace")
     augmentation_retired = getattr(

@@ -54,13 +54,20 @@ class PriceInputs:
     """Energy price assumptions used for cash-flow based metrics.
 
     When ``blended_price_usd_per_mwh`` is provided it overrides the individual
-    contract and PV rates so all energy is monetized at the blended value.
+    contract and PV rates so all energy is monetized at the blended value. The
+    optional WESM price applies to contract shortfalls when enabled, either as
+    a purchase cost. When ``sell_to_wesm`` is enabled, PV surplus (excess
+    energy) can be credited at the WESM price; otherwise, surplus revenue is
+    excluded from the cash-flow stream.
     """
 
     contract_price_usd_per_mwh: float
     pv_market_price_usd_per_mwh: float
     escalate_with_inflation: bool = False
     blended_price_usd_per_mwh: float | None = None
+    wesm_price_usd_per_mwh: float | None = None
+    apply_wesm_to_shortfall: bool = False
+    sell_to_wesm: bool = False
 
 
 @dataclass
@@ -69,6 +76,7 @@ class CashFlowOutputs:
 
     discounted_revenues_usd: float
     discounted_pv_excess_revenue_usd: float
+    discounted_wesm_value_usd: float
     npv_usd: float
     irr_pct: float
 
@@ -136,6 +144,12 @@ def _validate_price_inputs(price_inputs: PriceInputs) -> None:
         _ensure_non_negative_finite(
             price_inputs.blended_price_usd_per_mwh, "blended_price_usd_per_mwh"
         )
+    if price_inputs.wesm_price_usd_per_mwh is not None:
+        _ensure_non_negative_finite(
+            price_inputs.wesm_price_usd_per_mwh, "wesm_price_usd_per_mwh"
+        )
+    if price_inputs.apply_wesm_to_shortfall and price_inputs.wesm_price_usd_per_mwh is None:
+        raise ValueError("wesm_price_usd_per_mwh must be provided when applying WESM to shortfalls")
 
 
 def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[float] | None:
@@ -276,15 +290,17 @@ def compute_cash_flows_and_irr(
     annual_pv_excess_mwh: Sequence[float],
     inputs: EconomicInputs,
     price_inputs: PriceInputs,
+    annual_shortfall_mwh: Sequence[float] | None = None,
     augmentation_costs_usd: Sequence[float] | None = None,
     max_iterations: int = 200,
 ) -> CashFlowOutputs:
     """Compute discounted revenues, project NPV, and an implied IRR.
 
-    Revenue is split into two streams:
+    Revenue is split into two streams (plus optional WESM adjustments):
 
     * Contract revenue from BESS-originated energy using a fixed contract price.
     * Market revenue from excess PV that would otherwise be curtailed.
+    * Optional WESM sales or purchases tied to contract shortfalls.
 
     Contract and market prices can optionally escalate with the same inflation
     rate used for OPEX. When a blended energy price is provided, it overrides
@@ -295,7 +311,11 @@ def compute_cash_flows_and_irr(
     avoid dependence on the chosen discount rate.
 
     When provided, variable OPEX schedules override per-MWh costs, which in turn
-    override fixed OPEX derived from CAPEX-based percentages and adders.
+    override fixed OPEX derived from CAPEX-based percentages and adders. When
+    ``apply_wesm_to_shortfall`` is True, shortfall MWh are monetized using the
+    WESM price as a purchase (cost). Surplus PV (``annual_pv_excess_mwh``) is
+    only credited at the WESM price when ``sell_to_wesm`` is True; otherwise it
+    is excluded from revenue when WESM pricing is enabled.
     """
 
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
@@ -303,6 +323,12 @@ def compute_cash_flows_and_irr(
         raise ValueError("annual_pv_excess_mwh must match number of years")
     for idx, value in enumerate(annual_pv_excess_mwh, start=1):
         _ensure_non_negative_finite(float(value), f"annual_pv_excess_mwh[{idx}]")
+    if annual_shortfall_mwh is None:
+        annual_shortfall_mwh = [0.0 for _ in annual_delivered_mwh]
+    if len(annual_shortfall_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_shortfall_mwh must match number of years")
+    for idx, value in enumerate(annual_shortfall_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
     _validate_price_inputs(price_inputs)
 
     if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
@@ -315,10 +341,11 @@ def compute_cash_flows_and_irr(
 
     years = len(annual_delivered_mwh)
     if years == 0:
-        return CashFlowOutputs(float("nan"), float("nan"), float("nan"), float("nan"))
+        return CashFlowOutputs(float("nan"), float("nan"), float("nan"), float("nan"), float("nan"))
 
     discounted_revenues = 0.0
     discounted_pv_revenue = 0.0
+    discounted_wesm_value = 0.0
     cash_flows = [-_initial_project_spend(inputs)]
 
     fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
@@ -329,11 +356,13 @@ def compute_cash_flows_and_irr(
     if blended_price is not None:
         contract_price = float(blended_price)
         pv_market_price = float(blended_price)
+    wesm_price = float(price_inputs.wesm_price_usd_per_mwh) if price_inputs.wesm_price_usd_per_mwh is not None else None
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
         bess_mwh = float(annual_bess_mwh[year_idx - 1])
         pv_excess_mwh = float(annual_pv_excess_mwh[year_idx - 1])
+        shortfall_mwh = float(annual_shortfall_mwh[year_idx - 1])
         factor = _discount_factor(inputs.discount_rate, year_idx)
         inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
 
@@ -351,20 +380,27 @@ def compute_cash_flows_and_irr(
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
-        if blended_price is None:
-            bess_revenue = bess_mwh * contract_price
-            pv_revenue = pv_excess_mwh * pv_market_price
-        else:
-            # Blended pricing applies to all firm energy (PV + BESS) plus excess PV.
-            bess_revenue = firm_mwh * contract_price
-            pv_revenue = pv_excess_mwh * pv_market_price
+        bess_revenue = firm_mwh * contract_price if blended_price is not None else bess_mwh * contract_price
+
+        pv_revenue = pv_excess_mwh * pv_market_price
+        wesm_shortfall_cost = 0.0
+        wesm_surplus_revenue = 0.0
+        if price_inputs.apply_wesm_to_shortfall and wesm_price is not None:
+            wesm_shortfall_cost = shortfall_mwh * wesm_price
+            pv_revenue = 0.0  # PV surplus handled below when WESM pricing is enabled
+            if price_inputs.sell_to_wesm:
+                wesm_surplus_revenue = pv_excess_mwh * wesm_price
+
         if price_inputs.escalate_with_inflation:
             bess_revenue *= inflation_multiplier
             pv_revenue *= inflation_multiplier
+            wesm_shortfall_cost *= inflation_multiplier
+            wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = bess_revenue + pv_revenue
+        total_revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
         discounted_revenues += total_revenue * factor
-        discounted_pv_revenue += pv_revenue * factor
+        discounted_pv_revenue += (pv_revenue + wesm_surplus_revenue) * factor
+        discounted_wesm_value += (wesm_surplus_revenue - wesm_shortfall_cost) * factor
         cash_flows.append(total_revenue - annual_opex - augmentation_cost)
 
     npv_usd = _compute_npv(cash_flows, inputs.discount_rate)
@@ -373,6 +409,7 @@ def compute_cash_flows_and_irr(
     return CashFlowOutputs(
         discounted_revenues_usd=discounted_revenues,
         discounted_pv_excess_revenue_usd=discounted_pv_revenue,
+        discounted_wesm_value_usd=discounted_wesm_value,
         npv_usd=npv_usd,
         irr_pct=irr_pct,
     )

@@ -331,6 +331,7 @@ def _compute_candidate_economics(
             [r.pv_curtailed_mwh for r in results],
             scaled_economics,
             price_inputs,
+            annual_shortfall_mwh=[r.shortfall_mwh for r in results],
             augmentation_costs_usd=augmentation_costs_usd,
         )
         irr_pct = cash_outputs.irr_pct

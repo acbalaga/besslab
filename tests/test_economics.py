@@ -171,6 +171,7 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(
             cashflow_outputs.discounted_pv_excess_revenue_usd, expected_pv_revenue / 1.05
         )
+        self.assertAlmostEqual(cashflow_outputs.discounted_wesm_value_usd, 0.0)
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
         self.assertAlmostEqual(cashflow_outputs.irr_pct, 13.5, places=3)
 
@@ -206,6 +207,7 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(
             cashflow_outputs.discounted_pv_excess_revenue_usd, expected_pv_revenue / 1.05
         )
+        self.assertAlmostEqual(cashflow_outputs.discounted_wesm_value_usd, 0.0)
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
         self.assertAlmostEqual(cashflow_outputs.irr_pct, -12.0, places=1)
 
@@ -234,6 +236,90 @@ class EconomicModuleTests(unittest.TestCase):
         expected_revenue = (1_200.0 + 50.0) * 50.0
         self.assertAlmostEqual(cashflow_outputs.discounted_revenues_usd, expected_revenue)
         self.assertAlmostEqual(cashflow_outputs.discounted_pv_excess_revenue_usd, 50.0 * 50.0)
+        self.assertAlmostEqual(cashflow_outputs.discounted_wesm_value_usd, 0.0)
+
+    def test_wesm_shortfall_costs_reduce_revenue(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.10,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=100.0,
+            pv_market_price_usd_per_mwh=0.0,
+            wesm_price_usd_per_mwh=120.0,
+            apply_wesm_to_shortfall=True,
+            sell_to_wesm=True,
+        )
+
+        outputs = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[950.0],
+            annual_bess_mwh=[950.0],
+            annual_pv_excess_mwh=[0.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+            annual_shortfall_mwh=[50.0],
+        )
+
+        expected_wesm_cost = -50.0 * 120.0
+        expected_revenue = (950.0 * 100.0) + expected_wesm_cost
+        expected_discounted_revenue = expected_revenue / 1.10
+
+        self.assertAlmostEqual(outputs.discounted_wesm_value_usd, expected_wesm_cost / 1.10)
+        self.assertAlmostEqual(outputs.discounted_revenues_usd, expected_discounted_revenue)
+        self.assertAlmostEqual(outputs.npv_usd, expected_discounted_revenue)
+
+    def test_wesm_pv_surplus_counted_only_when_selling(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+
+        price_inputs_sell = PriceInputs(
+            contract_price_usd_per_mwh=0.0,
+            pv_market_price_usd_per_mwh=0.0,
+            wesm_price_usd_per_mwh=80.0,
+            apply_wesm_to_shortfall=True,
+            sell_to_wesm=True,
+        )
+        outputs_sell = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[0.0],
+            annual_bess_mwh=[0.0],
+            annual_pv_excess_mwh=[25.0],
+            inputs=inputs,
+            price_inputs=price_inputs_sell,
+            annual_shortfall_mwh=[0.0],
+        )
+
+        expected_revenue = 25.0 * 80.0
+        self.assertAlmostEqual(outputs_sell.discounted_wesm_value_usd, expected_revenue)
+        self.assertAlmostEqual(outputs_sell.discounted_revenues_usd, expected_revenue)
+        self.assertAlmostEqual(outputs_sell.discounted_pv_excess_revenue_usd, expected_revenue)
+
+        price_inputs_hold = PriceInputs(
+            contract_price_usd_per_mwh=0.0,
+            pv_market_price_usd_per_mwh=0.0,
+            wesm_price_usd_per_mwh=80.0,
+            apply_wesm_to_shortfall=True,
+            sell_to_wesm=False,
+        )
+        outputs_hold = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[0.0],
+            annual_bess_mwh=[0.0],
+            annual_pv_excess_mwh=[25.0],
+            inputs=inputs,
+            price_inputs=price_inputs_hold,
+            annual_shortfall_mwh=[0.0],
+        )
+
+        self.assertAlmostEqual(outputs_hold.discounted_wesm_value_usd, 0.0)
+        self.assertAlmostEqual(outputs_hold.discounted_revenues_usd, 0.0)
+        self.assertAlmostEqual(outputs_hold.discounted_pv_excess_revenue_usd, 0.0)
 
     def test_devex_flows_into_initial_cash_flow_and_npv(self) -> None:
         inputs = EconomicInputs(
