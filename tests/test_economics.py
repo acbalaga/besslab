@@ -135,6 +135,45 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
         self.assertAlmostEqual(cashflow_outputs.irr_pct, 13.5, places=3)
 
+    def test_variable_opex_per_mwh_overrides_fixed_costs(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=50.0,  # large value to ensure override
+            fixed_opex_musd=10.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            variable_opex_usd_per_mwh=2.0,
+        )
+
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0],
+            annual_bess_mwh=[100.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, 200.0)
+        self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, 2.0)
+
+    def test_variable_schedule_takes_precedence(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            variable_opex_usd_per_mwh=10.0,
+            variable_opex_schedule_usd=(50.0,),
+        )
+
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0],
+            annual_bess_mwh=[100.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, 50.0)
+        self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

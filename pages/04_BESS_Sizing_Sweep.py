@@ -17,6 +17,20 @@ st.title("BESS sizing sweep (energy sensitivity)")
 st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
 
 
+def _parse_numeric_series(raw_text: str, label: str) -> list[float]:
+    """Parse a comma or newline-delimited series of floats for form inputs."""
+
+    tokens = [t.strip() for t in raw_text.replace(",", "\n").splitlines() if t.strip()]
+    series: list[float] = []
+    for token in tokens:
+        try:
+            series.append(float(token))
+        except ValueError as exc:  # noqa: BLE001
+            st.error(f"{label} contains a non-numeric entry: '{token}'")
+            raise
+    return series
+
+
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
     """Identify the BESS capacity where NPV and IRR curves overlap after scaling.
 
@@ -206,6 +220,67 @@ with st.form("size_sweep_form_page"):
             f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
         )
 
+    variable_col1, variable_col2 = st.columns(2)
+    with variable_col1:
+        variable_opex_php_per_kwh = st.number_input(
+            "Variable OPEX (PHP/kWh)",
+            min_value=0.0,
+            value=0.0,
+            step=0.05,
+            help=(
+                "Optional per-kWh operating expense applied to annual firm energy. "
+                "Escalates with inflation and overrides fixed OPEX when provided."
+            ),
+        )
+        variable_opex_usd_per_mwh: Optional[float] = None
+        if variable_opex_php_per_kwh > 0:
+            variable_opex_usd_per_mwh = variable_opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(
+                f"Converted variable OPEX: ${variable_opex_usd_per_mwh:,.2f}/MWh (applied to delivered energy)."
+            )
+    with variable_col2:
+        variable_schedule_choice = st.radio(
+            "Variable expense schedule",
+            options=["None", "Periodic", "Custom"],
+            horizontal=True,
+            help=(
+                "Custom or periodic schedules override per-kWh and fixed OPEX assumptions. "
+                "Per-kWh costs override fixed percentages and adders."
+            ),
+        )
+        variable_opex_schedule_usd: Optional[Tuple[float, ...]] = None
+        periodic_variable_opex_usd: Optional[float] = None
+        periodic_variable_opex_interval_years: Optional[int] = None
+        if variable_schedule_choice == "Periodic":
+            periodic_variable_opex_usd = st.number_input(
+                "Variable expense when periodic (USD)",
+                min_value=0.0,
+                value=0.0,
+                step=10_000.0,
+                help="Amount applied on the selected cadence (year 1, then every N years).",
+            )
+            periodic_variable_opex_interval_years = st.number_input(
+                "Cadence (years)",
+                min_value=1,
+                value=5,
+                step=1,
+            )
+            if periodic_variable_opex_usd <= 0:
+                periodic_variable_opex_usd = None
+        elif variable_schedule_choice == "Custom":
+            custom_variable_text = st.text_area(
+                "Custom variable expenses (USD/year)",
+                placeholder="e.g., 250000, 275000, 300000",
+                help="Comma or newline separated values applied per project year.",
+            )
+            if custom_variable_text.strip():
+                try:
+                    variable_opex_schedule_usd = tuple(
+                        _parse_numeric_series(custom_variable_text, "Variable expense schedule")
+                    )
+                except ValueError:
+                    st.stop()
+
     submitted = st.form_submit_button("Run BESS energy sweep", use_container_width=True)
 
 if submitted:
@@ -217,6 +292,10 @@ if submitted:
         fixed_opex_musd=fixed_opex_musd,
         inflation_rate=inflation_pct / 100.0,
         discount_rate=discount_rate,
+        variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+        variable_opex_schedule_usd=variable_opex_schedule_usd,
+        periodic_variable_opex_usd=periodic_variable_opex_usd,
+        periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=contract_price,

@@ -21,6 +21,10 @@ class EconomicInputs:
     fixed_opex_musd: float
     inflation_rate: float
     discount_rate: float
+    variable_opex_usd_per_mwh: float | None = None
+    variable_opex_schedule_usd: tuple[float, ...] | None = None
+    periodic_variable_opex_usd: float | None = None
+    periodic_variable_opex_interval_years: int | None = None
 
 
 @dataclass
@@ -92,6 +96,17 @@ def _validate_inputs(
     _ensure_non_negative_finite(inputs.inflation_rate, "inflation_rate")
     _ensure_non_negative_finite(inputs.discount_rate, "discount_rate")
 
+    if inputs.variable_opex_usd_per_mwh is not None:
+        _ensure_non_negative_finite(inputs.variable_opex_usd_per_mwh, "variable_opex_usd_per_mwh")
+    if inputs.periodic_variable_opex_usd is not None:
+        _ensure_non_negative_finite(inputs.periodic_variable_opex_usd, "periodic_variable_opex_usd")
+    if inputs.periodic_variable_opex_interval_years is not None and inputs.periodic_variable_opex_interval_years <= 0:
+        raise ValueError("periodic_variable_opex_interval_years must be positive when provided")
+
+    if inputs.variable_opex_schedule_usd is not None:
+        for idx, value in enumerate(inputs.variable_opex_schedule_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"variable_opex_schedule_usd[{idx}]")
+
 
 def _validate_price_inputs(price_inputs: PriceInputs) -> None:
     """Raise ValueError when provided price assumptions are invalid."""
@@ -102,6 +117,37 @@ def _validate_price_inputs(price_inputs: PriceInputs) -> None:
     _ensure_non_negative_finite(
         price_inputs.pv_market_price_usd_per_mwh, "pv_market_price_usd_per_mwh"
     )
+
+
+def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[float] | None:
+    """Return a per-year variable OPEX schedule honoring user overrides.
+
+    Precedence is applied as follows:
+    1) ``variable_opex_schedule_usd`` when explicitly provided.
+    2) ``periodic_variable_opex_usd`` on the specified cadence.
+    3) ``None`` to signal that fixed OPEX or per-MWh costs should be used instead.
+    """
+
+    if inputs.variable_opex_schedule_usd is not None:
+        schedule = list(inputs.variable_opex_schedule_usd)
+        if schedule and len(schedule) != years:
+            raise ValueError("variable_opex_schedule_usd must align with the number of years provided")
+        schedule.extend([0.0] * (years - len(schedule)))
+        return schedule
+
+    if (
+        inputs.periodic_variable_opex_usd is not None
+        and inputs.periodic_variable_opex_interval_years is not None
+    ):
+        cadence = max(int(inputs.periodic_variable_opex_interval_years), 1)
+        amount = float(inputs.periodic_variable_opex_usd)
+        schedule = [0.0 for _ in range(years)]
+        for year_idx in range(1, years + 1):
+            if (year_idx - 1) % cadence == 0:
+                schedule[year_idx - 1] = amount
+        return schedule
+
+    return None
 
 
 def compute_lcoe_lcos(
@@ -122,6 +168,13 @@ def compute_lcoe_lcos(
         Economic assumptions such as CAPEX, OPEX, and discount rate.
     augmentation_costs_usd
         Optional per-year augmentation CAPEX (USD, undiscounted) to include in the cash flows.
+
+    Notes
+    -----
+    Explicit variable OPEX schedules take precedence over per-MWh operating
+    costs, which in turn override fixed OPEX derived from CAPEX percentages and
+    adders. Custom schedules are assumed to already reflect nominal year-by-
+    year spending and are not escalated further.
     """
 
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
@@ -146,22 +199,33 @@ def compute_lcoe_lcos(
     discounted_bess_energy = 0.0
     # fixed_opex_pct_of_capex is expressed as a percent (e.g., 2.5 = 2.5%)
     fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
         bess_mwh = float(annual_bess_mwh[year_idx - 1])
         factor = _discount_factor(inputs.discount_rate, year_idx)
 
-        # Escalate fixed OPEX annually by the assumed inflation rate.
+        # Escalate OPEX annually by the assumed inflation rate when using fixed inputs
+        # or per-MWh costs. Explicit schedules are assumed to already reflect the intended
+        # nominal spend for the corresponding year.
         inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
-        annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
-        annual_fixed_opex *= inflation_multiplier
+        annual_opex = 0.0
+        if variable_opex_schedule is not None:
+            if year_idx - 1 >= len(variable_opex_schedule):
+                raise ValueError("variable_opex_schedule_usd must match the number of project years")
+            annual_opex = float(variable_opex_schedule[year_idx - 1])
+        elif inputs.variable_opex_usd_per_mwh is not None:
+            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+        else:
+            annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+            annual_opex = annual_fixed_opex * inflation_multiplier
         augmentation_cost = 0.0
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
         discounted_augmentation_costs += augmentation_cost * factor
-        discounted_costs += (annual_fixed_opex + augmentation_cost) * factor
+        discounted_costs += (annual_opex + augmentation_cost) * factor
         discounted_energy += firm_mwh * factor
         discounted_bess_energy += bess_mwh * factor
 
@@ -198,6 +262,9 @@ def compute_cash_flows_and_irr(
     rate used for OPEX. Augmentation costs are treated as a year-specific cash
     outflow alongside fixed OPEX. The IRR calculation uses the undiscounted
     cash-flow list to avoid dependence on the chosen discount rate.
+
+    When provided, variable OPEX schedules override per-MWh costs, which in turn
+    override fixed OPEX derived from CAPEX-based percentages and adders.
     """
 
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
@@ -224,15 +291,25 @@ def compute_cash_flows_and_irr(
     cash_flows = [-inputs.capex_musd * 1_000_000.0]
 
     fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
 
     for year_idx in range(1, years + 1):
+        firm_mwh = float(annual_delivered_mwh[year_idx - 1])
         bess_mwh = float(annual_bess_mwh[year_idx - 1])
         pv_excess_mwh = float(annual_pv_excess_mwh[year_idx - 1])
         factor = _discount_factor(inputs.discount_rate, year_idx)
         inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
 
-        annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
-        annual_fixed_opex *= inflation_multiplier
+        annual_opex = 0.0
+        if variable_opex_schedule is not None:
+            if year_idx - 1 >= len(variable_opex_schedule):
+                raise ValueError("variable_opex_schedule_usd must match the number of project years")
+            annual_opex = float(variable_opex_schedule[year_idx - 1])
+        elif inputs.variable_opex_usd_per_mwh is not None:
+            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+        else:
+            annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+            annual_opex = annual_fixed_opex * inflation_multiplier
         augmentation_cost = 0.0
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
@@ -246,7 +323,7 @@ def compute_cash_flows_and_irr(
         total_revenue = bess_revenue + pv_revenue
         discounted_revenues += total_revenue * factor
         discounted_pv_revenue += pv_revenue * factor
-        cash_flows.append(total_revenue - annual_fixed_opex - augmentation_cost)
+        cash_flows.append(total_revenue - annual_opex - augmentation_cost)
 
     npv_usd = _compute_npv(cash_flows, inputs.discount_rate)
     irr_pct = _solve_irr_pct(cash_flows, max_iterations=max_iterations)
