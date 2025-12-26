@@ -743,6 +743,19 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     ]
     _draw_table(pdf, margin, pdf.get_y(), table_widths, gen_rows)
 
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 6, "Generation summary", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    gen_lines = [
+        f"Total delivered (project): {total_generation_mwh:,.1f} MWh  |  Shortfall: {total_shortfall_mwh:,.1f} MWh",
+        f"PV->Contract: {pv_generation_mwh:,.1f} MWh  |  BESS->Contract: {bess_generation_mwh:,.1f} MWh",
+        f"PV surplus/curtailment: {pv_excess_mwh:,.1f} MWh  |  BESS losses (charging inefficiency): {bess_losses_mwh:,.1f} MWh",
+        f"Charge/Discharge ratio: {_fmt(charge_discharge_ratio)}  |  PV capture ratio: {_fmt(pv_capture_ratio)}",
+    ]
+    for line in gen_lines:
+        pdf.multi_cell(usable_width, 5, line)
+
     pdf.ln(2)
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(90, 90, 90)
