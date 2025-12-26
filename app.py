@@ -221,6 +221,9 @@ class SimConfig:
     pv_availability: float = 0.98
     bess_availability: float = 0.99
     rte_roundtrip: float = 0.88           # single (η_rt)
+    use_split_rte: bool = False
+    charge_efficiency: Optional[float] = None
+    discharge_efficiency: Optional[float] = None
     soc_floor: float = 0.10
     soc_ceiling: float = 0.90
     initial_power_mw: float = 30.0
@@ -323,6 +326,30 @@ class SimulationOutput:
     augmentation_energy_added_mwh: List[float]
     augmentation_retired_energy_mwh: List[float]
     augmentation_events: int
+
+
+def resolve_efficiencies(cfg: SimConfig) -> Tuple[float, float, float]:
+    """Return (charge, discharge, roundtrip) efficiencies with consistent bounds.
+
+    When ``use_split_rte`` is enabled and both charge/discharge efficiencies
+    are supplied, the function preserves their ratio while bounding each term
+    to a reasonable range. Otherwise a symmetric split (√RTE) is used to keep
+    downstream calculations aligned with the single-input UI.
+    """
+
+    def _bound(value: float) -> float:
+        return max(0.05, min(value, 0.9999))
+
+    if cfg.use_split_rte and cfg.charge_efficiency is not None and cfg.discharge_efficiency is not None:
+        eta_ch = _bound(cfg.charge_efficiency)
+        eta_dis = _bound(cfg.discharge_efficiency)
+        eta_rt = _bound(eta_ch * eta_dis)
+        return eta_ch, eta_dis, eta_rt
+
+    eta_rt = _bound(cfg.rte_roundtrip)
+    eta_ch = eta_rt ** 0.5
+    eta_dis = eta_rt ** 0.5
+    return eta_ch, eta_dis, eta_rt
 
 
 @dataclass
@@ -599,6 +626,7 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
 
     final = results[-1]
     first = results[0]
+    eta_ch, eta_dis, eta_rt = resolve_efficiencies(cfg)
     pdf = FPDF(format="A4")
     pdf.add_page()
     margin = 12
@@ -614,7 +642,9 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 6, "Inputs used", ln=1)
     pdf.set_font("Helvetica", "", 9)
-    pdf.cell(0, 5, f"Initial power: {cfg.initial_power_mw:.1f} MW  |  Initial usable: {cfg.initial_usable_mwh:.1f} MWh  |  RTE: {cfg.rte_roundtrip:.2f}", ln=1)
+    pdf.cell(0, 5, f"Initial power: {cfg.initial_power_mw:.1f} MW  |  Initial usable: {cfg.initial_usable_mwh:.1f} MWh  |  RTE: {eta_rt:.2f}", ln=1)
+    if cfg.use_split_rte:
+        pdf.cell(0, 5, f"Charge efficiency: {eta_ch:.2f}  |  Discharge efficiency: {eta_dis:.2f}", ln=1)
     pdf.cell(0, 5, f"PV availability: {cfg.pv_availability:.2f}  |  BESS availability: {cfg.bess_availability:.2f}  |  SoC window: {cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}", ln=1)
     pdf.cell(0, 5, f"PV deg: {cfg.pv_deg_rate:.3f}/yr  |  Calendar fade: {cfg.calendar_fade_rate:.3f}/yr  |  Augmentation: {cfg.augmentation}", ln=1)
     if cfg.augmentation_schedule:
@@ -713,7 +743,8 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         ["Initial power (MW)", f"{cfg.initial_power_mw:,.1f}"],
         ["Augmentation", cfg.augmentation],
         ["SoC window", f"{cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}"],
-        ["Round-trip efficiency", f"{cfg.rte_roundtrip:.2f}"],
+        ["Round-trip efficiency", f"{eta_rt:.2f}"],
+        ["Charge / discharge eff.", f"{eta_ch:.2f} / {eta_dis:.2f}" if cfg.use_split_rte else "Symmetric"],
         ["Calendar fade (/yr)", f"{cfg.calendar_fade_rate:.3f}"],
         ["EOY usable (Y1 -> final)", f"{first.eoy_usable_mwh:,.1f} -> {final.eoy_usable_mwh:,.1f}"],
         ["EOY power (Y1 -> final)", f"{first.eoy_power_mw:,.2f} -> {final.eoy_power_mw:,.2f}"],
@@ -775,8 +806,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     pow_cap_mw = state.current_power_mw * cfg.bess_availability
 
-    eta_rt = max(0.05, min(cfg.rte_roundtrip, 0.9999))
-    eta_ch = eta_rt ** 0.5; eta_dis = eta_rt ** 0.5
+    eta_ch, eta_dis, _ = resolve_efficiencies(cfg)
 
     ch_windows = parse_windows(cfg.charge_windows_text)
     dis_windows = cfg.discharge_windows
@@ -1407,8 +1437,35 @@ def run_app():
             bess_avail = st.slider("BESS availability", 0.90, 1.00, 0.99, 0.01,
                 help="Uptime factor applied to BESS power capability.")
         with c2:
-            rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
-                help="Single RTE; internally split √RTE for charge/discharge.")
+            use_split_rte = st.checkbox(
+                "Use separate charge/discharge efficiencies",
+                value=False,
+                help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
+            )
+            if use_split_rte:
+                charge_eff = st.slider(
+                    "Charge efficiency (AC-AC)",
+                    0.70,
+                    0.99,
+                    0.94,
+                    0.01,
+                    help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
+                )
+                discharge_eff = st.slider(
+                    "Discharge efficiency (AC-AC)",
+                    0.70,
+                    0.99,
+                    0.94,
+                    0.01,
+                    help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
+                )
+                rte = charge_eff * discharge_eff
+                st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
+            else:
+                rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
+                    help="Single RTE; internally split √RTE for charge/discharge.")
+                charge_eff = None
+                discharge_eff = None
 
     # BESS Specs
     with st.expander("BESS Specs (high-level)", expanded=True):
@@ -1587,6 +1644,9 @@ def run_app():
         pv_availability=float(pv_avail),
         bess_availability=float(bess_avail),
         rte_roundtrip=float(rte),
+        use_split_rte=bool(use_split_rte),
+        charge_efficiency=float(charge_eff) if use_split_rte else None,
+        discharge_efficiency=float(discharge_eff) if use_split_rte else None,
         soc_floor=float(soc_floor),
         soc_ceiling=float(soc_ceiling),
         initial_power_mw=float(init_power),
@@ -2321,8 +2381,8 @@ def run_app():
     EFC_YR_YELLOW = 400.0
 
     # --- Final-year context ---
-    eta_rt_now = max(0.05, min(cfg.rte_roundtrip, 0.9999))  # roundtrip now
-    eta_dis_now = eta_rt_now ** 0.5
+    eta_ch_now, eta_dis_now, eta_rt_now = resolve_efficiencies(cfg)
+    eta_ratio = eta_dis_now / max(1e-9, eta_ch_now)
     delta_soc_now = max(0.0, cfg.soc_ceiling - cfg.soc_floor)
     delta_soc_cap = min(DELTA_SOC_MAX, SOC_CEILING_MAX - SOC_FLOOR_MIN)
     soh_final = float(final.soh_total)
@@ -2371,12 +2431,13 @@ def run_app():
         delta_soc_adopt = min(delta_soc_cap, max(delta_soc_now, req_delta_soc_at_current))
 
         # b) then RTE (bounded)
-        req_eta_dis_at_soc = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)
-        req_rte_rt_at_soc = min(0.9999, max(0.0, req_eta_dis_at_soc ** 2))
+        req_eta_dis_at_soc = min(0.9999, max(0.0, target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)))
+        req_rte_rt_at_soc = min(0.9999, max(0.0, (req_eta_dis_at_soc ** 2) / max(1e-9, eta_ratio)))
         rte_rt_adopt = min(RTE_RT_MAX, max(eta_rt_now, req_rte_rt_at_soc))
+        eta_dis_adopt = min(0.9999, math.sqrt(rte_rt_adopt * eta_ratio))
 
         # c) finally BOL energy to close any remaining gap
-        ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5))
+        ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_adopt)
         ebol_delta = max(0.0, ebol_req - cfg.initial_usable_mwh)
 
         # Helper to render SOC variant text (raise ceiling vs lower floor)
@@ -2389,9 +2450,9 @@ def run_app():
                     f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
 
         # How far each knob alone would push deliverable/day
-        deliverable_soc_only = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * (eta_rt_now ** 0.5)
-        deliverable_soc_rte = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5)
-        deliverable_full = ebol_req * soh_final * delta_soc_adopt * (rte_rt_adopt ** 0.5)
+        deliverable_soc_only = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_now
+        deliverable_soc_rte = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_adopt
+        deliverable_full = ebol_req * soh_final * delta_soc_adopt * eta_dis_adopt
 
         # --- 3) PV charge sufficiency check under the adopted RTE ---
         pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
@@ -2414,7 +2475,7 @@ def run_app():
         if delta_soc_now + 1e-9 < delta_soc_cap:
             need_soc = max(0.0, delta_soc_adopt - delta_soc_now) * 100.0
             # re-compute Ebol needed if we keep RTE at current (ΔSOC only)
-            ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * (eta_rt_now ** 0.5))
+            ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_now)
             short_if_only_soc = max(0.0, ebol_req_soc_only - cfg.initial_usable_mwh)
             if short_if_only_soc <= 1e-6:
                 opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)}")

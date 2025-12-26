@@ -1,10 +1,8 @@
 import numpy as np
 import pandas as pd
-import numpy as np
-import pandas as pd
 import pytest
 
-from app import SimConfig, Window, infer_dod_bucket, simulate_project
+from app import SimConfig, Window, infer_dod_bucket, resolve_efficiencies, simulate_project
 
 
 def test_infer_dod_bucket_scales_with_available_energy():
@@ -36,6 +34,21 @@ def _flat_cycle_table() -> pd.DataFrame:
         "DoD100_Ret(%)": [100, 100],
     }
     return pd.DataFrame(data)
+
+
+def test_resolve_efficiencies_respects_split_inputs() -> None:
+    cfg = SimConfig(
+        use_split_rte=True,
+        charge_efficiency=0.78,
+        discharge_efficiency=0.92,
+        rte_roundtrip=0.85,  # ignored when split inputs are present
+    )
+
+    eta_ch, eta_dis, eta_rt = resolve_efficiencies(cfg)
+
+    assert eta_ch == pytest.approx(0.78)
+    assert eta_dis == pytest.approx(0.92)
+    assert eta_rt == pytest.approx(0.78 * 0.92)
 
 
 def test_equivalent_cycles_use_adjusted_usable_energy_across_years():
