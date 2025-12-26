@@ -677,8 +677,8 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         pdf.set_font("Helvetica", "", 7)
         legends = [
             ("PV resource", (199, 129, 0)),
-            ("PV→Contract", (134, 197, 218)),
-            ("BESS→Contract", (127, 209, 139)),
+            ("PV->Contract", (134, 197, 218)),
+            ("BESS->Contract", (127, 209, 139)),
             ("Contract", (242, 169, 0)),
             ("Charge", (202, 166, 255)),
         ]
@@ -717,7 +717,7 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     pdf.set_font("Helvetica", "", 9)
     gen_lines = [
         f"Total delivered (project): {total_generation_mwh:,.1f} MWh  |  Shortfall: {total_shortfall_mwh:,.1f} MWh",
-        f"PV→Contract: {pv_generation_mwh:,.1f} MWh  |  BESS→Contract: {bess_generation_mwh:,.1f} MWh",
+        f"PV->Contract: {pv_generation_mwh:,.1f} MWh  |  BESS->Contract: {bess_generation_mwh:,.1f} MWh",
         f"PV surplus/curtailment: {pv_excess_mwh:,.1f} MWh  |  BESS losses (charging inefficiency): {bess_losses_mwh:,.1f} MWh",
         f"Charge/Discharge ratio: {_fmt(charge_discharge_ratio)}  |  PV capture ratio: {_fmt(pv_capture_ratio)}",
     ]
@@ -1939,6 +1939,7 @@ def run_app():
     pv_generation_mwh = summary.pv_generation_mwh
     pv_excess_mwh = summary.pv_excess_mwh
     bess_losses_mwh = summary.bess_losses_mwh
+    total_shortfall_mwh = summary.total_shortfall_mwh
     avg_eq_cycles_per_year = summary.avg_eq_cycles_per_year
     cap_ratio_final = summary.cap_ratio_final
     expected_total_mwh = sum(r.expected_firm_mwh for r in results)
