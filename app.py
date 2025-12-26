@@ -500,10 +500,67 @@ def _fmt(val: float, suffix: str = "") -> str:
     return f"{val:,.2f}{suffix}" if abs(val) >= 10 else f"{val:,.3f}{suffix}"
 
 
+def _percent(numerator: float, denominator: float) -> float:
+    return (numerator / denominator * 100.0) if denominator > 0 else float("nan")
+
+
+def _average_profile_from_aggregates(cfg: SimConfig, hod_count: np.ndarray, hod_sum_pv_resource: np.ndarray,
+                                     hod_sum_pv: np.ndarray, hod_sum_bess: np.ndarray, hod_sum_charge: np.ndarray
+                                     ) -> Dict[str, List[float]]:
+    """Return the average daily profile across the full project using hourly aggregates.
+
+    The aggregates include every simulated hour (all years), so the average reflects
+    degradation and augmentation across life. Hour counts guard against divide-by-zero
+    for sparse inputs.
+    """
+    contracted_by_hour = [
+        cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0
+        for h in range(24)
+    ]
+
+    with np.errstate(invalid='ignore', divide='ignore'):
+        avg_pv_resource = np.divide(
+            hod_sum_pv_resource,
+            hod_count,
+            out=np.zeros_like(hod_sum_pv_resource),
+            where=hod_count > 0,
+        )
+        avg_pv_to_contract = np.divide(
+            hod_sum_pv,
+            hod_count,
+            out=np.zeros_like(hod_sum_pv),
+            where=hod_count > 0,
+        )
+        avg_bess_to_contract = np.divide(
+            hod_sum_bess,
+            hod_count,
+            out=np.zeros_like(hod_sum_bess),
+            where=hod_count > 0,
+        )
+        avg_charge = np.divide(
+            hod_sum_charge,
+            hod_count,
+            out=np.zeros_like(hod_sum_charge),
+            where=hod_count > 0,
+        )
+
+    return {
+        "hours": list(range(24)),
+        "contracted": [float(v) for v in contracted_by_hour],
+        "pv_resource": avg_pv_resource.tolist(),
+        "pv_to_contract": avg_pv_to_contract.tolist(),
+        "bess_to_contract": avg_bess_to_contract.tolist(),
+        "charge": avg_charge.tolist(),
+    }
+
+
 def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: float, bess_share: float,
                       charge_discharge_ratio: float, pv_capture_ratio: float,
                       discharge_capacity_factor: float, discharge_windows_text: str,
-                      charge_windows_text: str) -> bytes:
+                      charge_windows_text: str, hod_count: np.ndarray, hod_sum_pv_resource: np.ndarray,
+                      hod_sum_pv: np.ndarray, hod_sum_bess: np.ndarray, hod_sum_charge: np.ndarray,
+                      total_shortfall_mwh: float, pv_excess_mwh: float, total_generation_mwh: float,
+                      bess_generation_mwh: float, pv_generation_mwh: float, bess_losses_mwh: float) -> bytes:
     if not results:
         pdf = FPDF(format="A4")
         pdf.add_page()
@@ -529,6 +586,15 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, f"Project life: {cfg.years} years  |  Contracted: {cfg.contracted_mw:.1f} MW  |  PV-only charging", ln=1)
     pdf.cell(0, 6, f"Discharge windows: {discharge_windows_text}  |  Charge windows: {charge_windows_text or 'Any PV hour'}", ln=1)
+    pdf.ln(3)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 6, "Inputs used", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.cell(0, 5, f"Initial power: {cfg.initial_power_mw:.1f} MW  |  Initial usable: {cfg.initial_usable_mwh:.1f} MWh  |  RTE: {cfg.rte_roundtrip:.2f}", ln=1)
+    pdf.cell(0, 5, f"PV availability: {cfg.pv_availability:.2f}  |  BESS availability: {cfg.bess_availability:.2f}  |  SoC window: {cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}", ln=1)
+    pdf.cell(0, 5, f"PV deg: {cfg.pv_deg_rate:.3f}/yr  |  Calendar fade: {cfg.calendar_fade_rate:.3f}/yr  |  Augmentation: {cfg.augmentation}", ln=1)
+    if cfg.augmentation_schedule:
+        pdf.cell(0, 5, f"Manual augmentation: {describe_schedule(cfg.augmentation_schedule)}", ln=1)
     pdf.ln(2)
 
     card_width = (usable_width - 10) / 3
@@ -537,10 +603,12 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     y0 = pdf.get_y()
     _draw_metric_card(pdf, x0, y0, card_width, card_height, "Delivery compliance", f"{compliance:,.2f}%", "Across full life",
                       (225, 245, 255))
-    _draw_metric_card(pdf, x0 + card_width + 5, y0, card_width, card_height, "BESS share of firm",
-                      f"{bess_share:,.1f}%", "Portion of contract served", (235, 248, 240))
-    _draw_metric_card(pdf, x0 + 2 * (card_width + 5), y0, card_width, card_height, "Charge/Discharge ratio",
-                      _fmt(charge_discharge_ratio), "Energy in vs out", (245, 238, 255))
+    deficit_pct = _percent(total_shortfall_mwh, sum(r.expected_firm_mwh for r in results))
+    surplus_pct = _percent(pv_excess_mwh, sum(r.available_pv_mwh for r in results))
+    _draw_metric_card(pdf, x0 + card_width + 5, y0, card_width, card_height, "Delivery deficit",
+                      f"{deficit_pct:,.2f}%", "Shortfall vs expected", (255, 238, 238))
+    _draw_metric_card(pdf, x0 + 2 * (card_width + 5), y0, card_width, card_height, "PV surplus",
+                      f"{surplus_pct:,.2f}%", "Curtailment share", (255, 245, 235))
 
     y_cards2 = y0 + card_height + 4
     _draw_metric_card(pdf, x0, y_cards2, card_width, card_height, "PV capture ratio",
@@ -571,21 +639,56 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         "Annual firm energy (MWh)",
     )
 
-    soh_series = [r.soh_total for r in results]
+    avg_profile = _average_profile_from_aggregates(cfg, hod_count, hod_sum_pv_resource, hod_sum_pv, hod_sum_bess, hod_sum_charge)
     pdf.set_xy(chart_x_left + chart_width + 5, chart_y)
-    _draw_sparkline(
-        pdf,
-        chart_x_left + chart_width + 5,
-        chart_y,
-        chart_width,
-        chart_height,
-        [
-            ("Total", soh_series, (66, 133, 244)),
-            ("Cycle", [r.soh_cycle for r in results], (142, 68, 173)),
-            ("Cal", [r.soh_calendar for r in results], (255, 193, 7)),
-        ],
-        "State of health (fraction)",
-    )
+    pdf.set_draw_color(230, 232, 235)
+    pdf.rect(chart_x_left + chart_width + 5, chart_y, chart_width, chart_height)
+    pdf.set_font("Helvetica", "", 8)
+    pdf.set_xy(chart_x_left + chart_width + 5, chart_y - 5)
+    pdf.cell(chart_width, 4, "Average daily profile (MW)")
+    hours = avg_profile["hours"]
+    if len(hours) >= 2:
+        max_power = max(
+            max(avg_profile["pv_resource"] or [0]),
+            max(avg_profile["pv_to_contract"] or [0]),
+            max(avg_profile["bess_to_contract"] or [0]),
+            max(-min(avg_profile["charge"] or [0]), 0),
+            max(avg_profile["contracted"] or [0]),
+        )
+        span = max(1e-6, max_power)
+        step_x = chart_width / max(1, len(hours) - 1)
+
+        def _line(values: List[float], color: Tuple[int, int, int]) -> None:
+            points = []
+            for idx, val in enumerate(values):
+                px = chart_x_left + chart_width + 5 + idx * step_x
+                py = chart_y + chart_height - (val / span * chart_height)
+                points.append((px, py))
+            pdf.set_draw_color(*color)
+            for i in range(len(points) - 1):
+                pdf.line(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
+
+        _line(avg_profile["pv_resource"], (199, 129, 0))
+        _line(avg_profile["pv_to_contract"], (134, 197, 218))
+        _line(avg_profile["bess_to_contract"], (127, 209, 139))
+        _line([max(c, 0.0) for c in avg_profile["contracted"]], (242, 169, 0))
+        _line([-c for c in avg_profile["charge"]], (202, 166, 255))
+
+        pdf.set_font("Helvetica", "", 7)
+        legends = [
+            ("PV resource", (199, 129, 0)),
+            ("PV→Contract", (134, 197, 218)),
+            ("BESS→Contract", (127, 209, 139)),
+            ("Contract", (242, 169, 0)),
+            ("Charge", (202, 166, 255)),
+        ]
+        legend_y = chart_y + chart_height + 2
+        for idx, (label, color) in enumerate(legends):
+            pdf.set_draw_color(*color)
+            x_leg = chart_x_left + chart_width + 5 + idx * (chart_width / len(legends))
+            pdf.line(x_leg, legend_y, x_leg + 6, legend_y)
+            pdf.set_xy(x_leg + 7, legend_y - 2)
+            pdf.cell(30, 4, label)
 
     pdf.set_y(chart_y + chart_height + 8)
     pdf.set_font("Helvetica", "B", 11)
@@ -606,6 +709,19 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
 
     pdf.set_x(margin)
     for line in param_lines:
+        pdf.multi_cell(usable_width, 5, line)
+
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 6, "Generation summary", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    gen_lines = [
+        f"Total delivered (project): {total_generation_mwh:,.1f} MWh  |  Shortfall: {total_shortfall_mwh:,.1f} MWh",
+        f"PV→Contract: {pv_generation_mwh:,.1f} MWh  |  BESS→Contract: {bess_generation_mwh:,.1f} MWh",
+        f"PV surplus/curtailment: {pv_excess_mwh:,.1f} MWh  |  BESS losses (charging inefficiency): {bess_losses_mwh:,.1f} MWh",
+        f"Charge/Discharge ratio: {_fmt(charge_discharge_ratio)}  |  PV capture ratio: {_fmt(pv_capture_ratio)}",
+    ]
+    for line in gen_lines:
         pdf.multi_cell(usable_width, 5, line)
 
     pdf.ln(2)
@@ -2566,7 +2682,10 @@ def run_app():
     try:
         pdf_bytes = build_pdf_summary(cfg, results, compliance, bess_share_of_firm, charge_discharge_ratio,
                                       pv_capture_ratio, discharge_capacity_factor,
-                                      discharge_windows_text, charge_windows_text)
+                                      discharge_windows_text, charge_windows_text,
+                                      hod_count, hod_sum_pv_resource, hod_sum_pv, hod_sum_bess, hod_sum_charge,
+                                      total_shortfall_mwh, pv_excess_mwh, total_project_generation_mwh,
+                                      bess_generation_mwh, pv_generation_mwh, bess_losses_mwh)
     except Exception as exc:  # noqa: BLE001
         st.warning(f"PDF snapshot unavailable: {exc}")
 
