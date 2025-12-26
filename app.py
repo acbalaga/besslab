@@ -554,6 +554,30 @@ def _average_profile_from_aggregates(cfg: SimConfig, hod_count: np.ndarray, hod_
     }
 
 
+def _draw_table(pdf: FPDF, x: float, y: float, col_widths: List[float], rows: List[List[str]],
+                header_fill: Tuple[int, int, int]=(245, 248, 255), row_fill: Tuple[int, int, int]=(255, 255, 255),
+                border: bool=True, header_bold: bool=True, font_size: int=9) -> float:
+    """Render a simple table and return the updated y position (bottom of table)."""
+    pdf.set_xy(x, y)
+    pdf.set_font("Helvetica", "B" if header_bold else "", font_size)
+    pdf.set_fill_color(*header_fill)
+    pdf.set_draw_color(220, 223, 228)
+    pdf.set_text_color(20, 20, 20)
+    # header
+    for idx, cell in enumerate(rows[0]):
+        pdf.cell(col_widths[idx], 6, cell, border=1 if border else 0, ln=0, align="L", fill=True)
+    pdf.ln(6)
+    pdf.set_font("Helvetica", "", font_size)
+    pdf.set_fill_color(*row_fill)
+    # body
+    for row in rows[1:]:
+        pdf.set_x(x)
+        for idx, cell in enumerate(row):
+            pdf.cell(col_widths[idx], 6, cell, border=1 if border else 0, ln=0, align="L", fill=True)
+        pdf.ln(6)
+    return pdf.get_y()
+
+
 def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: float, bess_share: float,
                       charge_discharge_ratio: float, pv_capture_ratio: float,
                       discharge_capacity_factor: float, discharge_windows_text: str,
@@ -624,28 +648,13 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     chart_x_left = margin
     chart_y = pdf.get_y()
 
-    expected = [r.expected_firm_mwh for r in results]
-    delivered = [r.delivered_firm_mwh for r in results]
-    _draw_sparkline(
-        pdf,
-        chart_x_left,
-        chart_y,
-        chart_width,
-        chart_height,
-        [
-            ("Exp", expected, (255, 160, 122)),
-            ("Del", delivered, (76, 175, 80)),
-        ],
-        "Annual firm energy (MWh)",
-    )
-
     avg_profile = _average_profile_from_aggregates(cfg, hod_count, hod_sum_pv_resource, hod_sum_pv, hod_sum_bess, hod_sum_charge)
-    pdf.set_xy(chart_x_left + chart_width + 5, chart_y)
+    pdf.set_xy(chart_x_left, chart_y)
     pdf.set_draw_color(230, 232, 235)
-    pdf.rect(chart_x_left + chart_width + 5, chart_y, chart_width, chart_height)
-    pdf.set_font("Helvetica", "", 8)
-    pdf.set_xy(chart_x_left + chart_width + 5, chart_y - 5)
-    pdf.cell(chart_width, 4, "Average daily profile (MW)")
+    pdf.rect(chart_x_left, chart_y, usable_width, chart_height)
+    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_xy(chart_x_left + 2, chart_y - 5)
+    pdf.cell(usable_width, 4, "Average daily profile (MW) - project-wide")
     hours = avg_profile["hours"]
     if len(hours) >= 2:
         max_power = max(
@@ -655,24 +664,28 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
             max(-min(avg_profile["charge"] or [0]), 0),
             max(avg_profile["contracted"] or [0]),
         )
-        span = max(1e-6, max_power)
-        step_x = chart_width / max(1, len(hours) - 1)
-
-        def _line(values: List[float], color: Tuple[int, int, int]) -> None:
+        span = max(1e-6, max_power * 1.1)
+        step_x = usable_width / max(1, len(hours) - 1)
+        # axis lines
+        zero_y = chart_y + chart_height - (0.0 / span * chart_height)
+        pdf.set_draw_color(200, 200, 200)
+        pdf.line(chart_x_left, zero_y, chart_x_left + usable_width, zero_y)
+        # helper to plot series with optional fill to zero
+        def _polyline(values: List[float], color: Tuple[int, int, int], invert: bool=False) -> None:
             points = []
             for idx, val in enumerate(values):
-                px = chart_x_left + chart_width + 5 + idx * step_x
-                py = chart_y + chart_height - (val / span * chart_height)
+                px = chart_x_left + idx * step_x
+                adj_val = -val if invert else val
+                py = chart_y + chart_height - (adj_val / span * chart_height)
                 points.append((px, py))
             pdf.set_draw_color(*color)
             for i in range(len(points) - 1):
                 pdf.line(points[i][0], points[i][1], points[i + 1][0], points[i + 1][1])
-
-        _line(avg_profile["pv_resource"], (199, 129, 0))
-        _line(avg_profile["pv_to_contract"], (134, 197, 218))
-        _line(avg_profile["bess_to_contract"], (127, 209, 139))
-        _line([max(c, 0.0) for c in avg_profile["contracted"]], (242, 169, 0))
-        _line([-c for c in avg_profile["charge"]], (202, 166, 255))
+        _polyline(avg_profile["pv_resource"], (199, 129, 0))
+        _polyline(avg_profile["pv_to_contract"], (134, 197, 218))
+        _polyline(avg_profile["bess_to_contract"], (127, 209, 139))
+        _polyline([max(c, 0.0) for c in avg_profile["contracted"]], (242, 169, 0))
+        _polyline(avg_profile["charge"], (202, 166, 255), invert=True)
 
         pdf.set_font("Helvetica", "", 7)
         legends = [
@@ -685,7 +698,7 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
         legend_y = chart_y + chart_height + 2
         for idx, (label, color) in enumerate(legends):
             pdf.set_draw_color(*color)
-            x_leg = chart_x_left + chart_width + 5 + idx * (chart_width / len(legends))
+            x_leg = chart_x_left + idx * (usable_width / len(legends))
             pdf.line(x_leg, legend_y, x_leg + 6, legend_y)
             pdf.set_xy(x_leg + 7, legend_y - 2)
             pdf.cell(30, 4, label)
@@ -694,22 +707,41 @@ def build_pdf_summary(cfg: SimConfig, results: List[YearResult], compliance: flo
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(0, 6, "Design + final year snapshot", ln=1)
     pdf.set_font("Helvetica", "", 9)
-    param_lines = [
-        f"Initial usable: {cfg.initial_usable_mwh:.1f} MWh | Initial power: {cfg.initial_power_mw:.1f} MW",
-        f"Augmentation: {cfg.augmentation} | SoC window: {cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}",
-        f"Round-trip efficiency: {cfg.rte_roundtrip:.2f} | Calendar fade: {cfg.calendar_fade_rate:.3f}/yr",
-        f"EOY usable: {final.eoy_usable_mwh:,.1f} MWh (Year 1: {first.eoy_usable_mwh:,.1f})",
-        f"EOY power: {final.eoy_power_mw:,.2f} MW (Year 1: {first.eoy_power_mw:,.2f})",
-        f"PV->Contract: {final.pv_to_contract_mwh:,.1f} MWh/yr | BESS->Contract: {final.bess_to_contract_mwh:,.1f} MWh/yr",
-        f"Eq cycles this year: {final.eq_cycles:,.1f} | Cum cycles: {final.cum_cycles:,.1f}",
+    design_rows = [
+        ["Metric", "Value"],
+        ["Initial usable (MWh)", f"{cfg.initial_usable_mwh:,.1f}"],
+        ["Initial power (MW)", f"{cfg.initial_power_mw:,.1f}"],
+        ["Augmentation", cfg.augmentation],
+        ["SoC window", f"{cfg.soc_floor:.2f}-{cfg.soc_ceiling:.2f}"],
+        ["Round-trip efficiency", f"{cfg.rte_roundtrip:.2f}"],
+        ["Calendar fade (/yr)", f"{cfg.calendar_fade_rate:.3f}"],
+        ["EOY usable (Y1 -> final)", f"{first.eoy_usable_mwh:,.1f} -> {final.eoy_usable_mwh:,.1f}"],
+        ["EOY power (Y1 -> final)", f"{first.eoy_power_mw:,.2f} -> {final.eoy_power_mw:,.2f}"],
+        ["PV->Contract (final yr)", f"{final.pv_to_contract_mwh:,.1f}"],
+        ["BESS->Contract (final yr)", f"{final.bess_to_contract_mwh:,.1f}"],
+        ["Eq cycles (yr / cum)", f"{final.eq_cycles:,.1f} / {final.cum_cycles:,.1f}"],
     ]
-
     if cfg.augmentation_schedule:
-        param_lines.insert(2, f"Manual augmentation schedule: {describe_schedule(cfg.augmentation_schedule)}")
+        design_rows.insert(4, ["Manual augmentation", describe_schedule(cfg.augmentation_schedule)])
+    table_widths = [usable_width * 0.45, usable_width * 0.55]
+    table_bottom = _draw_table(pdf, margin, pdf.get_y(), table_widths, design_rows)
 
-    pdf.set_x(margin)
-    for line in param_lines:
-        pdf.multi_cell(usable_width, 5, line)
+    pdf.ln(2)
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(0, 6, "Generation summary", ln=1)
+    pdf.set_font("Helvetica", "", 9)
+    gen_rows = [
+        ["Metric", "Value"],
+        ["Total delivered (project)", f"{total_generation_mwh:,.1f} MWh"],
+        ["Total shortfall", f"{total_shortfall_mwh:,.1f} MWh"],
+        ["PV->Contract (project)", f"{pv_generation_mwh:,.1f} MWh"],
+        ["BESS->Contract (project)", f"{bess_generation_mwh:,.1f} MWh"],
+        ["PV surplus/curtailment", f"{pv_excess_mwh:,.1f} MWh"],
+        ["BESS losses (charging ineff.)", f"{bess_losses_mwh:,.1f} MWh"],
+        ["Charge/Discharge ratio", _fmt(charge_discharge_ratio)],
+        ["PV capture ratio", _fmt(pv_capture_ratio)],
+    ]
+    _draw_table(pdf, margin, pdf.get_y(), table_widths, gen_rows)
 
     pdf.ln(1)
     pdf.set_font("Helvetica", "B", 10)
