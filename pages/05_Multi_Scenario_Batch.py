@@ -14,7 +14,7 @@ from app import (
     simulate_project,
     summarize_simulation,
 )
-from utils import enforce_rate_limit
+from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import (
     EconomicInputs,
     PriceInputs,
@@ -29,20 +29,6 @@ st.caption(
     "Queue multiple simulation variants at once. Per-scenario logs are disabled to conserve memory; "
     "rerun the main page for detailed charts."
 )
-
-
-def _parse_numeric_series(raw_text: str, label: str) -> list[float]:
-    """Parse a comma or newline-delimited series of floats for form inputs."""
-
-    tokens = [t.strip() for t in raw_text.replace(",", "\n").splitlines() if t.strip()]
-    series: list[float] = []
-    for token in tokens:
-        try:
-            series.append(float(token))
-        except ValueError as exc:  # noqa: BLE001
-            st.error(f"{label} contains a non-numeric entry: '{token}'")
-            raise
-    return series
 
 
 def _format_hhmm(hour_value: float) -> str:
@@ -359,7 +345,7 @@ with st.expander("Economics (optional)", expanded=False):
             if custom_variable_text.strip():
                 try:
                     variable_opex_schedule_usd = tuple(
-                        _parse_numeric_series(custom_variable_text, "Variable expense schedule")
+                        parse_numeric_series("Variable expense schedule", custom_variable_text)
                     )
                 except ValueError:
                     st.stop()
