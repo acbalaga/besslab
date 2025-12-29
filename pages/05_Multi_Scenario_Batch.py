@@ -85,6 +85,48 @@ def _seed_rows(cfg: SimConfig) -> pd.DataFrame:
     return pd.DataFrame([defaults])
 
 
+def _baseline_template(cfg: SimConfig) -> Dict[str, Any]:
+    """Create a baseline row that mirrors the cached configuration."""
+
+    row = _seed_rows(cfg).iloc[0].to_dict()
+    row["label"] = "Baseline"
+    return row
+
+
+def _high_availability_template(cfg: SimConfig) -> Dict[str, Any]:
+    """Create a row favoring availability and wider windows."""
+
+    row = _seed_rows(cfg).iloc[0].to_dict()
+    row.update(
+        {
+            "label": "High availability",
+            "bess_availability": max(0.0, min(1.0, cfg.bess_availability + 0.02)),
+            "discharge_windows": _windows_to_text(cfg.discharge_windows)
+            or "00:00-23:59",
+            "charge_windows": cfg.charge_windows_text or "00:00-23:59",
+        }
+    )
+    return row
+
+
+def _aggressive_augmentation_template(cfg: SimConfig) -> Dict[str, Any]:
+    """Create a row that tests frequent augmentation."""
+
+    row = _seed_rows(cfg).iloc[0].to_dict()
+    row.update(
+        {
+            "label": "Aggressive augmentation",
+            "augmentation": "Threshold",
+            "aug_trigger_type": "Capability",
+            "aug_threshold_margin": 0.05,
+            "aug_topup_margin": 0.1,
+            "aug_add_mode": "Percent",
+            "aug_periodic_every_years": max(1, int(cfg.years / 5)),
+        }
+    )
+    return row
+
+
 def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimConfig]:
     """Apply row overrides to a SimConfig copy, validating fields along the way."""
 
@@ -93,16 +135,12 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
 
     dis_windows_text = str(row.get("discharge_windows") or "").strip()
     dis_windows = parse_windows(dis_windows_text)
-    if not dis_windows:
-        raise ValueError("Provide at least one discharge window (HH:MM-HH:MM).")
 
     charge_windows_text = str(row.get("charge_windows") or template.charge_windows_text or "").strip()
 
     years = int(row.get("years") or template.years)
     soc_floor = float(row.get("soc_floor") or template.soc_floor)
     soc_ceiling = float(row.get("soc_ceiling") or template.soc_ceiling)
-    if soc_floor >= soc_ceiling:
-        raise ValueError("SOC floor must be lower than the SOC ceiling.")
 
     config.years = max(1, years)
     config.initial_power_mw = float(row.get("initial_power_mw") or template.initial_power_mw)
@@ -141,6 +179,68 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     config.aug_retire_soh_pct = float(row.get("aug_retire_soh_pct") or template.aug_retire_soh_pct)
 
     return label, config
+
+
+def _validate_row(row: pd.Series, idx: int) -> List[str]:
+    """Validate a scenario row and return any error messages."""
+
+    errors: List[str] = []
+    dis_windows_text = str(row.get("discharge_windows") or "").strip()
+    try:
+        dis_windows = parse_windows(dis_windows_text)
+        if not dis_windows:
+            errors.append("Missing discharge windows (HH:MM-HH:MM).")
+    except ValueError:
+        errors.append("Discharge windows are invalid. Use HH:MM-HH:MM ranges.")
+
+    years_value = row.get("years")
+    try:
+        years_int = int(years_value)
+        if years_int <= 0:
+            errors.append("Years must be positive.")
+    except (TypeError, ValueError):
+        errors.append("Years must be a positive integer.")
+
+    try:
+        soc_floor = float(row.get("soc_floor"))
+        soc_ceiling = float(row.get("soc_ceiling"))
+        if soc_floor >= soc_ceiling:
+            errors.append("SOC floor must be lower than SOC ceiling.")
+    except (TypeError, ValueError):
+        errors.append("SOC floor/ceiling must be numeric.")
+
+    return [f"Row {idx + 1}: {msg}" for msg in errors]
+
+
+def _render_summary_table(df: pd.DataFrame) -> None:
+    """Render a compact summary of key scenario inputs."""
+
+    if df is None or df.empty:
+        st.info("No scenarios defined yet. Add rows to see a summary.", icon="ℹ️")
+        return
+
+    summary_df = df[
+        [
+            "label",
+            "initial_power_mw",
+            "initial_usable_mwh",
+            "contracted_mw",
+            "years",
+            "discharge_windows",
+            "augmentation",
+        ]
+    ].rename(
+        columns={
+            "label": "Label",
+            "initial_power_mw": "Power (MW)",
+            "initial_usable_mwh": "Usable (MWh)",
+            "contracted_mw": "Contracted (MW)",
+            "years": "Years",
+            "discharge_windows": "Discharge windows",
+            "augmentation": "Augmentation",
+        }
+    )
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 
 pv_df, cycle_df = get_shared_data(BASE_DIR)
@@ -373,140 +473,215 @@ st.session_state["latest_economics_payload"] = {
     "price_inputs": price_inputs,
 }
 
+st.markdown("### Scenario inputs")
+st.caption(
+    "Use the table below to tweak scenarios. Columns are grouped by **System sizing**, **Operations windows**, "
+    "**Augmentation**, and **Economics** knobs."
+)
+
+template_cols = st.columns(3)
+templates = {
+    "Baseline": _baseline_template,
+    "High availability": _high_availability_template,
+    "Aggressive augmentation": _aggressive_augmentation_template,
+}
+for col, (label, builder) in zip(template_cols, templates.items()):
+    with col:
+        if st.button(f"Add {label}", use_container_width=True):
+            table_data = st.session_state.get("multi_scenario_table_data")
+            if table_data is None or table_data.empty:
+                table_data = _seed_rows(cached_cfg)
+            new_row = pd.DataFrame([builder(cached_cfg)])
+            st.session_state["multi_scenario_table_data"] = pd.concat(
+                [table_data, new_row], ignore_index=True
+            )
+
+if "multi_scenario_table_data" not in st.session_state:
+    st.session_state["multi_scenario_table_data"] = _seed_rows(cached_cfg)
+
 table_placeholder = st.empty()
-default_rows = _seed_rows(cached_cfg)
+WINDOW_PLACEHOLDER = "06:00-10:00, 18:00-22:00"
+column_config = {
+    "label": st.column_config.TextColumn("Label", help="Identifier for this scenario."),
+    "initial_power_mw": st.column_config.NumberColumn(
+        "Power (MW)",
+        min_value=0.1,
+        max_value=500.0,
+        step=0.1,
+        help="System sizing: initial discharge rating.",
+    ),
+    "initial_usable_mwh": st.column_config.NumberColumn(
+        "Usable energy (MWh)",
+        min_value=1.0,
+        max_value=1_000.0,
+        step=1.0,
+        help="System sizing: initial usable energy.",
+    ),
+    "contracted_mw": st.column_config.NumberColumn(
+        "Contracted MW", min_value=0.1, max_value=500.0, step=0.1, help="System sizing: firm delivery target."
+    ),
+    "years": st.column_config.NumberColumn(
+        "Years", min_value=1, max_value=40, step=1, help="Project horizon in years."
+    ),
+    "pv_degradation_rate": st.column_config.NumberColumn(
+        "PV degradation (frac/yr)", min_value=0.0, max_value=0.2, step=0.001, help="Economics/System inputs."
+    ),
+    "bess_availability": st.column_config.NumberColumn(
+        "BESS availability", min_value=0.5, max_value=1.0, step=0.01, help="Operations: availability assumption."
+    ),
+    "rte": st.column_config.NumberColumn(
+        "Round-trip η", min_value=0.5, max_value=0.99, step=0.01, help="Operations: round-trip efficiency (0–1)."
+    ),
+    "soc_floor": st.column_config.NumberColumn(
+        "SOC floor", min_value=0.0, max_value=0.95, step=0.01, help="Operations: minimum SOC as a fraction."
+    ),
+    "soc_ceiling": st.column_config.NumberColumn(
+        "SOC ceiling", min_value=0.05, max_value=1.0, step=0.01, help="Operations: maximum SOC as a fraction."
+    ),
+    "calendar_fade_rate": st.column_config.NumberColumn(
+        "Calendar fade (frac/yr)",
+        min_value=0.0,
+        max_value=0.1,
+        step=0.001,
+        help="Operations: annual calendar fade rate applied to usable energy.",
+    ),
+    "use_calendar_exp_model": st.column_config.CheckboxColumn(
+        "Use exponential fade", help="Operations: use exponential decay for calendar fade instead of linear."
+    ),
+    "discharge_windows": st.column_config.TextColumn(
+        "Discharge windows",
+        help=f"Operations windows: comma-separated HH:MM-HH:MM ranges (e.g., {WINDOW_PLACEHOLDER}).",
+        default=WINDOW_PLACEHOLDER,
+    ),
+    "charge_windows": st.column_config.TextColumn(
+        "Charge windows (optional)",
+        help=f"Operations windows: leave blank to allow any PV hour; uses HH:MM-HH:MM (e.g., {WINDOW_PLACEHOLDER}).",
+        default=WINDOW_PLACEHOLDER,
+    ),
+    "augmentation": st.column_config.SelectboxColumn(
+        "Augmentation mode",
+        options=["None", "Threshold", "Periodic"],
+        help="Augmentation: strategy applied across years.",
+    ),
+    "aug_trigger_type": st.column_config.SelectboxColumn(
+        "Trigger type",
+        options=["Capability", "SOH"],
+        help="Augmentation: used when mode is Threshold.",
+    ),
+    "aug_threshold_margin": st.column_config.NumberColumn(
+        "Capability margin (frac)",
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        help="Augmentation: allowed margin below contracted energy before triggering.",
+    ),
+    "aug_topup_margin": st.column_config.NumberColumn(
+        "Top-up margin (frac)",
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        help="Augmentation: energy added when augmenting under capability mode.",
+    ),
+    "aug_soh_trigger_pct": st.column_config.NumberColumn(
+        "SOH trigger (%)",
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        help="Augmentation: SOH threshold when trigger type is SOH (fraction).",
+    ),
+    "aug_soh_add_frac_initial": st.column_config.NumberColumn(
+        "SOH add frac of BOL",
+        min_value=0.0,
+        max_value=2.0,
+        step=0.01,
+        help="Augmentation: fraction of initial BOL energy added under SOH trigger.",
+    ),
+    "aug_periodic_every_years": st.column_config.NumberColumn(
+        "Periodic interval (yrs)",
+        min_value=1,
+        max_value=40,
+        step=1,
+        help="Augmentation: augment every N years when mode is Periodic.",
+    ),
+    "aug_periodic_add_frac_of_bol": st.column_config.NumberColumn(
+        "Periodic add (frac of BOL)",
+        min_value=0.0,
+        max_value=2.0,
+        step=0.01,
+        help="Augmentation: energy added each period as a fraction of initial BOL energy.",
+    ),
+    "aug_add_mode": st.column_config.SelectboxColumn(
+        "Aug add mode",
+        options=["Percent", "Fixed"],
+        help="Augmentation: percent of BOL vs fixed MWh when augmenting.",
+    ),
+    "aug_fixed_energy_mwh": st.column_config.NumberColumn(
+        "Fixed aug size (MWh)",
+        min_value=0.0,
+        max_value=2_000.0,
+        step=1.0,
+        help="Augmentation: used when Aug add mode is Fixed.",
+    ),
+    "aug_retire_old_cohort": st.column_config.CheckboxColumn(
+        "Retire old cohort",
+        help="Augmentation: retire the oldest cohort instead of layering capacity.",
+    ),
+    "aug_retire_soh_pct": st.column_config.NumberColumn(
+        "Retire below SOH",
+        min_value=0.0,
+        max_value=1.0,
+        step=0.01,
+        help="Augmentation: retire cohorts whose SOH falls below this fraction.",
+    ),
+}
+column_order = [
+    "label",
+    # System sizing
+    "initial_power_mw",
+    "initial_usable_mwh",
+    "contracted_mw",
+    "years",
+    "pv_degradation_rate",
+    # Operations windows + operations levers
+    "discharge_windows",
+    "charge_windows",
+    "bess_availability",
+    "rte",
+    "soc_floor",
+    "soc_ceiling",
+    "calendar_fade_rate",
+    "use_calendar_exp_model",
+    # Augmentation
+    "augmentation",
+    "aug_trigger_type",
+    "aug_threshold_margin",
+    "aug_topup_margin",
+    "aug_soh_trigger_pct",
+    "aug_soh_add_frac_initial",
+    "aug_periodic_every_years",
+    "aug_periodic_add_frac_of_bol",
+    "aug_add_mode",
+    "aug_fixed_energy_mwh",
+    "aug_retire_old_cohort",
+    "aug_retire_soh_pct",
+]
+
+st.caption(f"Time window format examples: {WINDOW_PLACEHOLDER} or 09:00-15:00.")
+
 edited_df = table_placeholder.data_editor(
-    default_rows,
+    st.session_state["multi_scenario_table_data"],
     use_container_width=True,
     num_rows="dynamic",
     hide_index=True,
-    column_config={
-        "label": st.column_config.TextColumn("Label", help="Identifier for this scenario."),
-        "initial_power_mw": st.column_config.NumberColumn(
-            "Power (MW)", min_value=0.1, max_value=500.0, step=0.1, help="Initial discharge rating."
-        ),
-        "initial_usable_mwh": st.column_config.NumberColumn(
-            "Usable energy (MWh)", min_value=1.0, max_value=1_000.0, step=1.0
-        ),
-        "contracted_mw": st.column_config.NumberColumn(
-            "Contracted MW", min_value=0.1, max_value=500.0, step=0.1, help="Firm delivery target."
-        ),
-        "years": st.column_config.NumberColumn(
-            "Years", min_value=1, max_value=40, step=1, help="Project horizon in years."
-        ),
-        "pv_degradation_rate": st.column_config.NumberColumn(
-            "PV degradation (frac/yr)", min_value=0.0, max_value=0.2, step=0.001
-        ),
-        "bess_availability": st.column_config.NumberColumn(
-            "BESS availability", min_value=0.5, max_value=1.0, step=0.01
-        ),
-        "rte": st.column_config.NumberColumn(
-            "Round-trip η", min_value=0.5, max_value=0.99, step=0.01, help="Round-trip efficiency (0–1)."
-        ),
-        "soc_floor": st.column_config.NumberColumn(
-            "SOC floor", min_value=0.0, max_value=0.95, step=0.01, help="Minimum SOC as a fraction."
-        ),
-        "soc_ceiling": st.column_config.NumberColumn(
-            "SOC ceiling", min_value=0.05, max_value=1.0, step=0.01, help="Maximum SOC as a fraction."
-        ),
-        "calendar_fade_rate": st.column_config.NumberColumn(
-            "Calendar fade (frac/yr)",
-            min_value=0.0,
-            max_value=0.1,
-            step=0.001,
-            help="Annual calendar fade rate applied to usable energy.",
-        ),
-        "use_calendar_exp_model": st.column_config.CheckboxColumn(
-            "Use exponential fade", help="Use exponential decay for calendar fade instead of linear."
-        ),
-        "discharge_windows": st.column_config.TextColumn(
-            "Discharge windows",
-            help="Comma-separated HH:MM-HH:MM ranges (e.g., 10:00-14:00, 18:00-22:00).",
-        ),
-        "charge_windows": st.column_config.TextColumn(
-            "Charge windows (optional)",
-            help="Leave blank to allow any PV hour; uses the same HH:MM-HH:MM format.",
-        ),
-        "augmentation": st.column_config.SelectboxColumn(
-            "Augmentation mode",
-            options=["None", "Threshold", "Periodic"],
-            help="Choose the augmentation strategy applied across years.",
-        ),
-        "aug_trigger_type": st.column_config.SelectboxColumn(
-            "Trigger type",
-            options=["Capability", "SOH"],
-            help="Used when augmentation mode is Threshold.",
-        ),
-        "aug_threshold_margin": st.column_config.NumberColumn(
-            "Capability margin (frac)",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.01,
-            help="Allowed margin below contracted energy before triggering augmentation (capability mode).",
-        ),
-        "aug_topup_margin": st.column_config.NumberColumn(
-            "Top-up margin (frac)",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.01,
-            help="Energy added when augmenting under capability mode.",
-        ),
-        "aug_soh_trigger_pct": st.column_config.NumberColumn(
-            "SOH trigger (%)",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.01,
-            help="SOH threshold for augmentation when trigger type is SOH (fraction).",
-        ),
-        "aug_soh_add_frac_initial": st.column_config.NumberColumn(
-            "SOH add frac of BOL",
-            min_value=0.0,
-            max_value=2.0,
-            step=0.01,
-            help="Fraction of initial BOL energy to add when augmenting under SOH trigger.",
-        ),
-        "aug_periodic_every_years": st.column_config.NumberColumn(
-            "Periodic interval (yrs)",
-            min_value=1,
-            max_value=40,
-            step=1,
-            help="Augment every N years when mode is Periodic.",
-        ),
-        "aug_periodic_add_frac_of_bol": st.column_config.NumberColumn(
-            "Periodic add (frac of BOL)",
-            min_value=0.0,
-            max_value=2.0,
-            step=0.01,
-            help="Energy added each period as a fraction of initial BOL energy.",
-        ),
-        "aug_add_mode": st.column_config.SelectboxColumn(
-            "Aug add mode",
-            options=["Percent", "Fixed"],
-            help="Percent of BOL vs fixed MWh when augmenting.",
-        ),
-        "aug_fixed_energy_mwh": st.column_config.NumberColumn(
-            "Fixed aug size (MWh)",
-            min_value=0.0,
-            max_value=2_000.0,
-            step=1.0,
-            help="Used when Aug add mode is Fixed.",
-        ),
-        "aug_retire_old_cohort": st.column_config.CheckboxColumn(
-            "Retire old cohort",
-            help="When augmenting, retire the oldest cohort instead of layering capacity.",
-        ),
-        "aug_retire_soh_pct": st.column_config.NumberColumn(
-            "Retire below SOH",
-            min_value=0.0,
-            max_value=1.0,
-            step=0.01,
-            help="Retire cohorts whose SOH falls below this fraction.",
-        ),
-    },
+    column_config=column_config,
+    column_order=column_order,
     key="multi_scenario_table",
 )
+st.session_state["multi_scenario_table_data"] = edited_df
 
 st.caption("Tip: Add rows for each design tweak. Remove rows to pare down the batch run.")
+st.markdown("#### Scenario summary")
+_render_summary_table(edited_df)
 
 run_container = st.container()
 results_container = st.container()
@@ -523,34 +698,46 @@ def _run_batch() -> pd.DataFrame | None:
         return None
 
     econ_payload = st.session_state.get("latest_economics_payload")
-    scenarios: List[Tuple[str, SimConfig]] = []
-    errors: List[str] = []
+    validation_errors: List[str] = []
     for idx, row in edited_df.reset_index(drop=True).iterrows():
-        try:
-            scenarios.append(_parse_row_to_config(row, cached_cfg))
-        except ValueError as exc:  # noqa: BLE001
-            errors.append(f"Row {idx + 1}: {exc}")
+        validation_errors.extend(_validate_row(row, idx))
 
-    if errors:
-        st.error("Please fix the highlighted rows before running.")
-        for msg in errors:
+    if validation_errors:
+        st.error("Please fix the issues below before running.")
+        for msg in validation_errors:
             st.caption(f"• {msg}")
         return None
 
     enforce_rate_limit()
+    total_scenarios = len(edited_df)
     progress = st.progress(0.0, text="Starting batch...")
+    status_placeholder = st.empty()
+    status_rows: List[Dict[str, str]] = []
+    for _, row in edited_df.iterrows():
+        status_rows.append({"Label": str(row.get("label") or "Scenario"), "Status": "⏳ Pending"})
+    status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
     results: List[Dict[str, Any]] = []
 
-    for idx, (label, cfg) in enumerate(scenarios, start=1):
-        progress.progress((idx - 1) / len(scenarios), text=f"Running {label}...")
+    for idx, (_, row_series) in enumerate(edited_df.reset_index(drop=True).iterrows(), start=1):
+        label = str(row_series.get("label") or f"Scenario {idx}")
+        try:
+            _, cfg = _parse_row_to_config(row_series, cached_cfg)
+        except ValueError as exc:  # noqa: BLE001
+            status_rows[idx - 1]["Status"] = f"❌ {exc}"
+            status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
+            continue
+
+        status_rows[idx - 1]["Status"] = "🚀 Running"
+        status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
+        progress.progress((idx - 1) / total_scenarios, text=f"Running {label}...")
         try:
             sim_output = simulate_project(
                 cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override=dod_override, need_logs=False
             )
         except ValueError as exc:  # noqa: BLE001
-            progress.empty()
-            st.error(f"{label}: {exc}")
-            return None
+            status_rows[idx - 1]["Status"] = f"❌ {exc}"
+            status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
+            continue
 
         summary = summarize_simulation(sim_output)
         final_year = sim_output.results[-1]
@@ -594,10 +781,15 @@ def _run_batch() -> pd.DataFrame | None:
                 **economics_fields,
             },
         )
-        progress.progress(idx / len(scenarios), text=f"Finished {label} ({idx}/{len(scenarios)})")
+        status_rows[idx - 1]["Status"] = "✅ Complete"
+        status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
+        progress.progress(idx / total_scenarios, text=f"Finished {label} ({idx}/{total_scenarios})")
 
     progress.progress(1.0, text="Batch complete.")
     st.balloons()
+    if not results:
+        st.warning("No runs finished successfully. Please review the errors above.", icon="⚠️")
+        return None
     return pd.DataFrame(results)
 
 
@@ -635,6 +827,7 @@ with results_container:
         st.dataframe(formatted, use_container_width=True, hide_index=True)
 
         csv_bytes = batch_results.to_csv(index=False).encode("utf-8")
+        json_bytes = batch_results.to_json(orient="records", indent=2).encode("utf-8")
         st.download_button(
             "Download results as CSV",
             data=csv_bytes,
@@ -642,6 +835,31 @@ with results_container:
             mime="text/csv",
             use_container_width=True,
         )
+        st.download_button(
+            "Download results as JSON",
+            data=json_bytes,
+            file_name="multi_scenario_batch_results.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+        inputs_df = st.session_state.get("multi_scenario_table_data", pd.DataFrame())
+        if not inputs_df.empty:
+            inputs_csv = inputs_df.to_csv(index=False).encode("utf-8")
+            inputs_json = inputs_df.to_json(orient="records", indent=2).encode("utf-8")
+            st.download_button(
+                "Download input table (CSV)",
+                data=inputs_csv,
+                file_name="multi_scenario_inputs.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            st.download_button(
+                "Download input table (JSON)",
+                data=inputs_json,
+                file_name="multi_scenario_inputs.json",
+                mime="application/json",
+                use_container_width=True,
+            )
         if st.session_state.get("latest_economics_payload"):
             st.caption("Economic columns populate when economics inputs are cached from the main page.")
         else:
