@@ -20,14 +20,17 @@ from utils.economics import (
     PriceInputs,
     compute_lcoe_lcos_with_augmentation_fallback,
 )
+from utils.ui_layout import init_page_layout
 from utils.ui_state import get_shared_data
 
-st.set_page_config(page_title="Multi-scenario batch", layout="wide")
-
-st.title("Multi-scenario batch runner")
-st.caption(
-    "Queue multiple simulation variants at once. Per-scenario logs are disabled to conserve memory; "
-    "rerun the main page for detailed charts."
+render_layout = init_page_layout(
+    page_title="Multi-scenario batch",
+    main_title="Multi-scenario batch runner",
+    description=(
+        "Queue multiple simulation variants at once. Per-scenario logs are disabled to conserve memory; "
+        "rerun the main page for detailed charts."
+    ),
+    base_dir=BASE_DIR,
 )
 
 
@@ -147,11 +150,7 @@ forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
-st.page_link("app.py", label="Back to Inputs & Results", help="Tune inputs before batching scenarios.")
-st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons table")
-st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
-st.page_link("pages/00_Home.py", label="Home (Guide)")
-st.markdown("---")
+pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
 econ_defaults = st.session_state.get("latest_economics_payload", {})
 econ_inputs_default: Optional[EconomicInputs] = econ_defaults.get("economic_inputs")

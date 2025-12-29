@@ -1,13 +1,17 @@
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Scenario Comparison", layout="wide")
+from utils.ui_layout import init_page_layout
 
-st.title("Scenario comparisons")
-st.caption(
-    "Save the latest simulation snapshot, then adjust inputs on the main page to build a table of"
-    " configurations and KPIs."
+render_layout = init_page_layout(
+    page_title="Scenario Comparison",
+    main_title="Scenario comparisons",
+    description=(
+        "Save the latest simulation snapshot, then adjust inputs on the main page to build a table "
+        "of configurations and KPIs."
+    ),
 )
+render_layout()
 
 if "scenario_comparisons" not in st.session_state:
     st.session_state["scenario_comparisons"] = []
@@ -37,16 +41,7 @@ with cols[0]:
         st.success("Scenario saved. Adjust inputs on the main page and add another to compare.")
 
 with cols[1]:
-    st.page_link(
-        "app.py",
-        label="Back to Inputs & Results",
-        help="Adjust inputs and rerun the simulation to refresh the snapshot.",
-    )
-    st.page_link(
-        "pages/04_BESS_Sizing_Sweep.py",
-        label="Go to BESS sizing sweep",
-        help="Explore power × duration grids using the current inputs.",
-    )
+    st.info("Refresh the snapshot from Inputs & Results before capturing another scenario.", icon="ℹ️")
 
 st.markdown("---")
 
@@ -87,9 +82,3 @@ else:
         "No saved scenarios yet. Run the main simulation, then click 'Add current scenario to table'.",
         icon="ℹ️",
     )
-
-st.markdown("---")
-st.subheader("Navigate across the workspace")
-st.page_link("pages/00_Home.py", label="Home (Guide)")
-st.page_link("app.py", label="Simulation (Inputs & Results)")
-st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
