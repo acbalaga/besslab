@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from app import BASE_DIR, SimConfig
-from utils import enforce_rate_limit
+from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_state import get_shared_data
@@ -15,20 +15,6 @@ st.set_page_config(page_title="BESS Sizing Sweep", layout="wide")
 
 st.title("BESS sizing sweep (energy sensitivity)")
 st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
-
-
-def _parse_numeric_series(raw_text: str, label: str) -> list[float]:
-    """Parse a comma or newline-delimited series of floats for form inputs."""
-
-    tokens = [t.strip() for t in raw_text.replace(",", "\n").splitlines() if t.strip()]
-    series: list[float] = []
-    for token in tokens:
-        try:
-            series.append(float(token))
-        except ValueError as exc:  # noqa: BLE001
-            st.error(f"{label} contains a non-numeric entry: '{token}'")
-            raise
-    return series
 
 
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
@@ -303,7 +289,7 @@ with st.form("size_sweep_form_page"):
             if custom_variable_text.strip():
                 try:
                     variable_opex_schedule_usd = tuple(
-                        _parse_numeric_series(custom_variable_text, "Variable expense schedule")
+                        parse_numeric_series("Variable expense schedule", custom_variable_text)
                     )
                 except ValueError:
                     st.stop()

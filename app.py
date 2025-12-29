@@ -18,6 +18,7 @@ from utils import (
     build_flag_insights,
     enforce_rate_limit,
     get_rate_limit_password,
+    parse_numeric_series,
     read_cycle_model,
     read_pv_profile,
 )
@@ -97,20 +98,6 @@ def parse_windows(text: str) -> List[Window]:
         except Exception:
             st.warning(f"Could not parse window '{part}'. Use 'HH:MM-HH:MM'. Skipped.")
     return wins
-
-
-def _parse_numeric_series(raw_text: str, label: str) -> List[float]:
-    """Parse a comma or newline-delimited series of floats."""
-
-    tokens = [t.strip() for t in raw_text.replace(",", "\n").splitlines() if t.strip()]
-    series: List[float] = []
-    for token in tokens:
-        try:
-            series.append(float(token))
-        except ValueError as exc:  # noqa: BLE001
-            st.error(f"{label} contains a non-numeric entry: '{token}'")
-            raise
-    return series
 
 
 def infer_step_hours_from_pv(pv_df: pd.DataFrame, timestamp_col: str = "timestamp") -> Optional[float]:
@@ -1900,7 +1887,7 @@ def run_app():
                 if custom_variable_text.strip():
                     try:
                         variable_opex_schedule_usd = tuple(
-                            _parse_numeric_series(custom_variable_text, "Variable expense schedule")
+                            parse_numeric_series("Variable expense schedule", custom_variable_text)
                         )
                     except ValueError:
                         st.stop()
