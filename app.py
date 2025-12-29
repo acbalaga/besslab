@@ -1986,7 +1986,9 @@ def run_app():
     with run_cols[1]:
         st.caption("Edit parameters freely, then run when ready.")
 
-    if not run_clicked:
+    cached_results = st.session_state.get("latest_simulation_results")
+
+    if not run_clicked and cached_results is None:
         st.info("Click 'Run simulation' to generate results after updating inputs.")
         st.caption("Use the batch tools or downloads to compare multiple runs.")
         st.page_link(
@@ -2001,13 +2003,24 @@ def run_app():
         )
         st.stop()
 
-    enforce_rate_limit()
+    if run_clicked or cached_results is None:
+        enforce_rate_limit()
 
-    try:
-        sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
-    except ValueError as exc:  # noqa: BLE001
-        st.error(str(exc))
-        st.stop()
+        try:
+            sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+        except ValueError as exc:  # noqa: BLE001
+            st.error(str(exc))
+            st.stop()
+
+        st.session_state["latest_simulation_results"] = {
+            "sim_output": sim_output,
+            "dod_override": dod_override,
+        }
+    else:
+        sim_output = cached_results["sim_output"]
+        st.caption(
+            "Showing the latest completed simulation. Click 'Run simulation' to refresh after editing inputs."
+        )
 
     results = sim_output.results
     monthly_results_all = sim_output.monthly_results
