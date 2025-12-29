@@ -1,16 +1,13 @@
 import streamlit as st
 
-from app import BASE_DIR
-from utils.ui_state import get_shared_data
+from utils.ui_layout import init_page_layout
 
-st.set_page_config(page_title="Home", layout="wide")
-
-st.title("BESSLab guide and tips")
-
-pv_df, cycle_df = get_shared_data(BASE_DIR)
-st.caption(
-    f"Session data ready: PV profile with {len(pv_df):,} rows and cycle model with {len(cycle_df)} rows."
+render_layout = init_page_layout(
+    page_title="Home",
+    main_title="BESSLab guide and tips",
+    description="Overview of the multipage workflow plus quick navigation links.",
 )
+render_layout()
 
 st.markdown(
     """
@@ -45,11 +42,3 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 - Disable the session rate limit by entering the password in the sidebar (default: `besslab`).
     """
 )
-
-st.page_link("app.py", label="Jump to Inputs & Results")
-
-st.markdown("---")
-st.subheader("Navigate across the workspace")
-st.page_link("app.py", label="Simulation (Inputs & Results)")
-st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
-st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")

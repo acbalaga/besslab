@@ -32,6 +32,7 @@ from utils.economics import (
     compute_lcoe_lcos_with_augmentation_fallback,
     estimate_augmentation_costs_by_year,
 )
+from utils.ui_layout import init_page_layout
 from utils.ui_state import get_base_dir, load_shared_data
 
 
@@ -1344,8 +1345,12 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
 
 
 def run_app():
-    st.set_page_config(page_title="Simulation", layout="wide")
-    st.title("BESS LAB — PV-only charging, AC-coupled")
+    render_layout = init_page_layout(
+        page_title="Simulation",
+        main_title="BESS LAB — PV-only charging, AC-coupled",
+        description="Configure inputs, run the simulation, and review per-year results and sensitivities.",
+        base_dir=BASE_DIR,
+    )
     with st.sidebar:
         st.header("Data Sources")
         st.caption(
@@ -1389,18 +1394,7 @@ def run_app():
         elif st.session_state.get("rate_limit_bypass", False):
             st.caption("Rate limit disabled for this session.")
 
-        st.divider()
-        st.subheader("More analysis")
-        st.page_link(
-            "pages/03_Scenario_Comparisons.py",
-            label="Scenario comparisons",
-            help="Save and review scenarios built from the latest simulation snapshot.",
-        )
-        st.page_link(
-            "pages/04_BESS_Sizing_Sweep.py",
-            label="BESS sizing sweep",
-            help="Run a power × duration grid using the current inputs.",
-        )
+    pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
     st.subheader("Inputs")
 
@@ -2788,11 +2782,14 @@ def run_app():
 def render_landing() -> None:
     """Landing page that routes to the multipage workflow and seeds shared data."""
 
-    st.set_page_config(page_title="BESSLab", layout="wide")
-    st.title("BESSLab multipage workspace")
-    st.caption(
-        "Upload once, then navigate to configure inputs and review results without "
-        "losing your session data."
+    render_layout = init_page_layout(
+        page_title="BESSLab",
+        main_title="BESSLab multipage workspace",
+        description=(
+            "Upload once, then navigate to configure inputs and review results without "
+            "losing your session data."
+        ),
+        base_dir=BASE_DIR,
     )
 
     pv_file = st.file_uploader(
@@ -2803,17 +2800,12 @@ def render_landing() -> None:
     )
     pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
 
+    render_layout(pv_df, cycle_df)
+
     st.info(
         f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
     )
     st.caption("Uploads are cached in the session and reused across pages.")
-
-    st.markdown("---")
-    st.subheader("Next steps")
-    st.page_link("pages/00_Home.py", label="Open guide and tips")
-    st.page_link("app.py", label="Configure inputs and view results")
-    st.page_link("pages/03_Scenario_Comparisons.py", label="Compare scenarios")
-    st.page_link("pages/04_BESS_Sizing_Sweep.py", label="BESS sizing sweep")
 
 
 if __name__ == "__main__":

@@ -9,12 +9,15 @@ from app import BASE_DIR, SimConfig
 from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
+from utils.ui_layout import init_page_layout
 from utils.ui_state import get_shared_data
 
-st.set_page_config(page_title="BESS Sizing Sweep", layout="wide")
-
-st.title("BESS sizing sweep (energy sensitivity)")
-st.caption("Sweep over usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.")
+render_layout = init_page_layout(
+    page_title="BESS Sizing Sweep",
+    main_title="BESS sizing sweep (energy sensitivity)",
+    description="Sweep usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.",
+    base_dir=BASE_DIR,
+)
 
 
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
@@ -65,16 +68,14 @@ forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
+pv_df, cycle_df = render_layout(pv_df, cycle_df)
+
 if cfg is None:
     st.warning(
         "No inputs cached yet. Open the Inputs & Results page, adjust settings, and rerun the simulation to seed the sweep.",
         icon="⚠️",
     )
     cfg = SimConfig()
-
-st.page_link("app.py", label="Back to Inputs & Results", help="Update inputs before rerunning the sweep.")
-
-st.markdown("---")
 
 st.session_state.setdefault("bess_size_sweep_results", None)
 
@@ -475,9 +476,3 @@ else:
         "Run the sweep with your latest inputs. Results persist in the session for quick iteration.",
         icon="ℹ️",
     )
-
-st.markdown("---")
-st.subheader("Navigate across the workspace")
-st.page_link("pages/00_Home.py", label="Home (Guide)")
-st.page_link("app.py", label="Simulation (Inputs & Results)")
-st.page_link("pages/03_Scenario_Comparisons.py", label="Scenario comparisons")
