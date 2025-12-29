@@ -430,7 +430,7 @@ if sweep_df is not None:
         y=alt.Y(
             npv_field,
             title=npv_axis_title,
-            axis=alt.Axis(titleColor="#0b2c66", format=",.0f"),
+            axis=alt.Axis(titleColor="#0b2c66", format=",.0f", orient="left"),
         ),
         tooltip=point_tooltip,
     )
@@ -449,7 +449,11 @@ if sweep_df is not None:
         tooltip=point_tooltip,
     )
 
-    zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(y="y")
+    zero_line = (
+        alt.Chart(pd.DataFrame({"y": [0]}))
+        .mark_rule(color="#bbbbbb", strokeDash=[4, 4])
+        .encode(y=alt.Y("y:Q", axis=None))
+    )
 
     best_point = (
         base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
