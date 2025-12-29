@@ -20,7 +20,7 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 - Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours.
 
 ### Run the workflow
-1) Upload your PV CSV (and optional cycle model) on the Inputs & Results page, or use the bundled samples.
+1) Upload your PV CSV (and optional cycle model) on the Landing page (or directly on Inputs & Results), or use the bundled samples.
 2) Set contracted MW, duration (hours), discharge windows, and any charge windows.
 3) Adjust efficiency, SOC limits, availability, augmentation triggers, rate-limit settings, and (optionally) enable the economics helper for LCOE/LCOS, NPV, and IRR.
 4) Run the simulation and review compliance, energy splits, end-of-year capability, daily profiles, and flag guidance.
