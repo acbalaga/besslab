@@ -464,6 +464,95 @@ def test_sweep_uses_price_inputs_for_cashflow_npv() -> None:
     assert df.loc[0, "irr_pct"] < -98.0
 
 
+def test_sweep_streams_rows_via_callback() -> None:
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+    base_cfg = SimConfig(years=1, soc_floor=0.2, soc_ceiling=0.85, rte_roundtrip=0.9)
+    received: list[pd.DataFrame] = []
+
+    def _simulate(cfg: SimConfig, pv_df, cycle_df, dod_override, need_logs=False):
+        year = YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=cfg.initial_usable_mwh,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=cfg.initial_usable_mwh,
+            avg_rte=cfg.rte_roundtrip,
+            eq_cycles=10.0,
+            cum_cycles=10.0,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=0.9,
+            eoy_usable_mwh=cfg.initial_usable_mwh,
+            eoy_power_mw=cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        )
+        return SimulationOutput(
+            cfg=cfg,
+            discharge_hours_per_day=4.0,
+            results=[year],
+            monthly_results=[],
+            first_year_logs=None,
+            final_year_logs=None,
+            hod_count=np.zeros(24),
+            hod_sum_pv=np.zeros(24),
+            hod_sum_pv_resource=np.zeros(24),
+            hod_sum_bess=np.zeros(24),
+            hod_sum_charge=np.zeros(24),
+            augmentation_energy_added_mwh=[0.0],
+            augmentation_retired_energy_mwh=[0.0],
+            augmentation_events=0,
+        )
+
+    def _summarize(sim_output: SimulationOutput) -> SimulationSummary:
+        return SimulationSummary(
+            compliance=95.0,
+            bess_share_of_firm=0.5,
+            charge_discharge_ratio=1.0,
+            pv_capture_ratio=1.0,
+            discharge_capacity_factor=1.0,
+            total_project_generation_mwh=sim_output.cfg.initial_power_mw * sim_output.cfg.initial_usable_mwh,
+            bess_generation_mwh=sim_output.cfg.initial_usable_mwh,
+            pv_generation_mwh=0.0,
+            pv_excess_mwh=0.0,
+            bess_losses_mwh=0.0,
+            total_shortfall_mwh=0.0,
+            avg_eq_cycles_per_year=10.0,
+            cap_ratio_final=1.0,
+        )
+
+    def _capture_progress(df: pd.DataFrame) -> None:
+        received.append(df)
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Custom DoD",
+        power_mw_values=[5.0, 10.0],
+        duration_h_values=[2.0],
+        min_soh=0.5,
+        simulate_fn=_simulate,
+        summarize_fn=_summarize,
+        progress_callback=_capture_progress,
+    )
+
+    assert len(df) == 2
+    assert len(received) == 2
+
+    streamed = pd.concat(received, ignore_index=True)
+    assert set(["soc_floor", "soc_ceiling", "rte_roundtrip", "dod_override"]).issubset(streamed.columns)
+    assert streamed["dod_override"].unique().tolist() == ["Custom DoD"]
+    assert streamed["soc_floor"].iloc[0] == pytest.approx(0.2)
+    assert streamed["rte_roundtrip"].iloc[0] == pytest.approx(0.9)
+
+
 def test_compute_candidate_economics_respects_overrides() -> None:
     base_cfg = SimConfig(years=2, initial_power_mw=5.0, initial_usable_mwh=10.0)
     results = [
