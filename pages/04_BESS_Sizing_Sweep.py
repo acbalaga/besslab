@@ -27,10 +27,12 @@ def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float
     0–1 range and locate the energy point where the curves are closest. A small
     penalty is applied to negative NPVs to avoid recommending designs with weak
     economics even if their normalized values cross. Returns ``(energy_mwh,
-    npv_usd, irr_pct)`` when a convergence point can be inferred.
+    npv_usd, irr_pct)`` when a convergence point can be inferred. Prefers cash-
+    flow NPV when available and falls back to discounted-cost NPV otherwise.
     """
 
-    columns = ["energy_mwh", "npv_costs_usd", "irr_pct"]
+    npv_column = "npv_usd" if "npv_usd" in df.columns else "npv_costs_usd"
+    columns = ["energy_mwh", npv_column, "irr_pct"]
     if not set(columns).issubset(df.columns):
         return None
 
@@ -38,20 +40,20 @@ def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float
     if clean_df.empty:
         return None
 
-    npv_min, npv_max = clean_df["npv_costs_usd"].min(), clean_df["npv_costs_usd"].max()
+    npv_min, npv_max = clean_df[npv_column].min(), clean_df[npv_column].max()
     irr_min, irr_max = clean_df["irr_pct"].min(), clean_df["irr_pct"].max()
     if npv_max == npv_min or irr_max == irr_min:
         return None
 
     normalized = clean_df.assign(
-        npv_norm=lambda x: (x["npv_costs_usd"] - npv_min) / (npv_max - npv_min),
+        npv_norm=lambda x: (x[npv_column] - npv_min) / (npv_max - npv_min),
         irr_norm=lambda x: (x["irr_pct"] - irr_min) / (irr_max - irr_min),
     )
 
     penalty_scale = max(abs(npv_min), abs(npv_max), 1.0)
     normalized["intersection_score"] = (
         (normalized["npv_norm"] - normalized["irr_norm"]).abs()
-        + (normalized["npv_costs_usd"].clip(upper=0.0).abs() / penalty_scale) * 0.1
+        + (normalized[npv_column].clip(upper=0.0).abs() / penalty_scale) * 0.1
     )
 
     best_row = normalized.nsmallest(1, "intersection_score")
@@ -59,7 +61,7 @@ def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float
         return None
 
     chosen = best_row.iloc[0]
-    return float(chosen["energy_mwh"]), float(chosen["npv_costs_usd"]), float(chosen["irr_pct"])
+    return float(chosen["energy_mwh"]), float(chosen[npv_column]), float(chosen["irr_pct"])
 
 pv_df, cycle_df = get_shared_data(BASE_DIR)
 cfg: Optional[SimConfig] = st.session_state.get("latest_sim_config")
@@ -158,6 +160,7 @@ with st.form("size_sweep_form_page"):
                 "bess_generation_mwh",
                 "lcoe_usd_per_mwh",
                 "npv_costs_usd",
+                "npv_usd",
             ],
             format_func=lambda x: {
                 "compliance_pct": "Compliance % (higher is better)",
@@ -166,6 +169,7 @@ with st.form("size_sweep_form_page"):
                 "bess_generation_mwh": "BESS discharge (higher is better)",
                 "lcoe_usd_per_mwh": "LCOE ($/MWh, lower is better)",
                 "npv_costs_usd": "NPV of costs (USD, lower is better)",
+                "npv_usd": "Net NPV (USD, higher is better)",
             }.get(x, x),
             help="Column used to pick the top feasible design.",
         )
@@ -389,46 +393,27 @@ if sweep_df is not None:
     convergence_point = recommend_convergence_point(sweep_df)
     if convergence_point:
         energy_mwh, npv_usd, irr_pct = convergence_point
+        npv_label = (
+            "net NPV" if "npv_usd" in sweep_df.columns and sweep_df["npv_usd"].notna().any() else "NPV of costs"
+        )
         st.info(
             "Convergence point (NPV vs IRR): "
-            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and NPV ${npv_usd:,.0f}. "
+            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and {npv_label} ${npv_usd:,.0f}. "
             "Curves are normalized to locate where returns and discounted costs align, "
             "favoring options that avoid very negative NPVs when CAPEX scales linearly "
             "with BESS size and resource availability limits upside energy."
         )
 
-    convergence_point = recommend_convergence_point(sweep_df)
-    if convergence_point:
-        energy_mwh, npv_usd, irr_pct = convergence_point
-        st.info(
-            "Convergence point (NPV vs IRR): "
-            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and NPV ${npv_usd:,.0f}. "
-            "Curves are normalized to locate where returns and discounted costs align, "
-            "favoring options that avoid very negative NPVs when CAPEX scales linearly "
-            "with BESS size and resource availability limits upside energy."
-        )
-
-    st.dataframe(
-        sweep_df[
-            [
-                "power_mw",
-                "duration_h",
-                "energy_mwh",
-                "compliance_pct",
-                "total_shortfall_mwh",
-                "avg_eq_cycles_per_year",
-                "min_soh_total",
-                "lcoe_usd_per_mwh",
-                "npv_costs_usd",
-                "feasible",
-                "is_best",
-            ]
-        ],
-        use_container_width=True,
+    npv_field = (
+        "npv_usd"
+        if "npv_usd" in sweep_df.columns and sweep_df["npv_usd"].notna().any()
+        else "npv_costs_usd"
     )
+    npv_axis_title = "Net NPV (USD)" if npv_field == "npv_usd" else "NPV of costs (USD)"
 
-    chart_df = sweep_df[["energy_mwh", "npv_costs_usd"]].copy()
+    chart_df = sweep_df[["energy_mwh", npv_field]].copy()
     chart_df["irr_pct"] = sweep_df.get("irr_pct", float("nan"))
+    chart_df["is_best"] = sweep_df.get("is_best", False)
     chart_df = chart_df.sort_values("energy_mwh")
 
     base_chart = alt.Chart(chart_df).encode(
@@ -437,15 +422,15 @@ if sweep_df is not None:
 
     point_tooltip = [
         alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
-        alt.Tooltip("npv_costs_usd", title="NPV (USD)", format=",.0f"),
+        alt.Tooltip(npv_field, title=npv_axis_title, format=",.0f"),
         alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
     ]
 
     npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
         y=alt.Y(
-            "npv_costs_usd",
-            title="NPV (USD)",
-            axis=alt.Axis(titleColor="#0b2c66", format=",.0f"),
+            npv_field,
+            title=npv_axis_title,
+            axis=alt.Axis(titleColor="#0b2c66", format=",.0f", orient="left"),
         ),
         tooltip=point_tooltip,
     )
@@ -464,12 +449,39 @@ if sweep_df is not None:
         tooltip=point_tooltip,
     )
 
+    zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(
+        y=alt.Y("y:Q", axis=None)
+    )
+
+    best_point = (
+        base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
+        .mark_circle(color="#f57c00", size=120)
+        .encode(y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
+    )
+
+    convergence_overlay = None
+    if convergence_point:
+        convergence_df = pd.DataFrame(
+            {"energy_mwh": [convergence_point[0]], npv_field: [convergence_point[1]], "irr_pct": [convergence_point[2]]}
+        )
+        convergence_overlay = alt.Chart(convergence_df).mark_point(
+            color="#b3006e",
+            size=140,
+            shape="diamond",
+            filled=True,
+        ).encode(x="energy_mwh", y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
+
+    layers = [zero_line, npv_line, irr_line, best_point]
+    if convergence_overlay is not None:
+        layers.append(convergence_overlay)
+
     st.altair_chart(
-        alt.layer(npv_line, irr_line).resolve_scale(y="independent"),
+        alt.layer(*layers).resolve_scale(y="independent"),
         use_container_width=True,
     )
     st.caption(
-        "Dual-axis line chart overlays NPV (USD) and IRR (%) across BESS capacities; IRR points are omitted when unavailable."
+        "Dual-axis line chart overlays NPV and IRR across BESS capacities; IRR points are omitted when unavailable. "
+        "Net NPV is displayed when cash-flow assumptions are provided, otherwise discounted costs are shown."
     )
 else:
     st.info(
