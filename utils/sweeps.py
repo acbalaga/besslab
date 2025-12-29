@@ -674,6 +674,21 @@ def _chunked(
     ]
 
 
+def _emit_progress_rows(
+    new_rows: Sequence[dict[str, float | bool | str]],
+    progress_callback: Callable[[pd.DataFrame], None] | None,
+) -> None:
+    """Send incremental sweep rows to a callback while keeping failures non-blocking."""
+
+    if progress_callback is None or not new_rows:
+        return
+
+    try:
+        progress_callback(pd.DataFrame(list(new_rows)))
+    except Exception:
+        logging.getLogger(__name__).exception("Progress callback failed; continuing sweep.")
+
+
 def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str, bool, str, bool]:
     """Map a use case/KPI to a column and sort order with a fallback.
 
@@ -802,6 +817,10 @@ def _evaluate_candidate_row(
             "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
             "max_eq_cycles_per_year": max_eq_cycles,
             "min_soh_total": min_soh_total,
+            "soc_floor": sim_output.cfg.soc_floor,
+            "soc_ceiling": sim_output.cfg.soc_ceiling,
+            "rte_roundtrip": sim_output.cfg.rte_roundtrip,
+            "dod_override": dod_override,
             "cycle_limit_hit": cycle_limit_hit,
             "soh_below_min": soh_below_min,
             "feasible": feasible,
@@ -884,6 +903,7 @@ def sweep_bess_sizes(
     batch_size: int | None = None,
     concurrency: str | None = None,
     max_workers: int | None = None,
+    progress_callback: Callable[[pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame:
     """Run a simple grid search over BESS sizes.
 
@@ -930,6 +950,10 @@ def sweep_bess_sizes(
     max_shortfall_mwh
         Optional annual shortfall ceiling. Candidates exceeding the cap are marked
         as pruned and skip economics for the same reason.
+    progress_callback
+        Optional callable that receives incremental sweep results as a ``DataFrame``.
+        The callback is invoked once per candidate (or batch when using a process/thread
+        executor) to support UI progress indicators or streaming displays.
     """
 
     rows: List[dict[str, float | bool | str]] = []
@@ -970,25 +994,25 @@ def sweep_bess_sizes(
     for batch_candidates in batches:
         if executor_cls is None:
             for power_mw, duration_h, candidate_energy_mwh in batch_candidates:
-                rows.extend(
-                    _evaluate_candidate_row(
-                        base_cfg,
-                        pv_df,
-                        cycle_df,
-                        dod_override,
-                        power_mw,
-                        duration_h,
-                        candidate_energy_mwh,
-                        min_soh,
-                        economics_inputs,
-                        price_scenarios,
-                        base_initial_energy_mwh,
-                        simulate_fn,
-                        summarize_fn,
-                        min_compliance_pct,
-                        max_shortfall_mwh,
-                    )
+                row_group = _evaluate_candidate_row(
+                    base_cfg,
+                    pv_df,
+                    cycle_df,
+                    dod_override,
+                    power_mw,
+                    duration_h,
+                    candidate_energy_mwh,
+                    min_soh,
+                    economics_inputs,
+                    price_scenarios,
+                    base_initial_energy_mwh,
+                    simulate_fn,
+                    summarize_fn,
+                    min_compliance_pct,
+                    max_shortfall_mwh,
                 )
+                rows.extend(row_group)
+                _emit_progress_rows(row_group, progress_callback)
         else:
             evaluate_fn = partial(
                 _evaluate_candidate_tuple,
@@ -1008,6 +1032,7 @@ def sweep_bess_sizes(
             with executor_cls(max_workers=max_workers) as executor:
                 for row_group in executor.map(evaluate_fn, batch_candidates):
                     rows.extend(row_group)
+                    _emit_progress_rows(row_group, progress_callback)
 
     df = pd.DataFrame(rows)
     if df.empty:
