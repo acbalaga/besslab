@@ -13,6 +13,7 @@ import pandas as pd
 from utils.economics import (
     EconomicInputs,
     PriceInputs,
+    _compute_npv,
     compute_cash_flows_and_irr,
     compute_lcoe_lcos_with_augmentation_fallback,
 )
@@ -262,20 +263,21 @@ def _compute_candidate_economics(
     economics_inputs: EconomicInputs,
     price_inputs: PriceInputs | None = None,
     base_initial_energy_mwh: float | None = None,
-) -> tuple[float, float, float]:
-    """Return LCOE, discounted-cost NPV, and an implied IRR for a simulation.
+) -> tuple[float, float, float, float]:
+    """Return LCOE, discounted-cost NPV, implied IRR, and net-project NPV.
 
     The helper mirrors the standalone economics module by computing an implied
     augmentation unit rate from the initial usable energy. Augmentation spend
     is converted to USD and discounted inside the LCOE calculation to keep
     sensitivity runs aligned with the main app. An IRR is then derived from the
-    same cash-flow stream using LCOE as the assumed tariff so the IRR reflects
-    how those costs perform when energy is monetized at its breakeven price.
+    same cash-flow stream: when price assumptions are supplied, IRR and NPV use
+    the revenue-based cash flows; otherwise, they fall back to LCOE-based flows
+    that normalize economics against delivered energy.
     """
 
     results = sim_output.results
     if not results:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan")
 
     base_cfg = sim_output.cfg
     size_scale = 1.0
@@ -324,6 +326,7 @@ def _compute_candidate_economics(
     )
 
     irr_pct = float("nan")
+    npv_usd = -economics_outputs.discounted_costs_usd
     if price_inputs is not None:
         cash_outputs = compute_cash_flows_and_irr(
             [r.delivered_firm_mwh for r in results],
@@ -335,6 +338,7 @@ def _compute_candidate_economics(
             augmentation_costs_usd=augmentation_costs_usd,
         )
         irr_pct = cash_outputs.irr_pct
+        npv_usd = cash_outputs.npv_usd
     else:
         # Use LCOE as an implied tariff to create a revenue stream that balances costs.
         # This keeps the IRR interpretable without requiring a separate price input.
@@ -364,8 +368,14 @@ def _compute_candidate_economics(
                 )
                 cash_flows.append(revenue - annual_fixed_opex_usd - augmentation_cost)
             irr_pct = _solve_irr_pct(cash_flows)
+            npv_usd = _compute_npv(cash_flows, scaled_economics.discount_rate)
 
-    return economics_outputs.lcoe_usd_per_mwh, economics_outputs.discounted_costs_usd, irr_pct
+    return (
+        economics_outputs.lcoe_usd_per_mwh,
+        economics_outputs.discounted_costs_usd,
+        irr_pct,
+        npv_usd,
+    )
 
 
 def _solve_irr_pct(cash_flows: Sequence[float], max_iterations: int = 100) -> float:
@@ -537,8 +547,9 @@ def sweep_bess_sizes(
         lcoe = float("nan")
         discounted_costs = float("nan")
         irr_pct = float("nan")
+        npv_usd = float("nan")
         if economics_inputs is not None:
-            lcoe, discounted_costs, irr_pct = _compute_candidate_economics(
+            lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
                 sim_output,
                 economics_inputs,
                 price_inputs,
@@ -566,6 +577,7 @@ def sweep_bess_sizes(
                 "lcoe_usd_per_mwh": lcoe,
                 "npv_costs_usd": discounted_costs,
                 "irr_pct": irr_pct,
+                "npv_usd": npv_usd,
             }
         )
 
