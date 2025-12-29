@@ -8,7 +8,7 @@ An interactive Streamlit app for exploring **battery energy storage** sizing and
 - Toggle **augmentation strategies** (threshold- or SOH-based) to keep discharge capability on target across the project life.
 - Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows.
 - View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, **typical daily profiles**, and **economics sensitivities**.
-- Save **scenario snapshots** to compare different input sets side by side.
+- Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools; the snapshot-based Scenario comparisons page is deprecated.
 - Download **yearly, monthly, hourly**, and **PDF** summaries for sharing, along with sensitivity tables where applicable.
 - Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module for offline use.
 
@@ -38,13 +38,13 @@ If no files are uploaded, the app uses the sample data in `./data/`.
 3. **Adjust assumptions.** Use sidebar controls for efficiency, state-of-charge limits, availability, and augmentation options. Enable the economics helper to compute LCOE/LCOS, NPV, and IRR alongside the simulation.
 4. **Review results.** Check compliance, flags, end-of-year capability, daily profiles, and energy split between PV and the BESS.
 5. **Run sensitivities.** Generate SOC-window sweeps, economics heatmaps, and the physics-bounded Design Advisor suggestions when the system misses the target.
-6. **Save & export.** Capture scenarios to the comparison table, download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing.
+6. **Save & export.** Download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing; use the batch tools for structured comparisons.
 
 ## App pages and workflows
 - **Inputs & Results (main page):** Run simulations, view KPIs and charts, download CSV/PDF outputs, and trigger SOC/economics sensitivities plus the Design Advisor.
 - **Home (guide):** In-app walkthrough of the multipage workflow with data-format reminders and troubleshooting tips.
-- **Scenario comparisons:** Save the latest run as a snapshot, adjust inputs on the main page, and build a table of labeled scenarios for side-by-side review.
 - **BESS sizing sweep:** Sweep usable energy (holding power fixed) using the latest inputs, rank feasible candidates by compliance, shortfall, generation, LCOE, or cost metrics, and visualize LCOE/IRR trends.
+- **Multi-scenario batch:** Run a structured set of parameter variations and compare the resulting KPIs in one table (preferred for scenario reviews).
 
 ## Run a quick BESS sizing sweep from the CLI
 The grid-search helper can be exercised without Streamlit using the bundled sample data:
