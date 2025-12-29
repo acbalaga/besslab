@@ -8,7 +8,7 @@ An interactive Streamlit app for exploring **battery energy storage** sizing and
 - Toggle **augmentation strategies** (threshold- or SOH-based) to keep discharge capability on target across the project life.
 - Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows.
 - View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, **typical daily profiles**, and **economics sensitivities**.
-- Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools; the snapshot-based Scenario comparisons page is deprecated.
+- Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools.
 - Download **yearly, monthly, hourly**, and **PDF** summaries for sharing, along with sensitivity tables where applicable.
 - Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module for offline use.
 
