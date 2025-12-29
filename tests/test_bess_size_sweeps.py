@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import pandas as pd
+import pytest
 
 from app import SimConfig, SimulationOutput, SimulationSummary, YearResult
 from utils.economics import EconomicInputs, PriceInputs
@@ -9,6 +10,32 @@ from utils.sweeps import (
     compute_static_bess_sweep_economics,
     sweep_bess_sizes,
 )
+
+
+def test_sweep_validates_power_duration_inputs():
+    base_cfg = SimConfig(years=1)
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+
+    with pytest.raises(ValueError):
+        sweep_bess_sizes(
+            base_cfg,
+            pv_df,
+            cycle_df,
+            "Auto (infer)",
+            power_mw_values=[-5.0],
+            duration_h_values=[2.0],
+        )
+
+    with pytest.raises(ValueError):
+        sweep_bess_sizes(
+            base_cfg,
+            pv_df,
+            cycle_df,
+            "Auto (infer)",
+            energy_mwh_values=[50.0],
+            fixed_power_mw=0.0,
+        )
 
 
 def _fake_simulation_factory(
@@ -112,6 +139,37 @@ def test_sweep_flags_feasible_best_candidate():
     assert df.loc[df["energy_mwh"] == 60.0, "cycle_limit_hit"].iloc[0]
     assert df.loc[df["energy_mwh"] == 20.0, "soh_below_min"].iloc[0]
     assert not df.loc[df["energy_mwh"] == 60.0, "is_best"].iloc[0]
+
+
+def test_sweep_includes_margin_outputs():
+    energy_candidates = [20.0, 40.0]
+    cycles_by_energy = {20.0: 365.0, 40.0: 500.0}
+    soh_by_energy = {20.0: 0.62, 40.0: 0.55}
+    compliance_by_energy = {20.0: 90.0, 40.0: 95.0}
+
+    base_cfg = SimConfig(years=1, max_cycles_per_day_cap=1.0)
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        energy_mwh_values=energy_candidates,
+        fixed_power_mw=10.0,
+        min_soh=0.6,
+        simulate_fn=_fake_simulation_factory(cycles_by_energy, soh_by_energy),
+        summarize_fn=_fake_summary_factory(compliance_by_energy, cycles_by_energy),
+    )
+
+    cycles_over_cap = dict(zip(df["energy_mwh"], df["cycles_over_cap"]))
+    soh_margin = dict(zip(df["energy_mwh"], df["soh_margin"]))
+
+    assert cycles_over_cap[20.0] == pytest.approx(0.0)
+    assert cycles_over_cap[40.0] == pytest.approx(135.0)
+    assert soh_margin[20.0] == pytest.approx(0.02)
+    assert soh_margin[40.0] == pytest.approx(-0.05)
 
 
 def test_sweep_computes_economics_when_inputs_provided():

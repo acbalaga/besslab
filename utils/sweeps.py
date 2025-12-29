@@ -426,21 +426,103 @@ def _evaluate_feasibility(
     summary: "SimulationSummary",
     cfg: "SimConfig",
     min_soh: float,
-) -> Tuple[float, float, bool, bool, bool]:
-    """Return simple feasibility markers derived from simulation results."""
+) -> Tuple[float, float, bool, bool, bool, float, float]:
+    """Return simple feasibility markers derived from simulation results.
+
+    The helper also computes numeric margins so downstream consumers can see
+    how far a candidate is from the cycle ceiling or minimum SOH threshold.
+    Positive ``cycles_over_cap`` means the candidate exceeded the annual
+    cycle limit, while negative values indicate remaining headroom. A
+    positive ``soh_margin`` reflects remaining SOH above the minimum.
+    """
 
     max_eq_cycles = max((r.eq_cycles for r in sim_output.results), default=float("nan"))
     min_soh_total = min((r.soh_total for r in sim_output.results), default=float("nan"))
 
     cycles_allowed_per_year = cfg.max_cycles_per_day_cap * 365.0
-    cycle_limit_hit = bool(
-        not np.isnan(max_eq_cycles)
-        and cycles_allowed_per_year > 0
-        and max_eq_cycles > cycles_allowed_per_year
-    )
-    soh_below_min = bool(not np.isnan(min_soh_total) and min_soh_total < min_soh)
+    cycles_over_cap = float("nan")
+    if math.isfinite(max_eq_cycles) and cycles_allowed_per_year > 0:
+        cycles_over_cap = max_eq_cycles - cycles_allowed_per_year
+
+    soh_margin = float("nan")
+    if math.isfinite(min_soh_total):
+        soh_margin = min_soh_total - min_soh
+
+    cycle_limit_hit = bool(math.isfinite(cycles_over_cap) and cycles_over_cap > 0)
+    soh_below_min = bool(math.isfinite(soh_margin) and soh_margin < 0)
     feasible = (not cycle_limit_hit) and (not soh_below_min)
-    return max_eq_cycles, min_soh_total, cycle_limit_hit, soh_below_min, feasible
+    return (
+        max_eq_cycles,
+        min_soh_total,
+        cycle_limit_hit,
+        soh_below_min,
+        feasible,
+        cycles_over_cap,
+        soh_margin,
+    )
+
+
+def _validate_positive_values(values: Iterable[float], label: str) -> list[float]:
+    """Return validated float values, ensuring they are positive and finite."""
+
+    parsed = [float(v) for v in values]
+    if not parsed:
+        raise ValueError(f"{label} must include at least one value.")
+
+    invalid_values = [v for v in parsed if not math.isfinite(v) or v <= 0]
+    if invalid_values:
+        raise ValueError(
+            f"{label} must be positive and finite; received {invalid_values}."
+        )
+
+    return parsed
+
+
+def _prepare_sweep_candidates(
+    base_cfg: "SimConfig",
+    power_mw_values: Iterable[float] | None,
+    duration_h_values: Iterable[float] | None,
+    energy_mwh_values: Iterable[float] | None,
+    fixed_power_mw: float | None,
+) -> list[tuple[float, float, float]]:
+    """Validate sweep inputs and return candidate tuples.
+
+    Each tuple contains ``(power_mw, duration_h, energy_mwh)``. Validation is
+    performed up front so calling code can fail fast with clear messaging
+    before any simulation work begins.
+    """
+
+    if energy_mwh_values is not None:
+        energy_candidates = _validate_positive_values(energy_mwh_values, "energy_mwh_values")
+        resolved_power = float(
+            fixed_power_mw if fixed_power_mw is not None else base_cfg.initial_power_mw
+        )
+        if not math.isfinite(resolved_power) or resolved_power <= 0:
+            raise ValueError(
+                "A positive fixed_power_mw or base_cfg.initial_power_mw is required when sweeping energy_mwh_values."
+            )
+
+        candidates: list[tuple[float, float, float]] = []
+        for energy in energy_candidates:
+            duration = energy / resolved_power
+            if not math.isfinite(duration) or duration <= 0:
+                raise ValueError(
+                    "Derived duration must be positive and finite for all energy_mwh_values."
+                )
+            candidates.append((resolved_power, duration, energy))
+        return candidates
+
+    power_candidates = _validate_positive_values(power_mw_values or [], "power_mw_values")
+    duration_candidates = _validate_positive_values(duration_h_values or [], "duration_h_values")
+
+    candidates = []
+    for power_mw in power_candidates:
+        for duration_h in duration_candidates:
+            energy_mwh = power_mw * duration_h
+            if not math.isfinite(energy_mwh) or energy_mwh <= 0:
+                raise ValueError("Computed energy_mwh must be positive and finite for all power/duration combinations.")
+            candidates.append((power_mw, duration_h, energy_mwh))
+    return candidates
 
 
 def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str, bool]:
@@ -495,36 +577,15 @@ def sweep_bess_sizes(
 
     rows: List[dict[str, float | bool | str]] = []
     base_initial_energy_mwh = float(base_cfg.initial_usable_mwh)
+    candidates = _prepare_sweep_candidates(
+        base_cfg,
+        power_mw_values,
+        duration_h_values,
+        energy_mwh_values,
+        fixed_power_mw,
+    )
 
-    # When an explicit energy sweep is requested, collapse the grid to one power value
-    # and derive the matching duration for each energy point.
-    if energy_mwh_values is not None:
-        power_mw_values = [
-            float(fixed_power_mw)
-            if fixed_power_mw is not None
-            else float(base_cfg.initial_power_mw)
-        ]
-        if power_mw_values[0] <= 0:
-            return pd.DataFrame(rows)
-        duration_h_values = [float(energy / power_mw_values[0]) for energy in energy_mwh_values]
-
-    power_mw_values = list(power_mw_values or [])
-    duration_h_values = list(duration_h_values or [])
-
-    if energy_mwh_values is not None:
-        energy_candidates = list(energy_mwh_values)
-        if not power_mw_values or not duration_h_values:
-            return pd.DataFrame(rows)
-        power_mw_values = [power_mw_values[0] for _ in energy_candidates]
-        duration_h_values = [float(energy / power_mw_values[0]) for energy in energy_candidates]
-    else:
-        energy_candidates = [float(p * d) for p in power_mw_values for d in duration_h_values]
-        power_mw_values = [p for p in power_mw_values for _ in duration_h_values]
-        duration_h_values = duration_h_values * (len(power_mw_values) // len(duration_h_values) if duration_h_values else 0)
-
-    for power_mw, duration_h, candidate_energy_mwh in zip(
-        power_mw_values, duration_h_values, energy_candidates
-    ):
+    for power_mw, duration_h, candidate_energy_mwh in candidates:
         sim_output, summary = run_candidate_simulation(
             base_cfg,
             pv_df,
@@ -542,6 +603,8 @@ def sweep_bess_sizes(
             cycle_limit_hit,
             soh_below_min,
             feasible,
+            cycles_over_cap,
+            soh_margin,
         ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
 
         lcoe = float("nan")
@@ -574,6 +637,8 @@ def sweep_bess_sizes(
                 "cycle_limit_hit": cycle_limit_hit,
                 "soh_below_min": soh_below_min,
                 "feasible": feasible,
+                "cycles_over_cap": cycles_over_cap,
+                "soh_margin": soh_margin,
                 "lcoe_usd_per_mwh": lcoe,
                 "npv_costs_usd": discounted_costs,
                 "irr_pct": irr_pct,
