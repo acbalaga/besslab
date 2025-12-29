@@ -7,7 +7,7 @@ import streamlit as st
 
 from app import BASE_DIR, SimConfig
 from utils import enforce_rate_limit, parse_numeric_series
-from utils.economics import EconomicInputs, PriceInputs
+from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
 from utils.ui_state import get_shared_data
@@ -69,6 +69,8 @@ dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
 forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+default_wesm_php_per_kwh = default_pv_php_per_kwh
+devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd
 
 pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
@@ -149,6 +151,15 @@ with st.form("size_sweep_form_page"):
             step=0.1,
             help="Extra fixed OPEX not tied to CAPEX percentage.",
         )
+        include_devex_year0 = st.checkbox(
+            "Include ₱100M DevEx at year 0",
+            value=False,
+            help=(
+                "Adds a fixed ₱100 million development expenditure upfront (≈"
+                f"${devex_cost_usd / 1_000_000:,.2f}M using PHP {forex_rate_php_per_usd:,.0f}/USD). "
+                "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+            ),
+        )
 
     with size_col3:
         ranking_choice = st.selectbox(
@@ -222,6 +233,28 @@ with st.form("size_sweep_form_page"):
             "Escalate prices with inflation",
             value=False,
         )
+        wesm_pricing_enabled = st.checkbox(
+            "Apply WESM price to shortfalls",
+            value=False,
+            help="Deduct contract shortfalls at the WESM average rate below.",
+        )
+        wesm_price_php_per_kwh = st.number_input(
+            "Average WESM price (PHP/kWh)",
+            min_value=0.0,
+            value=default_wesm_php_per_kwh,
+            step=0.05,
+            help="Applied to shortfall MWh as either a purchase cost or sale credit.",
+            disabled=not wesm_pricing_enabled,
+        )
+        sell_to_wesm = st.checkbox(
+            "Sell PV surplus to WESM",
+            value=False,
+            help=(
+                "When enabled, PV surplus (excess MWh) is credited at the WESM price; otherwise surplus "
+                "is excluded from revenue. Shortfalls always incur a WESM cost while this section is enabled."
+            ),
+            disabled=not wesm_pricing_enabled,
+        )
 
         contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
         pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
@@ -236,6 +269,13 @@ with st.form("size_sweep_form_page"):
         else:
             st.caption(
                 f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+            )
+        wesm_price_usd_per_mwh: Optional[float] = None
+        if wesm_pricing_enabled:
+            wesm_price_usd_per_mwh = wesm_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(
+                "WESM pricing active for shortfalls: "
+                f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
             )
 
     variable_col1, variable_col2 = st.columns(2)
@@ -314,12 +354,17 @@ if submitted:
         variable_opex_schedule_usd=variable_opex_schedule_usd,
         periodic_variable_opex_usd=periodic_variable_opex_usd,
         periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
+        devex_cost_usd=devex_cost_usd,
+        include_devex_year0=include_devex_year0,
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=contract_price,
         pv_market_price_usd_per_mwh=pv_market_price,
         escalate_with_inflation=escalate_prices,
         blended_price_usd_per_mwh=blended_price_usd_per_mwh,
+        wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+        apply_wesm_to_shortfall=wesm_pricing_enabled,
+        sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
     )
 
     with st.spinner("Running BESS energy sweep..."):

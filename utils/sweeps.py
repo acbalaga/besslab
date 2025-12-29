@@ -308,15 +308,6 @@ def compute_static_bess_sweep_economics(
         annual_compliance = max(candidate.compliance_mwh, 0.0)
         annual_surplus = max(candidate.surplus_mwh, 0.0)
         annual_shortfall = max(-candidate.deficit_mwh, 0.0)
-        inflation_rate = float(economics_inputs.inflation_rate)
-        inflation_multipliers = (
-            [(1.0 + inflation_rate) ** idx for idx in range(years)]
-            if price_inputs_for_run.escalate_with_inflation
-            else [1.0 for _ in range(years)]
-        )
-        wesm_penalties = [
-            annual_shortfall * wesm_price_usd_per_mwh * factor for factor in inflation_multipliers
-        ]
 
         cash_outputs = compute_cash_flows_and_irr(
             [annual_compliance for _ in range(years)],
@@ -325,7 +316,6 @@ def compute_static_bess_sweep_economics(
             economics_inputs,
             price_inputs_for_run,
             annual_shortfall_mwh=[annual_shortfall for _ in range(years)],
-            augmentation_costs_usd=wesm_penalties,
         )
         rows.append(
             {

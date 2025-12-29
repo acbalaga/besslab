@@ -1189,6 +1189,9 @@ def test_static_economic_sweep_penalizes_deficits():
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
         pv_market_price_usd_per_mwh=50.0,
+        apply_wesm_to_shortfall=True,
+        wesm_price_usd_per_mwh=90.0,
+        sell_to_wesm=True,
     )
 
     df = compute_static_bess_sweep_economics(
