@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
-from utils.ui_state import get_base_dir, get_shared_data
+from utils.ui_state import DATA_SOURCE_SESSION_KEY, get_base_dir, get_shared_data
 
 NavRenderer = Callable[[Optional[pd.DataFrame], Optional[pd.DataFrame]], Tuple[pd.DataFrame, pd.DataFrame]]
 
@@ -59,6 +59,10 @@ def _render_status_block(
     container.markdown("#### Session status")
     container.caption(f"PV rows loaded: {len(pv_df):,}")
     container.caption(f"Cycle rows loaded: {len(cycle_df):,}")
+    data_source = st.session_state.get(DATA_SOURCE_SESSION_KEY, {})
+    pv_source = data_source.get("pv", "default")
+    cycle_source = data_source.get("cycle", "default")
+    container.caption(f"Data source: PV ({pv_source}), cycle ({cycle_source}).")
     container.caption(f"Rate limit: {rate_limit_state} ({rate_limit_detail})")
 
 
