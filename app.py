@@ -2779,34 +2779,5 @@ def run_app():
     """)
 
 
-def render_landing() -> None:
-    """Landing page that routes to the multipage workflow and seeds shared data."""
-
-    render_layout = init_page_layout(
-        page_title="BESSLab",
-        main_title="BESSLab multipage workspace",
-        description=(
-            "Upload once, then navigate to configure inputs and review results without "
-            "losing your session data."
-        ),
-        base_dir=BASE_DIR,
-    )
-
-    pv_file = st.file_uploader(
-        "PV 8760 CSV (hour_index, pv_mw in MW)", type=["csv"], key="landing_pv_upload"
-    )
-    cycle_file = st.file_uploader(
-        "Cycle model Excel (optional override)", type=["xlsx"], key="landing_cycle_upload"
-    )
-    pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
-
-    render_layout(pv_df, cycle_df)
-
-    st.info(
-        f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
-    )
-    st.caption("Uploads are cached in the session and reused across pages.")
-
-
 if __name__ == "__main__":
     run_app()
