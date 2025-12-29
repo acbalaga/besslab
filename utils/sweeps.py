@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
 
@@ -525,11 +526,12 @@ def _prepare_sweep_candidates(
     return candidates
 
 
-def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str, bool]:
-    """Map a use case/KPI to a column and sort order.
+def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str, bool, str, bool]:
+    """Map a use case/KPI to a column and sort order with a fallback.
 
-    The returned tuple is ``(column_name, ascending)`` so callers can hand it
-    directly to ``DataFrame.sort_values``.
+    The returned tuple is ``(column_name, ascending, fallback_column, fallback_ascending)``
+    so callers can hand it directly to ``DataFrame.sort_values`` while retaining a
+    sensible default if the requested KPI is missing or empty.
     """
 
     defaults = {
@@ -537,15 +539,17 @@ def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str
         "energy": ("total_project_generation_mwh", False),
         "shortfall": ("total_shortfall_mwh", True),
     }
+    fallback_column, fallback_ascending = defaults.get(use_case, ("compliance_pct", False))
 
     if ranking_kpi:
         low_is_better = {
             "total_shortfall_mwh",
             "lcoe_usd_per_mwh",
             "npv_costs_usd",
+            "capex_per_kw_usd",
         }
-        return ranking_kpi, ranking_kpi in low_is_better
-    return defaults.get(use_case, ("compliance_pct", False))
+        return ranking_kpi, ranking_kpi in low_is_better, fallback_column, fallback_ascending
+    return fallback_column, fallback_ascending, fallback_column, fallback_ascending
 
 
 def sweep_bess_sizes(
@@ -611,6 +615,8 @@ def sweep_bess_sizes(
         discounted_costs = float("nan")
         irr_pct = float("nan")
         npv_usd = float("nan")
+        npv_per_mwh_usd = float("nan")
+        capex_per_kw_usd = float("nan")
         if economics_inputs is not None:
             lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
                 sim_output,
@@ -618,6 +624,18 @@ def sweep_bess_sizes(
                 price_inputs,
                 base_initial_energy_mwh=base_initial_energy_mwh,
             )
+            size_scale = (
+                candidate_energy_mwh / base_initial_energy_mwh
+                if base_initial_energy_mwh > 0
+                else 1.0
+            )
+            # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
+            capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
+            if power_mw > 0:
+                capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
+            # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.
+            if math.isfinite(npv_usd) and candidate_energy_mwh > 0:
+                npv_per_mwh_usd = npv_usd / candidate_energy_mwh
 
         rows.append(
             {
@@ -643,6 +661,8 @@ def sweep_bess_sizes(
                 "npv_costs_usd": discounted_costs,
                 "irr_pct": irr_pct,
                 "npv_usd": npv_usd,
+                "npv_per_mwh_usd": npv_per_mwh_usd,
+                "capex_per_kw_usd": capex_per_kw_usd,
             }
         )
 
@@ -650,7 +670,17 @@ def sweep_bess_sizes(
     if df.empty:
         return df
 
-    ranking_column, ascending = _resolve_ranking_column(use_case, ranking_kpi)
+    ranking_column, ascending, fallback_column, fallback_ascending = _resolve_ranking_column(use_case, ranking_kpi)
+    ranking_missing = ranking_column not in df.columns or not df[ranking_column].notna().any()
+    if ranking_missing:
+        if ranking_kpi:
+            logging.getLogger(__name__).warning(
+                "Ranking KPI '%s' is missing or empty; falling back to '%s'.",
+                ranking_column,
+                fallback_column,
+            )
+        ranking_column = fallback_column
+        ascending = fallback_ascending
     if ranking_column not in df.columns:
         df[ranking_column] = np.nan
 
