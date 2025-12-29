@@ -449,19 +449,14 @@ if sweep_df is not None:
         tooltip=point_tooltip,
     )
 
-    zero_line = (
-        alt.Chart(pd.DataFrame({"y": [0]}))
-        .mark_rule(color="#bbbbbb", strokeDash=[4, 4])
-        .encode(y=alt.Y("y:Q", axis=None))
+    zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(
+        y=alt.Y("y:Q", axis=None)
     )
 
     best_point = (
         base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
         .mark_circle(color="#f57c00", size=120)
-        .encode(
-            y=npv_field,
-            tooltip=point_tooltip,
-        )
+        .encode(y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
     )
 
     convergence_overlay = None
@@ -474,11 +469,7 @@ if sweep_df is not None:
             size=140,
             shape="diamond",
             filled=True,
-        ).encode(
-            x="energy_mwh",
-            y=npv_field,
-            tooltip=point_tooltip,
-        )
+        ).encode(x="energy_mwh", y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
 
     layers = [zero_line, npv_line, irr_line, best_point]
     if convergence_overlay is not None:
