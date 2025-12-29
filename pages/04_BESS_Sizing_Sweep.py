@@ -227,7 +227,7 @@ with st.form("size_sweep_form_page"):
             value=default_contract_php_per_kwh,
             step=0.05,
             help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
-            disabled=not use_blended_price,
+            disabled=False,
         )
         escalate_prices = st.checkbox(
             "Escalate prices with inflation",
@@ -244,7 +244,7 @@ with st.form("size_sweep_form_page"):
             value=default_wesm_php_per_kwh,
             step=0.05,
             help="Applied to shortfall MWh as either a purchase cost or sale credit.",
-            disabled=not wesm_pricing_enabled,
+            disabled=False,
         )
         sell_to_wesm = st.checkbox(
             "Sell PV surplus to WESM",
@@ -277,6 +277,8 @@ with st.form("size_sweep_form_page"):
                 "WESM pricing active for shortfalls: "
                 f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
             )
+        else:
+            st.caption("WESM price is ignored unless the shortfall toggle is enabled.")
 
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
