@@ -9,6 +9,7 @@ from app import SimConfig, SimulationOutput, SimulationSummary, YearResult
 from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import (
     BessEconomicCandidate,
+    _compute_candidate_economics,
     compute_static_bess_sweep_economics,
     sweep_bess_sizes,
 )
@@ -463,6 +464,102 @@ def test_sweep_uses_price_inputs_for_cashflow_npv() -> None:
     assert df.loc[0, "irr_pct"] < -98.0
 
 
+def test_compute_candidate_economics_respects_overrides() -> None:
+    base_cfg = SimConfig(years=2, initial_power_mw=5.0, initial_usable_mwh=10.0)
+    results = [
+        YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=1.0,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=1.0,
+            avg_rte=1.0,
+            eq_cycles=0.0,
+            cum_cycles=0.0,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=1.0,
+            eoy_usable_mwh=base_cfg.initial_usable_mwh,
+            eoy_power_mw=base_cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        ),
+        YearResult(
+            year_index=2,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=1.0,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=1.0,
+            avg_rte=1.0,
+            eq_cycles=0.0,
+            cum_cycles=0.0,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=1.0,
+            eoy_usable_mwh=base_cfg.initial_usable_mwh,
+            eoy_power_mw=base_cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        ),
+    ]
+
+    sim_output = SimulationOutput(
+        cfg=base_cfg,
+        discharge_hours_per_day=4.0,
+        results=results,
+        monthly_results=[],
+        first_year_logs=None,
+        final_year_logs=None,
+        hod_count=np.zeros(24),
+        hod_sum_pv=np.zeros(24),
+        hod_sum_pv_resource=np.zeros(24),
+        hod_sum_bess=np.zeros(24),
+        hod_sum_charge=np.zeros(24),
+        augmentation_energy_added_mwh=[0.0, 0.0],
+        augmentation_retired_energy_mwh=[0.0, 0.0],
+        augmentation_events=0,
+    )
+
+    econ_inputs = EconomicInputs(
+        capex_musd=1.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=100.0,
+        pv_market_price_usd_per_mwh=0.0,
+    )
+
+    lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
+        sim_output,
+        econ_inputs,
+        price_inputs,
+        base_initial_energy_mwh=base_cfg.initial_usable_mwh,
+        augmentation_energy_added_mwh=[1.0, 2.0],
+        delivered_firm_mwh=[20.0, 20.0],
+        bess_to_contract_mwh=[20.0, 20.0],
+        pv_curtailed_mwh=[0.0, 0.0],
+        shortfall_mwh=[0.0, 0.0],
+    )
+
+    assert math.isclose(discounted_costs, 1_300_000.0)
+    assert math.isclose(lcoe, 32500.0)
+    assert math.isclose(npv_usd, -1_296_000.0)
+    assert math.isnan(irr_pct)
+
+
 def test_sweep_scales_economics_with_energy_size():
     pv_df = pd.DataFrame({"pv_mw": [0.0]})
     cycle_df = pd.DataFrame()
@@ -863,6 +960,112 @@ def test_sweep_concurrency_preserves_order() -> None:
 
     assert df["energy_mwh"].tolist() == energy_candidates
     assert df["compliance_pct"].tolist() == energy_candidates
+
+
+def test_sweep_supports_multiple_price_scenarios_without_extra_sims() -> None:
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+    base_cfg = SimConfig(years=1, initial_power_mw=5.0, initial_usable_mwh=10.0)
+    energy_candidates = [10.0, 20.0]
+    sim_calls: list[float] = []
+
+    def _simulate(cfg: SimConfig, pv_df, cycle_df, dod_override, need_logs=False):
+        sim_calls.append(cfg.initial_usable_mwh)
+        year = YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=cfg.initial_usable_mwh,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=cfg.initial_usable_mwh,
+            avg_rte=1.0,
+            eq_cycles=cfg.initial_usable_mwh,
+            cum_cycles=cfg.initial_usable_mwh,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=0.9,
+            eoy_usable_mwh=cfg.initial_usable_mwh,
+            eoy_power_mw=cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        )
+        return SimulationOutput(
+            cfg=cfg,
+            discharge_hours_per_day=4.0,
+            results=[year],
+            monthly_results=[],
+            first_year_logs=None,
+            final_year_logs=None,
+            hod_count=np.zeros(24),
+            hod_sum_pv=np.zeros(24),
+            hod_sum_pv_resource=np.zeros(24),
+            hod_sum_bess=np.zeros(24),
+            hod_sum_charge=np.zeros(24),
+            augmentation_energy_added_mwh=[0.0],
+            augmentation_retired_energy_mwh=[0.0],
+            augmentation_events=0,
+        )
+
+    def _summarize(sim_output: SimulationOutput) -> SimulationSummary:
+        energy = sim_output.cfg.initial_usable_mwh
+        return SimulationSummary(
+            compliance=80.0 if energy <= 10.0 else 95.0,
+            bess_share_of_firm=1.0,
+            charge_discharge_ratio=1.0,
+            pv_capture_ratio=1.0,
+            discharge_capacity_factor=1.0,
+            total_project_generation_mwh=energy,
+            bess_generation_mwh=energy,
+            pv_generation_mwh=0.0,
+            pv_excess_mwh=0.0,
+            bess_losses_mwh=0.0,
+            total_shortfall_mwh=0.0,
+            avg_eq_cycles_per_year=energy,
+            cap_ratio_final=1.0,
+        )
+
+    econ_inputs = EconomicInputs(
+        capex_musd=0.5,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_scenarios = [
+        PriceInputs(contract_price_usd_per_mwh=100.0, pv_market_price_usd_per_mwh=0.0),
+        PriceInputs(contract_price_usd_per_mwh=150.0, pv_market_price_usd_per_mwh=0.0),
+    ]
+    scenario_names = ["base", "upside"]
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        energy_mwh_values=energy_candidates,
+        fixed_power_mw=5.0,
+        simulate_fn=_simulate,
+        summarize_fn=_summarize,
+        economics_inputs=econ_inputs,
+        price_inputs=price_scenarios,
+        price_scenario_names=scenario_names,
+    )
+
+    assert len(sim_calls) == len(energy_candidates)
+    assert len(df) == len(energy_candidates) * len(price_scenarios)
+    assert set(df["price_scenario"]) == set(scenario_names)
+    for _, group in df.groupby("energy_mwh"):
+        assert group["compliance_pct"].nunique() == 1
+
+    base_npv = df.loc[(df["price_scenario"] == "base") & (df["energy_mwh"] == 20.0), "npv_usd"].iloc[0]
+    upside_npv = df.loc[(df["price_scenario"] == "upside") & (df["energy_mwh"] == 20.0), "npv_usd"].iloc[0]
+    assert upside_npv > base_npv
+    for name in scenario_names:
+        assert df.loc[df["price_scenario"] == name, "is_best"].sum() == 1
 
 
 def test_static_economic_sweep_penalizes_deficits():
