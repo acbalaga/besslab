@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 import pytest
@@ -14,6 +15,29 @@ from utils.sweeps import (
     compute_static_bess_sweep_economics,
     sweep_bess_sizes,
 )
+
+
+@dataclass
+class _StubCfg:
+    initial_usable_mwh: float
+    initial_power_mw: float
+
+
+@dataclass
+class _StubResult:
+    delivered_firm_mwh: float
+    bess_to_contract_mwh: float
+    pv_curtailed_mwh: float
+    shortfall_mwh: float
+    eq_cycles: float = 0.0
+    soh_total: float = 1.0
+
+
+@dataclass
+class _StubSimOutput:
+    cfg: _StubCfg
+    results: list[_StubResult]
+    augmentation_energy_added_mwh: list[float] | None = field(default_factory=list)
 
 
 def test_sweep_validates_power_duration_inputs():
@@ -1249,6 +1273,102 @@ def test_static_economic_sweep_uses_blended_price() -> None:
 
     expected_revenue = (100.0 + 50.0) * 50.0
     assert math.isclose(df.loc[0, "npv_usd"], expected_revenue)
+
+
+def test_static_economic_sweep_applies_wesm_penalty_when_enabled() -> None:
+    candidates = [
+        BessEconomicCandidate(
+            energy_mwh=50.0,
+            capex_musd=0.0,
+            fixed_opex_musd=0.0,
+            compliance_mwh=1000.0,
+            deficit_mwh=-200.0,
+            surplus_mwh=0.0,
+        )
+    ]
+
+    economics_template = EconomicInputs(
+        capex_musd=0.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+
+    price_inputs_disabled = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=50.0,
+        apply_wesm_to_shortfall=False,
+        wesm_price_usd_per_mwh=90.0,
+    )
+    price_inputs_enabled = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=50.0,
+        apply_wesm_to_shortfall=True,
+        wesm_price_usd_per_mwh=90.0,
+    )
+
+    df_disabled = compute_static_bess_sweep_economics(
+        candidates,
+        economics_template,
+        price_inputs_disabled,
+        wesm_price_usd_per_mwh=90.0,
+        years=1,
+    )
+    df_enabled = compute_static_bess_sweep_economics(
+        candidates,
+        economics_template,
+        price_inputs_enabled,
+        wesm_price_usd_per_mwh=90.0,
+        years=1,
+    )
+
+    assert df_enabled.loc[0, "npv_usd"] < df_disabled.loc[0, "npv_usd"]
+    disabled_irr = df_disabled.loc[0, "irr_pct"]
+    enabled_irr = df_enabled.loc[0, "irr_pct"]
+    if math.isnan(disabled_irr):
+        assert math.isnan(enabled_irr) or enabled_irr <= disabled_irr
+    else:
+        assert enabled_irr < disabled_irr
+
+
+def test_candidate_economics_honors_blended_price_and_wesm_shortfalls() -> None:
+    sim_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=50.0, initial_power_mw=10.0),
+        results=[
+            _StubResult(
+                delivered_firm_mwh=100.0,
+                bess_to_contract_mwh=80.0,
+                pv_curtailed_mwh=20.0,
+                shortfall_mwh=10.0,
+            )
+        ],
+    )
+    economics_inputs = EconomicInputs(
+        capex_musd=0.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_inputs_blended = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=60.0,
+        blended_price_usd_per_mwh=50.0,
+        apply_wesm_to_shortfall=True,
+        wesm_price_usd_per_mwh=90.0,
+        sell_to_wesm=True,
+    )
+
+    revenue_expected = (100.0 * 50.0) + (20.0 * 90.0) - (10.0 * 90.0)
+    _, _, _, npv_usd = _compute_candidate_economics(
+        sim_output,
+        economics_inputs,
+        price_inputs_blended,
+        base_initial_energy_mwh=50.0,
+    )
+
+    assert math.isclose(npv_usd, revenue_expected)
 
 
 def test_main_example_outputs_sections(capsys: pytest.CaptureFixture[str]) -> None:
