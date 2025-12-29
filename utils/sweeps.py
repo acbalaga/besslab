@@ -76,6 +76,44 @@ def _resolve_energy_prices(price_inputs: PriceInputs) -> tuple[float, float]:
     )
 
 
+def _normalize_price_scenarios(
+    price_inputs: PriceInputs | Sequence[PriceInputs] | None,
+    price_scenario_names: Sequence[str] | None = None,
+) -> list[tuple[str | None, PriceInputs | None]]:
+    """Return a list of (scenario_name, PriceInputs) tuples for downstream use.
+
+    When a single ``PriceInputs`` is supplied the scenario name is omitted to
+    preserve the legacy output shape. Multiple scenarios attach a ``str`` name
+    (either user-provided or auto-generated) so the caller can pivot results
+    without re-running the physical simulation.
+    """
+
+    if price_inputs is None:
+        if price_scenario_names:
+            raise ValueError("price_scenario_names cannot be used when price_inputs is None.")
+        return [(None, None)]
+
+    if isinstance(price_inputs, PriceInputs):
+        if price_scenario_names and len(price_scenario_names) != 1:
+            raise ValueError("price_scenario_names must have length 1 when a single PriceInputs is provided.")
+        scenario_name = price_scenario_names[0] if price_scenario_names else None
+        return [(scenario_name, price_inputs)]
+
+    inputs_list = list(price_inputs)
+    if not inputs_list:
+        raise ValueError("price_inputs must include at least one PriceInputs when provided as a sequence.")
+
+    if price_scenario_names is not None and len(price_scenario_names) != len(inputs_list):
+        raise ValueError("price_scenario_names must align with the number of PriceInputs provided.")
+
+    scenario_names = (
+        list(price_scenario_names)
+        if price_scenario_names is not None
+        else [f"scenario_{idx + 1}" for idx in range(len(inputs_list))]
+    )
+    return list(zip(scenario_names, inputs_list))
+
+
 def build_soc_windows(
     floor_range: Tuple[float, float],
     ceiling_range: Tuple[float, float],
@@ -307,6 +345,12 @@ def _compute_candidate_economics(
     economics_inputs: EconomicInputs,
     price_inputs: PriceInputs | None = None,
     base_initial_energy_mwh: float | None = None,
+    *,
+    augmentation_energy_added_mwh: Sequence[float] | None = None,
+    delivered_firm_mwh: Sequence[float] | None = None,
+    bess_to_contract_mwh: Sequence[float] | None = None,
+    pv_curtailed_mwh: Sequence[float] | None = None,
+    shortfall_mwh: Sequence[float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Return LCOE, discounted-cost NPV, implied IRR, and net-project NPV.
 
@@ -317,6 +361,27 @@ def _compute_candidate_economics(
     same cash-flow stream: when price assumptions are supplied, IRR and NPV use
     the revenue-based cash flows; otherwise, they fall back to LCOE-based flows
     that normalize economics against delivered energy.
+
+    Parameters
+    ----------
+    augmentation_energy_added_mwh
+        Optional per-year augmentation energy additions (AC-side, MWh). When
+        provided, the sequence must align with project years and replaces the
+        schedule embedded in ``sim_output``. Values are scaled to kWh before
+        applying the derived augmentation unit rate (USD/kWh).
+    delivered_firm_mwh
+        Optional per-year delivered firm energy (AC-side, MWh). Overrides the
+        series from ``sim_output.results`` to support candidate-specific
+        degradation assumptions.
+    bess_to_contract_mwh
+        Optional per-year BESS-to-contract energy (AC-side, MWh). Overrides
+        the series from ``sim_output.results`` for cash-flow calculations.
+    pv_curtailed_mwh
+        Optional per-year curtailed PV (AC-side, MWh). Overrides the series
+        from ``sim_output.results`` for cash-flow calculations.
+    shortfall_mwh
+        Optional per-year contract shortfall (AC-side, MWh). Overrides the
+        series from ``sim_output.results`` for cash-flow calculations.
     """
 
     results = sim_output.results
@@ -346,25 +411,51 @@ def _compute_candidate_economics(
         periodic_variable_opex_interval_years=economics_inputs.periodic_variable_opex_interval_years,
     )
 
+    def _override_or_results(
+        override: Sequence[float] | None, accessor: Callable[[Any], float], label: str
+    ) -> list[float]:
+        values = [float(accessor(r)) for r in results] if override is None else [float(v) for v in override]
+        if len(values) != len(results):
+            raise ValueError(f"{label} must align with the number of project years ({len(results)}).")
+        return values
+
     augmentation_unit_rate_usd_per_kwh = 0.0
     if base_cfg.initial_usable_mwh > 0 and scaled_economics.capex_musd > 0:
         augmentation_unit_rate_usd_per_kwh = (
             scaled_economics.capex_musd * 1_000_000.0
         ) / (base_cfg.initial_usable_mwh * 1_000.0)
 
-    augmentation_energy_added = list(getattr(sim_output, "augmentation_energy_added_mwh", []))
-    if len(augmentation_energy_added) < len(results):
-        augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
-    elif len(augmentation_energy_added) > len(results):
-        augmentation_energy_added = augmentation_energy_added[: len(results)]
+    if augmentation_energy_added_mwh is not None:
+        augmentation_energy_added = [float(v) for v in augmentation_energy_added_mwh]
+        if len(augmentation_energy_added) != len(results):
+            raise ValueError("augmentation_energy_added_mwh must align with the number of project years.")
+    else:
+        augmentation_energy_added = list(getattr(sim_output, "augmentation_energy_added_mwh", []))
+        if len(augmentation_energy_added) < len(results):
+            augmentation_energy_added.extend([0.0] * (len(results) - len(augmentation_energy_added)))
+        elif len(augmentation_energy_added) > len(results):
+            augmentation_energy_added = augmentation_energy_added[: len(results)]
 
     augmentation_costs_usd = [
         add_e * 1_000.0 * augmentation_unit_rate_usd_per_kwh for add_e in augmentation_energy_added
     ]
 
+    delivered_firm_series = _override_or_results(
+        delivered_firm_mwh, lambda r: r.delivered_firm_mwh, "delivered_firm_mwh"
+    )
+    bess_to_contract_series = _override_or_results(
+        bess_to_contract_mwh, lambda r: r.bess_to_contract_mwh, "bess_to_contract_mwh"
+    )
+    pv_curtailed_series = _override_or_results(
+        pv_curtailed_mwh, lambda r: r.pv_curtailed_mwh, "pv_curtailed_mwh"
+    )
+    shortfall_series = _override_or_results(
+        shortfall_mwh, lambda r: r.shortfall_mwh, "shortfall_mwh"
+    )
+
     economics_outputs = compute_lcoe_lcos_with_augmentation_fallback(
-        [r.delivered_firm_mwh for r in results],
-        [r.bess_to_contract_mwh for r in results],
+        delivered_firm_series,
+        bess_to_contract_series,
         scaled_economics,
         augmentation_costs_usd=augmentation_costs_usd,
     )
@@ -373,12 +464,12 @@ def _compute_candidate_economics(
     npv_usd = -economics_outputs.discounted_costs_usd
     if price_inputs is not None:
         cash_outputs = compute_cash_flows_and_irr(
-            [r.delivered_firm_mwh for r in results],
-            [r.bess_to_contract_mwh for r in results],
-            [r.pv_curtailed_mwh for r in results],
+            delivered_firm_series,
+            bess_to_contract_series,
+            pv_curtailed_series,
             scaled_economics,
             price_inputs,
-            annual_shortfall_mwh=[r.shortfall_mwh for r in results],
+            annual_shortfall_mwh=shortfall_series,
             augmentation_costs_usd=augmentation_costs_usd,
         )
         irr_pct = cash_outputs.irr_pct
@@ -619,14 +710,14 @@ def _evaluate_candidate_row(
     candidate_energy_mwh: float,
     min_soh: float,
     economics_inputs: EconomicInputs | None,
-    price_inputs: PriceInputs | None,
+    price_scenarios: Sequence[tuple[str | None, PriceInputs | None]],
     base_initial_energy_mwh: float,
     simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
     max_shortfall_mwh: float | None,
-) -> dict[str, float | bool | str]:
-    """Run a single candidate simulation and compute derived KPIs."""
+) -> list[dict[str, float | bool | str]]:
+    """Run a single candidate simulation and compute derived KPIs for all price scenarios."""
 
     sim_output, summary = run_candidate_simulation(
         base_cfg,
@@ -668,59 +759,67 @@ def _evaluate_candidate_row(
     elif not within_shortfall:
         status = "exceeds_shortfall"
 
-    lcoe = float("nan")
-    discounted_costs = float("nan")
-    irr_pct = float("nan")
-    npv_usd = float("nan")
-    npv_per_mwh_usd = float("nan")
-    capex_per_kw_usd = float("nan")
-    if economics_inputs is not None and status == "evaluated":
-        lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
-            sim_output,
-            economics_inputs,
-            price_inputs,
-            base_initial_energy_mwh=base_initial_energy_mwh,
-        )
-        size_scale = (
-            candidate_energy_mwh / base_initial_energy_mwh
-            if base_initial_energy_mwh > 0
-            else 1.0
-        )
-        # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
-        capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
-        if power_mw > 0:
-            capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
-        # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.
-        if math.isfinite(npv_usd) and candidate_energy_mwh > 0:
-            npv_per_mwh_usd = npv_usd / candidate_energy_mwh
+    include_scenario_column = len(price_scenarios) > 1 or any(name is not None for name, _ in price_scenarios)
+    rows: list[dict[str, float | bool | str]] = []
+    for scenario_name, scenario_price_inputs in price_scenarios:
+        lcoe = float("nan")
+        discounted_costs = float("nan")
+        irr_pct = float("nan")
+        npv_usd = float("nan")
+        npv_per_mwh_usd = float("nan")
+        capex_per_kw_usd = float("nan")
+        if economics_inputs is not None and status == "evaluated":
+            lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
+                sim_output,
+                economics_inputs,
+                scenario_price_inputs,
+                base_initial_energy_mwh=base_initial_energy_mwh,
+            )
+            size_scale = (
+                candidate_energy_mwh / base_initial_energy_mwh
+                if base_initial_energy_mwh > 0
+                else 1.0
+            )
+            # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
+            capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
+            if power_mw > 0:
+                capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
+            # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.
+            if math.isfinite(npv_usd) and candidate_energy_mwh > 0:
+                npv_per_mwh_usd = npv_usd / candidate_energy_mwh
 
-    return {
-        "power_mw": float(power_mw),
-        "duration_h": float(duration_h),
-        "energy_mwh": candidate_energy_mwh,
-        "compliance_pct": summary.compliance,
-        "total_project_generation_mwh": summary.total_project_generation_mwh,
-        "bess_generation_mwh": summary.bess_generation_mwh,
-        "pv_generation_mwh": summary.pv_generation_mwh,
-        "pv_excess_mwh": summary.pv_excess_mwh,
-        "bess_losses_mwh": summary.bess_losses_mwh,
-        "total_shortfall_mwh": summary.total_shortfall_mwh,
-        "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
-        "max_eq_cycles_per_year": max_eq_cycles,
-        "min_soh_total": min_soh_total,
-        "cycle_limit_hit": cycle_limit_hit,
-        "soh_below_min": soh_below_min,
-        "feasible": feasible,
-        "cycles_over_cap": cycles_over_cap,
-        "soh_margin": soh_margin,
-        "lcoe_usd_per_mwh": lcoe,
-        "npv_costs_usd": discounted_costs,
-        "irr_pct": irr_pct,
-        "npv_usd": npv_usd,
-        "npv_per_mwh_usd": npv_per_mwh_usd,
-        "capex_per_kw_usd": capex_per_kw_usd,
-        "status": status,
-    }
+        row: dict[str, float | bool | str] = {
+            "power_mw": float(power_mw),
+            "duration_h": float(duration_h),
+            "energy_mwh": candidate_energy_mwh,
+            "compliance_pct": summary.compliance,
+            "total_project_generation_mwh": summary.total_project_generation_mwh,
+            "bess_generation_mwh": summary.bess_generation_mwh,
+            "pv_generation_mwh": summary.pv_generation_mwh,
+            "pv_excess_mwh": summary.pv_excess_mwh,
+            "bess_losses_mwh": summary.bess_losses_mwh,
+            "total_shortfall_mwh": summary.total_shortfall_mwh,
+            "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
+            "max_eq_cycles_per_year": max_eq_cycles,
+            "min_soh_total": min_soh_total,
+            "cycle_limit_hit": cycle_limit_hit,
+            "soh_below_min": soh_below_min,
+            "feasible": feasible,
+            "cycles_over_cap": cycles_over_cap,
+            "soh_margin": soh_margin,
+            "lcoe_usd_per_mwh": lcoe,
+            "npv_costs_usd": discounted_costs,
+            "irr_pct": irr_pct,
+            "npv_usd": npv_usd,
+            "npv_per_mwh_usd": npv_per_mwh_usd,
+            "capex_per_kw_usd": capex_per_kw_usd,
+            "status": status,
+        }
+        if include_scenario_column:
+            row["price_scenario"] = scenario_name
+        rows.append(row)
+
+    return rows
 
 
 def _evaluate_candidate_tuple(
@@ -731,13 +830,13 @@ def _evaluate_candidate_tuple(
     dod_override: str,
     min_soh: float,
     economics_inputs: EconomicInputs | None,
-    price_inputs: PriceInputs | None,
+    price_scenarios: Sequence[tuple[str | None, PriceInputs | None]],
     base_initial_energy_mwh: float,
     simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
     max_shortfall_mwh: float | None,
-) -> dict[str, float | bool | str]:
+) -> list[dict[str, float | bool | str]]:
     """Adapter for executor.map that unwraps the candidate tuple."""
 
     power_mw, duration_h, candidate_energy_mwh = candidate
@@ -751,7 +850,7 @@ def _evaluate_candidate_tuple(
         candidate_energy_mwh,
         min_soh,
         economics_inputs,
-        price_inputs,
+        price_scenarios,
         base_initial_energy_mwh,
         simulate_fn,
         summarize_fn,
@@ -771,7 +870,8 @@ def sweep_bess_sizes(
     energy_mwh_values: Iterable[float] | None = None,
     fixed_power_mw: float | None = None,
     economics_inputs: EconomicInputs | None = None,
-    price_inputs: PriceInputs | None = None,
+    price_inputs: PriceInputs | Sequence[PriceInputs] | None = None,
+    price_scenario_names: Sequence[str] | None = None,
     use_case: str = "reliability",
     ranking_kpi: str | None = None,
     min_soh: float = 0.6,
@@ -795,6 +895,14 @@ def sweep_bess_sizes(
 
     Parameters
     ----------
+    price_inputs
+        Optional pricing assumptions. Supply a single ``PriceInputs`` for legacy
+        behavior or a sequence to compute economics across multiple price
+        scenarios without re-running the physical simulation.
+    price_scenario_names
+        Optional names for each price scenario. When provided, the length must
+        match ``price_inputs``. Names are added to the ``price_scenario`` column
+        in the returned DataFrame to support pivoting or grouping.
     max_candidates
         Optional limit on the total candidate count. When provided the function will
         either raise, return an empty DataFrame, or process the sweep in batches
@@ -826,6 +934,7 @@ def sweep_bess_sizes(
 
     rows: List[dict[str, float | bool | str]] = []
     base_initial_energy_mwh = float(base_cfg.initial_usable_mwh)
+    price_scenarios = _normalize_price_scenarios(price_inputs, price_scenario_names)
     candidates = _prepare_sweep_candidates(
         base_cfg,
         power_mw_values,
@@ -861,7 +970,7 @@ def sweep_bess_sizes(
     for batch_candidates in batches:
         if executor_cls is None:
             for power_mw, duration_h, candidate_energy_mwh in batch_candidates:
-                rows.append(
+                rows.extend(
                     _evaluate_candidate_row(
                         base_cfg,
                         pv_df,
@@ -872,7 +981,7 @@ def sweep_bess_sizes(
                         candidate_energy_mwh,
                         min_soh,
                         economics_inputs,
-                        price_inputs,
+                        price_scenarios,
                         base_initial_energy_mwh,
                         simulate_fn,
                         summarize_fn,
@@ -889,7 +998,7 @@ def sweep_bess_sizes(
                 dod_override=dod_override,
                 min_soh=min_soh,
                 economics_inputs=economics_inputs,
-                price_inputs=price_inputs,
+                price_scenarios=price_scenarios,
                 base_initial_energy_mwh=base_initial_energy_mwh,
                 simulate_fn=simulate_fn,
                 summarize_fn=summarize_fn,
@@ -897,8 +1006,8 @@ def sweep_bess_sizes(
                 max_shortfall_mwh=max_shortfall_mwh,
             )
             with executor_cls(max_workers=max_workers) as executor:
-                for row in executor.map(evaluate_fn, batch_candidates):
-                    rows.append(row)
+                for row_group in executor.map(evaluate_fn, batch_candidates):
+                    rows.extend(row_group)
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -921,8 +1030,15 @@ def sweep_bess_sizes(
     df["is_best"] = False
     eligible_df = df[df["status"] == "evaluated"]
     if not eligible_df.empty:
-        best_idx = eligible_df[ranking_column].sort_values(ascending=ascending).index[0]
-        df.loc[best_idx, "is_best"] = True
+        if "price_scenario" in df.columns:
+            for _, scenario_df in eligible_df.groupby("price_scenario", dropna=False):
+                if scenario_df.empty:
+                    continue
+                best_idx = scenario_df[ranking_column].sort_values(ascending=ascending).index[0]
+                df.loc[best_idx, "is_best"] = True
+        else:
+            best_idx = eligible_df[ranking_column].sort_values(ascending=ascending).index[0]
+            df.loc[best_idx, "is_best"] = True
 
     return df
 
