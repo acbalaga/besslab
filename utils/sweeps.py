@@ -582,7 +582,9 @@ def _evaluate_candidate_row(
     base_initial_energy_mwh: float,
     simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
-) -> dict[str, float | bool]:
+    min_compliance_pct: float | None,
+    max_shortfall_mwh: float | None,
+) -> dict[str, float | bool | str]:
     """Run a single candidate simulation and compute derived KPIs."""
 
     sim_output, summary = run_candidate_simulation(
@@ -606,13 +608,32 @@ def _evaluate_candidate_row(
         soh_margin,
     ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
 
+    # Apply optional pruning thresholds to avoid spending economics cycles on unpromising designs.
+    meets_compliance = True
+    if min_compliance_pct is not None:
+        meets_compliance = math.isfinite(summary.compliance) and summary.compliance >= min_compliance_pct
+
+    within_shortfall = True
+    if max_shortfall_mwh is not None:
+        within_shortfall = math.isfinite(summary.total_shortfall_mwh) and summary.total_shortfall_mwh <= max_shortfall_mwh
+
+    status = "evaluated"
+    if cycle_limit_hit:
+        status = "cycle_limit"
+    elif soh_below_min:
+        status = "soh_below_min"
+    elif not meets_compliance:
+        status = "below_min_compliance"
+    elif not within_shortfall:
+        status = "exceeds_shortfall"
+
     lcoe = float("nan")
     discounted_costs = float("nan")
     irr_pct = float("nan")
     npv_usd = float("nan")
     npv_per_mwh_usd = float("nan")
     capex_per_kw_usd = float("nan")
-    if economics_inputs is not None:
+    if economics_inputs is not None and status == "evaluated":
         lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
             sim_output,
             economics_inputs,
@@ -657,6 +678,7 @@ def _evaluate_candidate_row(
         "npv_usd": npv_usd,
         "npv_per_mwh_usd": npv_per_mwh_usd,
         "capex_per_kw_usd": capex_per_kw_usd,
+        "status": status,
     }
 
 
@@ -672,7 +694,9 @@ def _evaluate_candidate_tuple(
     base_initial_energy_mwh: float,
     simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
-) -> dict[str, float | bool]:
+    min_compliance_pct: float | None,
+    max_shortfall_mwh: float | None,
+) -> dict[str, float | bool | str]:
     """Adapter for executor.map that unwraps the candidate tuple."""
 
     power_mw, duration_h, candidate_energy_mwh = candidate
@@ -690,6 +714,8 @@ def _evaluate_candidate_tuple(
         base_initial_energy_mwh,
         simulate_fn,
         summarize_fn,
+        min_compliance_pct,
+        max_shortfall_mwh,
     )
 
 
@@ -708,6 +734,8 @@ def sweep_bess_sizes(
     use_case: str = "reliability",
     ranking_kpi: str | None = None,
     min_soh: float = 0.6,
+    min_compliance_pct: float | None = None,
+    max_shortfall_mwh: float | None = None,
     simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
     max_candidates: int | None = None,
@@ -747,6 +775,12 @@ def sweep_bess_sizes(
     max_workers
         Maximum workers for the executor when ``concurrency`` is enabled. Defaults to
         the library default for the chosen executor.
+    min_compliance_pct
+        Optional compliance floor. Candidates below the threshold are marked as
+        pruned and skip economics to avoid unnecessary work.
+    max_shortfall_mwh
+        Optional annual shortfall ceiling. Candidates exceeding the cap are marked
+        as pruned and skip economics for the same reason.
     """
 
     rows: List[dict[str, float | bool | str]] = []
@@ -801,6 +835,8 @@ def sweep_bess_sizes(
                         base_initial_energy_mwh,
                         simulate_fn,
                         summarize_fn,
+                        min_compliance_pct,
+                        max_shortfall_mwh,
                     )
                 )
         else:
@@ -816,6 +852,8 @@ def sweep_bess_sizes(
                 base_initial_energy_mwh=base_initial_energy_mwh,
                 simulate_fn=simulate_fn,
                 summarize_fn=summarize_fn,
+                min_compliance_pct=min_compliance_pct,
+                max_shortfall_mwh=max_shortfall_mwh,
             )
             with executor_cls(max_workers=max_workers) as executor:
                 for row in executor.map(evaluate_fn, batch_candidates):
@@ -840,9 +878,9 @@ def sweep_bess_sizes(
         df[ranking_column] = np.nan
 
     df["is_best"] = False
-    feasible_df = df[df["feasible"]]
-    if not feasible_df.empty:
-        best_idx = feasible_df[ranking_column].sort_values(ascending=ascending).index[0]
+    eligible_df = df[df["status"] == "evaluated"]
+    if not eligible_df.empty:
+        best_idx = eligible_df[ranking_column].sort_values(ascending=ascending).index[0]
         df.loc[best_idx, "is_best"] = True
 
     return df
