@@ -286,49 +286,42 @@ def compute_static_bess_sweep_economics(
 ) -> pd.DataFrame:
     """Compute NPV/IRR for pre-computed BESS sizing candidates.
 
-    This helper mirrors the economics applied during full simulations but
-    operates on pre-aggregated generation outcomes. It assumes the provided
-    generation volumes repeat each year; callers can pre-scale the inputs when
-    modeling degradation or growth. Deficits are treated as an annual cost
-    using the supplied WESM price so negative compliance impacts project value
-    explicitly.
+    This helper mirrors the economics applied during full simulations by
+    delegating to :func:`utils.economics.compute_cash_flows_and_irr`. The
+    provided generation volumes are assumed to repeat each year; callers can
+    pre-scale the inputs when modeling degradation or growth.
     """
 
     rows: list[dict[str, float]] = []
-    inflation_rate = float(economics_template.inflation_rate)
-    discount_rate = float(economics_template.discount_rate)
-    contract_price_usd_per_mwh, pv_market_price_usd_per_mwh = _resolve_energy_prices(price_inputs)
 
     for candidate in candidates:
-        cash_flows: list[float] = [-max(candidate.capex_musd, 0.0) * 1_000_000.0]
-        discounted_npv = cash_flows[0]
+        economics_inputs = replace(
+            economics_template,
+            capex_musd=float(candidate.capex_musd),
+            fixed_opex_musd=float(candidate.fixed_opex_musd),
+        )
+        price_inputs_for_run = replace(
+            price_inputs,
+            wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+        )
 
-        for year_idx in range(1, years + 1):
-            inflation_multiplier = (1.0 + inflation_rate) ** (year_idx - 1)
+        annual_compliance = max(candidate.compliance_mwh, 0.0)
+        annual_surplus = max(candidate.surplus_mwh, 0.0)
+        annual_shortfall = max(-candidate.deficit_mwh, 0.0)
 
-            # Positive compliance/surplus yield revenue; deficits represent market purchases
-            # at the assumed WESM price. Negative values are treated as a cost to avoid
-            # overstating project value when the profile misses contract energy.
-            contract_revenue = max(candidate.compliance_mwh, 0.0) * contract_price_usd_per_mwh
-            surplus_revenue = max(candidate.surplus_mwh, 0.0) * pv_market_price_usd_per_mwh
-            deficit_penalty = abs(candidate.deficit_mwh) * wesm_price_usd_per_mwh
-
-            annual_revenue = contract_revenue + surplus_revenue - deficit_penalty
-            if price_inputs.escalate_with_inflation:
-                annual_revenue *= inflation_multiplier
-
-            annual_opex_usd = max(candidate.fixed_opex_musd, 0.0) * 1_000_000.0 * inflation_multiplier
-            net_cash_flow = annual_revenue - annual_opex_usd
-
-            cash_flows.append(net_cash_flow)
-            discounted_npv += net_cash_flow / ((1.0 + discount_rate) ** year_idx)
-
-        irr_pct = _solve_irr_pct(cash_flows)
+        cash_outputs = compute_cash_flows_and_irr(
+            [annual_compliance for _ in range(years)],
+            [annual_compliance for _ in range(years)],
+            [annual_surplus for _ in range(years)],
+            economics_inputs,
+            price_inputs_for_run,
+            annual_shortfall_mwh=[annual_shortfall for _ in range(years)],
+        )
         rows.append(
             {
                 "energy_mwh": float(candidate.energy_mwh),
-                "npv_usd": float(discounted_npv),
-                "irr_pct": float(irr_pct),
+                "npv_usd": float(cash_outputs.npv_usd),
+                "irr_pct": float(cash_outputs.irr_pct),
                 "capex_musd": float(candidate.capex_musd),
                 "fixed_opex_musd": float(candidate.fixed_opex_musd),
                 "compliance_mwh": float(candidate.compliance_mwh),
