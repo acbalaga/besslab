@@ -26,7 +26,6 @@ _NAV_LINKS = (
     _NavigationLink("Landing / Uploads", "pages/00_Landing.py", "Seed shared uploads for the session."),
     _NavigationLink("Home (Guide)", "pages/00_Home.py"),
     _NavigationLink("Inputs & Results", "app.py", "Main simulation workspace."),
-    _NavigationLink("Scenario comparisons", "pages/03_Scenario_Comparisons.py"),
     _NavigationLink("BESS sizing sweep", "pages/04_BESS_Sizing_Sweep.py"),
     _NavigationLink("Multi-scenario batch", "pages/05_Multi_Scenario_Batch.py"),
 )

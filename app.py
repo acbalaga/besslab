@@ -1926,11 +1926,16 @@ def run_app():
 
     if not run_clicked:
         st.info("Click 'Run simulation' to generate results after updating inputs.")
-        st.caption("Use the Scenario comparisons page to save the latest run for later review.")
+        st.caption("Use the batch tools or downloads to compare multiple runs.")
         st.page_link(
-            "pages/03_Scenario_Comparisons.py",
-            label="Open Scenario comparisons",
-            help="Save the most recent run and review the table of scenarios.",
+            "pages/05_Multi_Scenario_Batch.py",
+            label="Open Multi-scenario batch",
+            help="Run a structured set of variations for side-by-side review.",
+        )
+        st.page_link(
+            "pages/04_BESS_Sizing_Sweep.py",
+            label="Open BESS sizing sweep",
+            help="Rank feasible usable-energy variants using the latest inputs.",
         )
         st.stop()
 
