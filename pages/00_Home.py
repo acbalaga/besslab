@@ -25,14 +25,13 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 3) Adjust efficiency, SOC limits, availability, augmentation triggers, rate-limit settings, and (optionally) enable the economics helper for LCOE/LCOS, NPV, and IRR.
 4) Run the simulation and review compliance, energy splits, end-of-year capability, daily profiles, and flag guidance.
 5) Use the physics-bounded Design Advisor and SOC/economics sensitivity sweeps to explore mitigations when targets are missed.
-6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the batch tools to compare scenarios; the Scenario comparisons page is deprecated.
+6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the batch tools to compare scenarios.
 7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs.
 
 ### Multipage navigation
 - **Inputs & Results:** Primary simulation, Design Advisor, sensitivities, and downloads.
 - **BESS sizing sweep:** Sweep usable energy, rank feasible designs, and chart LCOE/IRR trends.
 - **Multi-scenario batch:** Run predefined variations and compare results in one table (recommended for scenario reviews).
-- **Scenario comparisons (deprecated):** Snapshot saving is disabled; use the batch tools for new comparisons.
 
 ### Troubleshooting and tips
 - Keep `hour_index` consecutive; the app warns on gaps/out-of-range rows and drops them automatically. Timestamped uploads are also supported for sub-hourly or leap-year data.
