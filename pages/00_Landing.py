@@ -40,7 +40,8 @@ st.success(
     f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
 )
 st.caption(
-    "Uploads are cached in the session and reused across pages. Defaults load from ./data/ if no files are provided."
+    "Uploads are cached across pages (and reused on a fresh session when hashes match); "
+    "select 'Clear cache' from the Streamlit menu or remove uploads to revert to bundled defaults."
 )
 
 st.markdown("### Next steps")
