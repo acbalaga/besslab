@@ -1,5 +1,6 @@
 import logging
 import math
+import time
 import numpy as np
 import pandas as pd
 import pytest
@@ -585,6 +586,182 @@ def test_sweep_computes_normalized_kpis_and_ranks_new_metrics():
     assert npv_per_mwh_large > df.loc[df["energy_mwh"] == 50.0, "npv_per_mwh_usd"].iloc[0]
 
     assert df.loc[df["is_best"], "energy_mwh"].iloc[0] == 100.0
+
+
+def test_sweep_enforces_limit_and_batches() -> None:
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+    base_cfg = SimConfig(years=1)
+
+    def _simulate(cfg: SimConfig, pv_df, cycle_df, dod_override, need_logs=False):
+        year = YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=cfg.initial_usable_mwh,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=cfg.initial_usable_mwh,
+            avg_rte=1.0,
+            eq_cycles=100.0,
+            cum_cycles=100.0,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=0.7,
+            eoy_usable_mwh=cfg.initial_usable_mwh,
+            eoy_power_mw=cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        )
+        return SimulationOutput(
+            cfg=cfg,
+            discharge_hours_per_day=4.0,
+            results=[year],
+            monthly_results=[],
+            first_year_logs=None,
+            final_year_logs=None,
+            hod_count=np.zeros(24),
+            hod_sum_pv=np.zeros(24),
+            hod_sum_pv_resource=np.zeros(24),
+            hod_sum_bess=np.zeros(24),
+            hod_sum_charge=np.zeros(24),
+            augmentation_energy_added_mwh=[0.0],
+            augmentation_retired_energy_mwh=[0.0],
+            augmentation_events=0,
+        )
+
+    def _summarize(sim_output: SimulationOutput) -> SimulationSummary:
+        return SimulationSummary(
+            compliance=90.0,
+            bess_share_of_firm=1.0,
+            charge_discharge_ratio=1.0,
+            pv_capture_ratio=1.0,
+            discharge_capacity_factor=1.0,
+            total_project_generation_mwh=sim_output.cfg.initial_usable_mwh,
+            bess_generation_mwh=sim_output.cfg.initial_usable_mwh,
+            pv_generation_mwh=0.0,
+            pv_excess_mwh=0.0,
+            bess_losses_mwh=0.0,
+            total_shortfall_mwh=0.0,
+            avg_eq_cycles_per_year=100.0,
+            cap_ratio_final=1.0,
+        )
+
+    with pytest.raises(ValueError):
+        sweep_bess_sizes(
+            base_cfg,
+            pv_df,
+            cycle_df,
+            "Auto (infer)",
+            power_mw_values=[5.0, 10.0],
+            duration_h_values=[1.0, 2.0],
+            max_candidates=2,
+            simulate_fn=_simulate,
+            summarize_fn=_summarize,
+        )
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        power_mw_values=[5.0, 10.0],
+        duration_h_values=[1.0, 2.0],
+        max_candidates=2,
+        on_exceed="batch",
+        batch_size=2,
+        simulate_fn=_simulate,
+        summarize_fn=_summarize,
+    )
+
+    assert len(df) == 4
+    assert df["energy_mwh"].tolist() == [5.0, 10.0, 10.0, 20.0]
+
+
+def test_sweep_concurrency_preserves_order() -> None:
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+    base_cfg = SimConfig(years=1)
+    energy_candidates = [30.0, 10.0, 20.0]
+
+    def _simulate(cfg: SimConfig, pv_df, cycle_df, dod_override, need_logs=False):
+        sleep_time = cfg.initial_usable_mwh / 1000.0
+        time.sleep(sleep_time)
+        year = YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=cfg.initial_usable_mwh,
+            shortfall_mwh=0.0,
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=cfg.initial_usable_mwh,
+            avg_rte=1.0,
+            eq_cycles=cfg.initial_usable_mwh,
+            cum_cycles=cfg.initial_usable_mwh,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=0.9,
+            eoy_usable_mwh=cfg.initial_usable_mwh,
+            eoy_power_mw=cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        )
+        return SimulationOutput(
+            cfg=cfg,
+            discharge_hours_per_day=4.0,
+            results=[year],
+            monthly_results=[],
+            first_year_logs=None,
+            final_year_logs=None,
+            hod_count=np.zeros(24),
+            hod_sum_pv=np.zeros(24),
+            hod_sum_pv_resource=np.zeros(24),
+            hod_sum_bess=np.zeros(24),
+            hod_sum_charge=np.zeros(24),
+            augmentation_energy_added_mwh=[0.0],
+            augmentation_retired_energy_mwh=[0.0],
+            augmentation_events=0,
+        )
+
+    def _summarize(sim_output: SimulationOutput) -> SimulationSummary:
+        energy = sim_output.cfg.initial_usable_mwh
+        return SimulationSummary(
+            compliance=energy,
+            bess_share_of_firm=1.0,
+            charge_discharge_ratio=1.0,
+            pv_capture_ratio=1.0,
+            discharge_capacity_factor=1.0,
+            total_project_generation_mwh=energy,
+            bess_generation_mwh=energy,
+            pv_generation_mwh=0.0,
+            pv_excess_mwh=0.0,
+            bess_losses_mwh=0.0,
+            total_shortfall_mwh=0.0,
+            avg_eq_cycles_per_year=energy,
+            cap_ratio_final=1.0,
+        )
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        energy_mwh_values=energy_candidates,
+        fixed_power_mw=10.0,
+        concurrency="thread",
+        max_workers=3,
+        simulate_fn=_simulate,
+        summarize_fn=_summarize,
+    )
+
+    assert df["energy_mwh"].tolist() == energy_candidates
+    assert df["compliance_pct"].tolist() == energy_candidates
 
 
 def test_static_economic_sweep_penalizes_deficits():
