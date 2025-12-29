@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from functools import partial
 import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 import math
 
@@ -526,6 +528,20 @@ def _prepare_sweep_candidates(
     return candidates
 
 
+def _chunked(
+    sequence: Sequence[Tuple[float, float, float]],
+    chunk_size: int,
+) -> list[list[tuple[float, float, float]]]:
+    """Return a list of evenly sized chunks while preserving order."""
+
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive.")
+
+    return [
+        list(sequence[idx: idx + chunk_size]) for idx in range(0, len(sequence), chunk_size)
+    ]
+
+
 def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str, bool, str, bool]:
     """Map a use case/KPI to a column and sort order with a fallback.
 
@@ -552,6 +568,131 @@ def _resolve_ranking_column(use_case: str, ranking_kpi: str | None) -> Tuple[str
     return fallback_column, fallback_ascending, fallback_column, fallback_ascending
 
 
+def _evaluate_candidate_row(
+    base_cfg: "SimConfig",
+    pv_df: pd.DataFrame,
+    cycle_df: pd.DataFrame,
+    dod_override: str,
+    power_mw: float,
+    duration_h: float,
+    candidate_energy_mwh: float,
+    min_soh: float,
+    economics_inputs: EconomicInputs | None,
+    price_inputs: PriceInputs | None,
+    base_initial_energy_mwh: float,
+    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
+    summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
+) -> dict[str, float | bool]:
+    """Run a single candidate simulation and compute derived KPIs."""
+
+    sim_output, summary = run_candidate_simulation(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        dod_override,
+        power_mw,
+        duration_h,
+        simulate_fn=simulate_fn,
+        summarize_fn=summarize_fn,
+    )
+
+    (
+        max_eq_cycles,
+        min_soh_total,
+        cycle_limit_hit,
+        soh_below_min,
+        feasible,
+        cycles_over_cap,
+        soh_margin,
+    ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
+
+    lcoe = float("nan")
+    discounted_costs = float("nan")
+    irr_pct = float("nan")
+    npv_usd = float("nan")
+    npv_per_mwh_usd = float("nan")
+    capex_per_kw_usd = float("nan")
+    if economics_inputs is not None:
+        lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
+            sim_output,
+            economics_inputs,
+            price_inputs,
+            base_initial_energy_mwh=base_initial_energy_mwh,
+        )
+        size_scale = (
+            candidate_energy_mwh / base_initial_energy_mwh
+            if base_initial_energy_mwh > 0
+            else 1.0
+        )
+        # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
+        capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
+        if power_mw > 0:
+            capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
+        # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.
+        if math.isfinite(npv_usd) and candidate_energy_mwh > 0:
+            npv_per_mwh_usd = npv_usd / candidate_energy_mwh
+
+    return {
+        "power_mw": float(power_mw),
+        "duration_h": float(duration_h),
+        "energy_mwh": candidate_energy_mwh,
+        "compliance_pct": summary.compliance,
+        "total_project_generation_mwh": summary.total_project_generation_mwh,
+        "bess_generation_mwh": summary.bess_generation_mwh,
+        "pv_generation_mwh": summary.pv_generation_mwh,
+        "pv_excess_mwh": summary.pv_excess_mwh,
+        "bess_losses_mwh": summary.bess_losses_mwh,
+        "total_shortfall_mwh": summary.total_shortfall_mwh,
+        "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
+        "max_eq_cycles_per_year": max_eq_cycles,
+        "min_soh_total": min_soh_total,
+        "cycle_limit_hit": cycle_limit_hit,
+        "soh_below_min": soh_below_min,
+        "feasible": feasible,
+        "cycles_over_cap": cycles_over_cap,
+        "soh_margin": soh_margin,
+        "lcoe_usd_per_mwh": lcoe,
+        "npv_costs_usd": discounted_costs,
+        "irr_pct": irr_pct,
+        "npv_usd": npv_usd,
+        "npv_per_mwh_usd": npv_per_mwh_usd,
+        "capex_per_kw_usd": capex_per_kw_usd,
+    }
+
+
+def _evaluate_candidate_tuple(
+    candidate: tuple[float, float, float],
+    base_cfg: "SimConfig",
+    pv_df: pd.DataFrame,
+    cycle_df: pd.DataFrame,
+    dod_override: str,
+    min_soh: float,
+    economics_inputs: EconomicInputs | None,
+    price_inputs: PriceInputs | None,
+    base_initial_energy_mwh: float,
+    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
+    summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
+) -> dict[str, float | bool]:
+    """Adapter for executor.map that unwraps the candidate tuple."""
+
+    power_mw, duration_h, candidate_energy_mwh = candidate
+    return _evaluate_candidate_row(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        dod_override,
+        power_mw,
+        duration_h,
+        candidate_energy_mwh,
+        min_soh,
+        economics_inputs,
+        price_inputs,
+        base_initial_energy_mwh,
+        simulate_fn,
+        summarize_fn,
+    )
+
+
 def sweep_bess_sizes(
     base_cfg: "SimConfig",
     pv_df: pd.DataFrame,
@@ -569,6 +710,11 @@ def sweep_bess_sizes(
     min_soh: float = 0.6,
     simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
+    max_candidates: int | None = None,
+    on_exceed: str = "raise",
+    batch_size: int | None = None,
+    concurrency: str | None = None,
+    max_workers: int | None = None,
 ) -> pd.DataFrame:
     """Run a simple grid search over BESS sizes.
 
@@ -577,6 +723,30 @@ def sweep_bess_sizes(
     the top-ranked option flagged. When ``energy_mwh_values`` is provided the
     sweep fixes power at ``fixed_power_mw`` (defaulting to ``base_cfg``) and
     derives the duration from each energy candidate.
+
+    Parameters
+    ----------
+    max_candidates
+        Optional limit on the total candidate count. When provided the function will
+        either raise, return an empty DataFrame, or process the sweep in batches
+        depending on ``on_exceed``. The pre-check runs before any simulation work to
+        avoid firing long jobs inadvertently.
+    on_exceed
+        Controls behavior when ``max_candidates`` is exceeded. Accepted values are
+        ``"raise"`` (default), ``"return"`` (empty DataFrame), and ``"batch"``
+        (process in batches to cap concurrent work).
+    batch_size
+        Number of candidates to process per batch. When not set, batching uses
+        ``max_candidates`` as the batch size when ``on_exceed`` is ``"batch"``.
+        A positive value can also be supplied to process smaller batches even when
+        ``max_candidates`` is not provided.
+    concurrency
+        Optional executor type. Set to ``"thread"`` or ``"process"`` to parallelize
+        candidate evaluation. Results preserve the input ordering regardless of
+        completion order. ``None`` (default) runs sequentially.
+    max_workers
+        Maximum workers for the executor when ``concurrency`` is enabled. Defaults to
+        the library default for the chosen executor.
     """
 
     rows: List[dict[str, float | bool | str]] = []
@@ -588,83 +758,68 @@ def sweep_bess_sizes(
         energy_mwh_values,
         fixed_power_mw,
     )
+    candidate_count = len(candidates)
+    batches: list[list[tuple[float, float, float]]] = [candidates]
 
-    for power_mw, duration_h, candidate_energy_mwh in candidates:
-        sim_output, summary = run_candidate_simulation(
-            base_cfg,
-            pv_df,
-            cycle_df,
-            dod_override,
-            power_mw,
-            duration_h,
-            simulate_fn=simulate_fn,
-            summarize_fn=summarize_fn,
-        )
+    if max_candidates is not None and candidate_count > max_candidates:
+        if on_exceed == "return":
+            return pd.DataFrame()
+        if on_exceed == "batch":
+            effective_batch_size = batch_size or max_candidates
+            batches = _chunked(candidates, effective_batch_size)
+        else:
+            raise ValueError(
+                f"Candidate count {candidate_count} exceeds max_candidates={max_candidates}. "
+                "Use on_exceed='batch' or 'return' to change the behavior."
+            )
+    elif batch_size is not None:
+        batches = _chunked(candidates, batch_size)
 
-        (
-            max_eq_cycles,
-            min_soh_total,
-            cycle_limit_hit,
-            soh_below_min,
-            feasible,
-            cycles_over_cap,
-            soh_margin,
-        ) = _evaluate_feasibility(sim_output, summary, sim_output.cfg, min_soh)
+    executor_cls = None
+    if concurrency is not None:
+        if concurrency not in {"thread", "process"}:
+            raise ValueError("concurrency must be 'thread', 'process', or None.")
+        # Process pools require picklable inputs; callers should avoid local simulate/summary
+        # functions when selecting that mode.
+        executor_cls = ThreadPoolExecutor if concurrency == "thread" else ProcessPoolExecutor
 
-        lcoe = float("nan")
-        discounted_costs = float("nan")
-        irr_pct = float("nan")
-        npv_usd = float("nan")
-        npv_per_mwh_usd = float("nan")
-        capex_per_kw_usd = float("nan")
-        if economics_inputs is not None:
-            lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
-                sim_output,
-                economics_inputs,
-                price_inputs,
+    for batch_candidates in batches:
+        if executor_cls is None:
+            for power_mw, duration_h, candidate_energy_mwh in batch_candidates:
+                rows.append(
+                    _evaluate_candidate_row(
+                        base_cfg,
+                        pv_df,
+                        cycle_df,
+                        dod_override,
+                        power_mw,
+                        duration_h,
+                        candidate_energy_mwh,
+                        min_soh,
+                        economics_inputs,
+                        price_inputs,
+                        base_initial_energy_mwh,
+                        simulate_fn,
+                        summarize_fn,
+                    )
+                )
+        else:
+            evaluate_fn = partial(
+                _evaluate_candidate_tuple,
+                base_cfg=base_cfg,
+                pv_df=pv_df,
+                cycle_df=cycle_df,
+                dod_override=dod_override,
+                min_soh=min_soh,
+                economics_inputs=economics_inputs,
+                price_inputs=price_inputs,
                 base_initial_energy_mwh=base_initial_energy_mwh,
+                simulate_fn=simulate_fn,
+                summarize_fn=summarize_fn,
             )
-            size_scale = (
-                candidate_energy_mwh / base_initial_energy_mwh
-                if base_initial_energy_mwh > 0
-                else 1.0
-            )
-            # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
-            capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
-            if power_mw > 0:
-                capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
-            # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.
-            if math.isfinite(npv_usd) and candidate_energy_mwh > 0:
-                npv_per_mwh_usd = npv_usd / candidate_energy_mwh
-
-        rows.append(
-            {
-                "power_mw": float(power_mw),
-                "duration_h": float(duration_h),
-                "energy_mwh": candidate_energy_mwh,
-                "compliance_pct": summary.compliance,
-                "total_project_generation_mwh": summary.total_project_generation_mwh,
-                "bess_generation_mwh": summary.bess_generation_mwh,
-                "pv_generation_mwh": summary.pv_generation_mwh,
-                "pv_excess_mwh": summary.pv_excess_mwh,
-                "bess_losses_mwh": summary.bess_losses_mwh,
-                "total_shortfall_mwh": summary.total_shortfall_mwh,
-                "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
-                "max_eq_cycles_per_year": max_eq_cycles,
-                "min_soh_total": min_soh_total,
-                "cycle_limit_hit": cycle_limit_hit,
-                "soh_below_min": soh_below_min,
-                "feasible": feasible,
-                "cycles_over_cap": cycles_over_cap,
-                "soh_margin": soh_margin,
-                "lcoe_usd_per_mwh": lcoe,
-                "npv_costs_usd": discounted_costs,
-                "irr_pct": irr_pct,
-                "npv_usd": npv_usd,
-                "npv_per_mwh_usd": npv_per_mwh_usd,
-                "capex_per_kw_usd": capex_per_kw_usd,
-            }
-        )
+            with executor_cls(max_workers=max_workers) as executor:
+                for row in executor.map(evaluate_fn, batch_candidates):
+                    rows.append(row)
 
     df = pd.DataFrame(rows)
     if df.empty:
