@@ -10,6 +10,7 @@ from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import (
     BessEconomicCandidate,
     _compute_candidate_economics,
+    _main_example,
     compute_static_bess_sweep_economics,
     sweep_bess_sizes,
 )
@@ -1245,3 +1246,15 @@ def test_static_economic_sweep_uses_blended_price() -> None:
 
     expected_revenue = (100.0 + 50.0) * 50.0
     assert math.isclose(df.loc[0, "npv_usd"], expected_revenue)
+
+
+def test_main_example_outputs_sections(capsys: pytest.CaptureFixture[str]) -> None:
+    _main_example()
+
+    output = capsys.readouterr().out
+    assert "Feasibility snapshot" in output
+    assert "cycles_over_cap" in output
+    assert "soh_margin" in output
+    assert "Ranking KPI (npv_per_mwh_usd)" in output
+    assert "is_best" in output
+    assert "npv_per_mwh_usd" in output

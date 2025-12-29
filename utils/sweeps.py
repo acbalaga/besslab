@@ -1074,6 +1074,8 @@ def _load_sample_inputs() -> tuple["SimConfig", pd.DataFrame, pd.DataFrame]:
     from app import SimConfig
 
     repo_root = Path(__file__).resolve().parent.parent
+    # PV profile is stored in MW and the cycle model rows are dimensionless;
+    # downstream sweeps interpret power in MW, energy in MWh, and costs in USD.
     pv_df = pd.read_csv(repo_root / "data" / "PV_8760_MW.csv")
     cycle_df = pd.read_excel(repo_root / "data" / "cycle_model.xlsx")
 
@@ -1085,7 +1087,29 @@ def _load_sample_inputs() -> tuple["SimConfig", pd.DataFrame, pd.DataFrame]:
 def _main_example() -> None:
     """Execute a small sweep using bundled sample data and print the table."""
 
+    # Streamlit emits cache warnings when the runtime is absent; quiet them for CLI demos.
+    logging.getLogger("streamlit.runtime.caching.cache_data_api").setLevel(logging.ERROR)
+
     base_cfg, pv_df, cycle_df = _load_sample_inputs()
+    # Allow a bit more cycling headroom so at least a few candidates are feasible while
+    # still showing margin columns in the output.
+    base_cfg = replace(base_cfg, max_cycles_per_day_cap=2.0)
+
+    # Economics use USD throughout; capex and fixed opex are expressed in millions of USD
+    # while prices are per delivered MWh.
+    economics_inputs = EconomicInputs(
+        capex_musd=0.8,
+        fixed_opex_pct_of_capex=0.015,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.02,
+        discount_rate=0.07,
+    )
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=120.0,
+        pv_market_price_usd_per_mwh=40.0,
+        wesm_price_usd_per_mwh=90.0,
+        apply_wesm_to_shortfall=True,
+    )
 
     df = sweep_bess_sizes(
         base_cfg,
@@ -1094,22 +1118,43 @@ def _main_example() -> None:
         "Auto (infer)",
         power_mw_values=[10.0, 15.0, 20.0],
         duration_h_values=[2.0, 4.0],
+        min_soh=0.9,
+        use_case="reliability",
+        ranking_kpi="npv_per_mwh_usd",
+        economics_inputs=economics_inputs,
+        price_inputs=price_inputs,
     )
 
-    # Show a compact summary so callers know where the best candidate landed.
-    display_cols = [
+    feasibility_cols = [
         "power_mw",
         "duration_h",
         "energy_mwh",
         "compliance_pct",
-        "total_shortfall_mwh",
-        "avg_eq_cycles_per_year",
-        "min_soh_total",
-        "feasible",
+        "cycles_over_cap",
+        "soh_margin",
+        "status",
         "is_best",
     ]
-    print("\nGrid-search results (sample data):")
-    print(df[display_cols].to_string(index=False))
+    print("\nFeasibility snapshot (power MW, energy MWh, cycle margins are annualized):")
+    print(df[feasibility_cols].to_string(index=False))
+
+    evaluated = df[df["status"] == "evaluated"]
+    if not evaluated.empty:
+        ranked = evaluated.sort_values("npv_per_mwh_usd", ascending=False)
+        ranking_cols = [
+            "power_mw",
+            "duration_h",
+            "npv_per_mwh_usd",
+            "npv_usd",
+            "lcoe_usd_per_mwh",
+            "capex_per_kw_usd",
+            "irr_pct",
+            "is_best",
+        ]
+        print("\nRanking KPI (npv_per_mwh_usd): higher is better and is_best marks the top pick.")
+        print(ranked[ranking_cols].to_string(index=False))
+    else:
+        print("\nNo candidates passed feasibility; economics were skipped.")
 
 
 __all__ = [
