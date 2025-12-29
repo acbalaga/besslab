@@ -264,6 +264,107 @@ def test_sweep_computes_economics_when_inputs_provided():
     assert abs(df.loc[0, "irr_pct"] - 0.0) < 1e-6
 
 
+def test_sweep_prunes_candidates_and_skips_economics_with_thresholds():
+    pv_df = pd.DataFrame({"pv_mw": [0.0]})
+    cycle_df = pd.DataFrame()
+    base_cfg = SimConfig(years=1, initial_power_mw=10.0, initial_usable_mwh=10.0)
+
+    compliance_by_energy = {20.0: 80.0, 40.0: 95.0, 60.0: 92.0}
+    shortfall_by_energy = {20.0: 2.0, 40.0: 10.0, 60.0: 3.0}
+
+    def _simulate(cfg: SimConfig, pv_df, cycle_df, dod_override, need_logs=False):
+        energy = cfg.initial_usable_mwh
+        year = YearResult(
+            year_index=1,
+            expected_firm_mwh=0.0,
+            delivered_firm_mwh=energy,
+            shortfall_mwh=shortfall_by_energy[energy],
+            breach_days=0,
+            charge_mwh=0.0,
+            discharge_mwh=0.0,
+            available_pv_mwh=0.0,
+            pv_to_contract_mwh=0.0,
+            bess_to_contract_mwh=energy,
+            avg_rte=1.0,
+            eq_cycles=100.0,
+            cum_cycles=100.0,
+            soh_cycle=1.0,
+            soh_calendar=1.0,
+            soh_total=0.9,
+            eoy_usable_mwh=energy,
+            eoy_power_mw=cfg.initial_power_mw,
+            pv_curtailed_mwh=0.0,
+            flags={},
+        )
+        return SimulationOutput(
+            cfg=cfg,
+            discharge_hours_per_day=4.0,
+            results=[year],
+            monthly_results=[],
+            first_year_logs=None,
+            final_year_logs=None,
+            hod_count=np.zeros(24),
+            hod_sum_pv=np.zeros(24),
+            hod_sum_pv_resource=np.zeros(24),
+            hod_sum_bess=np.zeros(24),
+            hod_sum_charge=np.zeros(24),
+            augmentation_energy_added_mwh=[0.0],
+            augmentation_retired_energy_mwh=[0.0],
+            augmentation_events=0,
+        )
+
+    def _summarize(sim_output: SimulationOutput) -> SimulationSummary:
+        energy = sim_output.cfg.initial_usable_mwh
+        return SimulationSummary(
+            compliance=compliance_by_energy[energy],
+            bess_share_of_firm=1.0,
+            charge_discharge_ratio=1.0,
+            pv_capture_ratio=1.0,
+            discharge_capacity_factor=1.0,
+            total_project_generation_mwh=energy,
+            bess_generation_mwh=energy,
+            pv_generation_mwh=0.0,
+            pv_excess_mwh=0.0,
+            bess_losses_mwh=0.0,
+            total_shortfall_mwh=shortfall_by_energy[energy],
+            avg_eq_cycles_per_year=100.0,
+            cap_ratio_final=1.0,
+        )
+
+    econ_inputs = EconomicInputs(
+        capex_musd=1.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+
+    df = sweep_bess_sizes(
+        base_cfg,
+        pv_df,
+        cycle_df,
+        "Auto (infer)",
+        energy_mwh_values=[20.0, 40.0, 60.0],
+        fixed_power_mw=10.0,
+        min_soh=0.5,
+        min_compliance_pct=90.0,
+        max_shortfall_mwh=5.0,
+        simulate_fn=_simulate,
+        summarize_fn=_summarize,
+        economics_inputs=econ_inputs,
+    )
+
+    status_by_energy = dict(zip(df["energy_mwh"], df["status"]))
+    assert status_by_energy[20.0] == "below_min_compliance"
+    assert status_by_energy[40.0] == "exceeds_shortfall"
+    assert status_by_energy[60.0] == "evaluated"
+
+    assert math.isnan(df.loc[df["energy_mwh"] == 20.0, "npv_costs_usd"].iloc[0])
+    assert math.isnan(df.loc[df["energy_mwh"] == 40.0, "irr_pct"].iloc[0])
+    assert math.isfinite(df.loc[df["energy_mwh"] == 60.0, "npv_costs_usd"].iloc[0])
+    assert df.loc[df["is_best"], "energy_mwh"].iloc[0] == 60.0
+
+
 def test_sweep_uses_price_inputs_for_cashflow_npv() -> None:
     pv_df = pd.DataFrame({"pv_mw": [0.0]})
     cycle_df = pd.DataFrame()
