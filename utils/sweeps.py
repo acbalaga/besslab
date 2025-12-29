@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from functools import partial
+import inspect
 import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
@@ -153,7 +154,7 @@ def run_sensitivity_grid(
 
 
 def _load_default_simulation_hooks() -> tuple[
-    Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"],
+    Callable[..., "SimulationOutput"],
     Callable[["SimulationOutput"], "SimulationSummary"],
 ]:
     """Import default simulation and summary functions lazily to avoid UI side effects."""
@@ -163,6 +164,42 @@ def _load_default_simulation_hooks() -> tuple[
     return simulate_project, summarize_simulation
 
 
+def _collect_optional_simulation_kwargs(
+    simulate_fn: Callable[..., Any],
+    seed: int | None,
+    deterministic: bool | None,
+) -> dict[str, Any]:
+    """Return optional simulation kwargs that are accepted by ``simulate_fn``.
+
+    The helper inspects the function signature to avoid passing unexpected keyword
+    arguments to simulators that do not support seeding or deterministic behavior.
+    """
+
+    try:
+        parameters = inspect.signature(simulate_fn).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    accepts_var_kw = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+
+    def _supports_kwarg(name: str) -> bool:
+        param = parameters.get(name)
+        return accepts_var_kw or (
+            param is not None
+            and param.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        )
+
+    kwargs: dict[str, Any] = {}
+    if seed is not None and _supports_kwarg("seed"):
+        kwargs["seed"] = seed
+    if deterministic is not None and _supports_kwarg("deterministic"):
+        kwargs["deterministic"] = deterministic
+    return kwargs
+
+
 def run_candidate_simulation(
     base_cfg: "SimConfig",
     pv_df: pd.DataFrame,
@@ -170,14 +207,17 @@ def run_candidate_simulation(
     dod_override: str,
     power_mw: float,
     duration_h: float,
-    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None = None,
+    simulate_fn: Callable[..., "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
+    seed: int | None = None,
+    deterministic: bool | None = None,
 ) -> Tuple["SimulationOutput", "SimulationSummary"]:
     """Call the core engine for a single BESS size.
 
     The adapter lives in one place so the streamlit app can swap in the real
     engine while tests can supply a stub without touching the grid-search
-    logic.
+    logic. Optional ``seed`` and ``deterministic`` flags are forwarded to
+    simulators that accept them so callers can enforce reproducible runs.
     """
 
     if simulate_fn is None or summarize_fn is None:
@@ -192,7 +232,8 @@ def run_candidate_simulation(
         initial_usable_mwh=candidate_energy_mwh,
     )
 
-    sim_output = simulate_fn(cfg_for_run, pv_df, cycle_df, dod_override, False)
+    simulate_kwargs = _collect_optional_simulation_kwargs(simulate_fn, seed, deterministic)
+    sim_output = simulate_fn(cfg_for_run, pv_df, cycle_df, dod_override, False, **simulate_kwargs)
     summary = summarize_fn(sim_output)
     return sim_output, summary
 
@@ -580,7 +621,7 @@ def _evaluate_candidate_row(
     economics_inputs: EconomicInputs | None,
     price_inputs: PriceInputs | None,
     base_initial_energy_mwh: float,
-    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
+    simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
     max_shortfall_mwh: float | None,
@@ -692,7 +733,7 @@ def _evaluate_candidate_tuple(
     economics_inputs: EconomicInputs | None,
     price_inputs: PriceInputs | None,
     base_initial_energy_mwh: float,
-    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None,
+    simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
     max_shortfall_mwh: float | None,
@@ -736,7 +777,7 @@ def sweep_bess_sizes(
     min_soh: float = 0.6,
     min_compliance_pct: float | None = None,
     max_shortfall_mwh: float | None = None,
-    simulate_fn: Callable[["SimConfig", pd.DataFrame, pd.DataFrame, str, bool], "SimulationOutput"] | None = None,
+    simulate_fn: Callable[..., "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
     max_candidates: int | None = None,
     on_exceed: str = "raise",
