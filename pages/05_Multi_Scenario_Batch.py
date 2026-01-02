@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -210,6 +211,77 @@ def _validate_row(row: pd.Series, idx: int) -> List[str]:
         errors.append("SOC floor/ceiling must be numeric.")
 
     return [f"Row {idx + 1}: {msg}" for msg in errors]
+
+
+def _expected_column_order() -> List[str]:
+    """Return the canonical column order for scenario entry and rendering."""
+
+    return [
+        "label",
+        # System sizing
+        "initial_power_mw",
+        "initial_usable_mwh",
+        "contracted_mw",
+        "years",
+        "pv_degradation_rate",
+        # Operations windows + operations levers
+        "discharge_windows",
+        "charge_windows",
+        "bess_availability",
+        "rte",
+        "soc_floor",
+        "soc_ceiling",
+        "calendar_fade_rate",
+        "use_calendar_exp_model",
+        # Augmentation
+        "augmentation",
+        "aug_trigger_type",
+        "aug_threshold_margin",
+        "aug_topup_margin",
+        "aug_soh_trigger_pct",
+        "aug_soh_add_frac_initial",
+        "aug_periodic_every_years",
+        "aug_periodic_add_frac_of_bol",
+        "aug_add_mode",
+        "aug_fixed_energy_mwh",
+        "aug_retire_old_cohort",
+        "aug_retire_soh_pct",
+    ]
+
+
+def _normalize_table(df: pd.DataFrame, cfg: SimConfig) -> pd.DataFrame:
+    """Align uploaded/pasted scenario tables to the expected schema.
+
+    Missing columns are filled with defaults from the cached configuration to
+    avoid reruns dropping user edits. Unknown columns are ignored.
+    """
+
+    defaults = _seed_rows(cfg).iloc[0]
+    expected_cols = _expected_column_order()
+    normalized = df.copy()
+    for col in expected_cols:
+        if col not in normalized.columns:
+            normalized[col] = defaults[col]
+    normalized = normalized[expected_cols]
+    return normalized.fillna(defaults)
+
+
+def _read_table_from_text(payload: str, cfg: SimConfig) -> Optional[pd.DataFrame]:
+    """Parse CSV or JSON text into a scenario table if possible."""
+
+    text = payload.strip()
+    if not text:
+        return None
+
+    try:
+        df = pd.read_json(text)
+    except ValueError:
+        try:
+            df = pd.read_csv(StringIO(text))
+        except Exception as exc:
+            st.error(f"Could not parse table input: {exc}")
+            return None
+    return _normalize_table(df, cfg)
 
 
 def _render_summary_table(df: pd.DataFrame) -> None:
@@ -478,6 +550,7 @@ st.caption(
     "Use the table below to tweak scenarios. Columns are grouped by **System sizing**, **Operations windows**, "
     "**Augmentation**, and **Economics** knobs."
 )
+st.caption("Tip: Save edits using the button below to avoid Streamlit reruns resetting values.")
 
 template_cols = st.columns(3)
 templates = {
@@ -498,6 +571,41 @@ for col, (label, builder) in zip(template_cols, templates.items()):
 
 if "multi_scenario_table_data" not in st.session_state:
     st.session_state["multi_scenario_table_data"] = _seed_rows(cached_cfg)
+
+with st.expander("Import scenarios without the table", expanded=False):
+    st.caption(
+        "Paste CSV/JSON text or upload a file to replace the table below. Columns not provided fall back to defaults."
+    )
+    uploaded_file = st.file_uploader(
+        "Upload CSV or JSON",
+        type=["csv", "json"],
+        accept_multiple_files=False,
+        key="multi_scenario_uploader",
+    )
+    pasted_text = st.text_area(
+        "Or paste CSV/JSON content",
+        value="",
+        placeholder="label,initial_power_mw,initial_usable_mwh,years\nScenario A,25,100,15",
+        key="multi_scenario_paste_area",
+        height=120,
+    )
+    if st.button("Load scenarios", use_container_width=True):
+        imported_df: Optional[pd.DataFrame] = None
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.type.endswith("json"):
+                    imported_df = pd.read_json(uploaded_file)
+                else:
+                    imported_df = pd.read_csv(uploaded_file)
+            except Exception as exc:
+                st.error(f"Upload could not be read: {exc}")
+        if imported_df is None and pasted_text.strip():
+            imported_df = _read_table_from_text(pasted_text, cached_cfg)
+        if imported_df is not None:
+            st.session_state["multi_scenario_table_data"] = _normalize_table(imported_df, cached_cfg)
+            st.success(f"Loaded {len(imported_df)} scenario(s) from import.")
+        else:
+            st.info("No import applied. Upload a file or paste table content.", icon="ℹ️")
 
 table_placeholder = st.empty()
 WINDOW_PLACEHOLDER = "06:00-10:00, 18:00-22:00"
@@ -634,54 +742,29 @@ column_config = {
         help="Augmentation: retire cohorts whose SOH falls below this fraction.",
     ),
 }
-column_order = [
-    "label",
-    # System sizing
-    "initial_power_mw",
-    "initial_usable_mwh",
-    "contracted_mw",
-    "years",
-    "pv_degradation_rate",
-    # Operations windows + operations levers
-    "discharge_windows",
-    "charge_windows",
-    "bess_availability",
-    "rte",
-    "soc_floor",
-    "soc_ceiling",
-    "calendar_fade_rate",
-    "use_calendar_exp_model",
-    # Augmentation
-    "augmentation",
-    "aug_trigger_type",
-    "aug_threshold_margin",
-    "aug_topup_margin",
-    "aug_soh_trigger_pct",
-    "aug_soh_add_frac_initial",
-    "aug_periodic_every_years",
-    "aug_periodic_add_frac_of_bol",
-    "aug_add_mode",
-    "aug_fixed_energy_mwh",
-    "aug_retire_old_cohort",
-    "aug_retire_soh_pct",
-]
+column_order = _expected_column_order()
 
 st.caption(f"Time window format examples: {WINDOW_PLACEHOLDER} or 09:00-15:00.")
+with st.form("multi_scenario_table_form", clear_on_submit=False):
+    edited_df = table_placeholder.data_editor(
+        st.session_state["multi_scenario_table_data"],
+        use_container_width=True,
+        num_rows="dynamic",
+        hide_index=True,
+        column_config=column_config,
+        column_order=column_order,
+        key="multi_scenario_table",
+    )
+    saved = st.form_submit_button("Save scenario table", use_container_width=True)
+    if saved:
+        st.session_state["multi_scenario_table_data"] = _normalize_table(edited_df, cached_cfg)
+        st.success("Saved table edits. They will persist across reruns in this session.")
 
-edited_df = table_placeholder.data_editor(
-    st.session_state["multi_scenario_table_data"],
-    use_container_width=True,
-    num_rows="dynamic",
-    hide_index=True,
-    column_config=column_config,
-    column_order=column_order,
-    key="multi_scenario_table",
-)
-st.session_state["multi_scenario_table_data"] = edited_df
-
-st.caption("Tip: Add rows for each design tweak. Remove rows to pare down the batch run.")
+st.caption("Add rows for each design tweak. Remove rows to pare down the batch run.")
 st.markdown("#### Scenario summary")
-_render_summary_table(edited_df)
+_render_summary_table(st.session_state["multi_scenario_table_data"])
+
+table_df = st.session_state["multi_scenario_table_data"]
 
 run_container = st.container()
 results_container = st.container()
@@ -693,13 +776,13 @@ if "multi_scenario_batch_results" in st.session_state:
 def _run_batch() -> pd.DataFrame | None:
     """Run the configured scenarios and return a results DataFrame."""
 
-    if edited_df is None or edited_df.empty:
+    if table_df is None or table_df.empty:
         st.warning("Add at least one scenario before running.", icon="⚠️")
         return None
 
     econ_payload = st.session_state.get("latest_economics_payload")
     validation_errors: List[str] = []
-    for idx, row in edited_df.reset_index(drop=True).iterrows():
+    for idx, row in table_df.reset_index(drop=True).iterrows():
         validation_errors.extend(_validate_row(row, idx))
 
     if validation_errors:
@@ -709,16 +792,16 @@ def _run_batch() -> pd.DataFrame | None:
         return None
 
     enforce_rate_limit()
-    total_scenarios = len(edited_df)
+    total_scenarios = len(table_df)
     progress = st.progress(0.0, text="Starting batch...")
     status_placeholder = st.empty()
     status_rows: List[Dict[str, str]] = []
-    for _, row in edited_df.iterrows():
+    for _, row in table_df.iterrows():
         status_rows.append({"Label": str(row.get("label") or "Scenario"), "Status": "⏳ Pending"})
     status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
     results: List[Dict[str, Any]] = []
 
-    for idx, (_, row_series) in enumerate(edited_df.reset_index(drop=True).iterrows(), start=1):
+    for idx, (_, row_series) in enumerate(table_df.reset_index(drop=True).iterrows(), start=1):
         label = str(row_series.get("label") or f"Scenario {idx}")
         try:
             _, cfg = _parse_row_to_config(row_series, cached_cfg)
