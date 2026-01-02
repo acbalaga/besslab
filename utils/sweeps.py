@@ -281,6 +281,7 @@ def compute_static_bess_sweep_economics(
     economics_template: EconomicInputs,
     price_inputs: PriceInputs,
     wesm_price_usd_per_mwh: float,
+    wesm_surplus_price_usd_per_mwh: float | None = None,
     *,
     years: int = 1,
 ) -> pd.DataFrame:
@@ -303,6 +304,11 @@ def compute_static_bess_sweep_economics(
         price_inputs_for_run = replace(
             price_inputs,
             wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+            wesm_surplus_price_usd_per_mwh=(
+                wesm_surplus_price_usd_per_mwh
+                if wesm_surplus_price_usd_per_mwh is not None
+                else price_inputs.wesm_surplus_price_usd_per_mwh
+            ),
         )
 
         annual_compliance = max(candidate.compliance_mwh, 0.0)
