@@ -2271,106 +2271,6 @@ def run_app():
 
         st.caption(wesm_caption)
 
-    st.markdown("### SOC & dispatch diagnostics")
-    diag_logs: Dict[str, HourlyLog] = {}
-    if first_year_logs is not None:
-        diag_logs["Year 1 (initial)"] = first_year_logs
-    if final_year_logs is not None:
-        diag_logs[f"Year {cfg.years} (final)"] = final_year_logs
-
-    if diag_logs:
-        diag_default = list(diag_logs.keys()).index(f"Year {cfg.years} (final)") if final_year_logs is not None else 0
-        selected_label = st.radio(
-            "Select which year to visualize",
-            options=list(diag_logs.keys()),
-            index=diag_default,
-            help="Toggle between the first-year baseline and final-year (with degradation/augmentation) logs.",
-        )
-        selected_logs = diag_logs[selected_label]
-
-        st.caption(
-            "Heatmap: dark troughs near the SOC floor overnight hint at reliability risk; saturated midday bands near 100% "
-            "indicate PV clipping/curtailment. Use the year toggle to see how degradation or augmentation shifts headroom."
-        )
-        heatmap_pivot = prepare_soc_heatmap_data(selected_logs, cfg.initial_usable_mwh)
-        heatmap_source = (
-            heatmap_pivot.reset_index()
-            .melt(id_vars="day_of_year", var_name="hour", value_name="soc_frac")
-            .dropna(subset=["soc_frac"])
-        )
-        heatmap_source["soc_pct"] = heatmap_source["soc_frac"] * 100.0
-        heatmap_source["diagnostic_tip"] = (
-            "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/curtailment headroom."
-        )
-        if heatmap_source.empty:
-            st.info("SOC heatmap unavailable — simulation logs were empty for this scenario.")
-        else:
-            heatmap_chart = (
-                alt.Chart(heatmap_source)
-                .mark_rect()
-                .encode(
-                    x=alt.X("hour:O", title="Hour of day", axis=alt.Axis(values=list(range(0, 24, 3)))),
-                    y=alt.Y("day_of_year:O", title="Day of year"),
-                    color=alt.Color(
-                        "soc_pct:Q",
-                        title="SOC (%) of initial usable energy",
-                        scale=alt.Scale(scheme="turbo", domain=[0, 100]),
-                    ),
-                    tooltip=[
-                        alt.Tooltip("day_of_year:O", title="Day"),
-                        alt.Tooltip("hour:O", title="Hour"),
-                        alt.Tooltip("soc_pct:Q", title="SOC (%)", format=".1f"),
-                        alt.Tooltip("diagnostic_tip:N", title="Reading tip"),
-                    ],
-                )
-                .properties(height=320)
-            )
-            st.altair_chart(heatmap_chart, use_container_width=True)
-
-        envelope_df = prepare_charge_discharge_envelope(selected_logs)
-        st.caption(
-            "Charge/discharge envelope shows the median and 5–95% range by hour; widening charge bands or deep discharge "
-            "tails highlight operational stress that may erode reliability."
-        )
-        axis_x = alt.Axis(values=list(range(0, 24, 2)))
-        envelope_chart = alt.layer(
-            alt.Chart(envelope_df)
-            .mark_area(opacity=0.25, color="#caa6ff")
-            .encode(
-                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
-                y=alt.Y("charge_low:Q", title="MW"),
-                y2="charge_high:Q",
-                tooltip=[
-                    alt.Tooltip("hour:O", title="Hour"),
-                    alt.Tooltip("charge_p05:Q", title="Charge p05 (MW)", format=".2f"),
-                    alt.Tooltip("charge_p50:Q", title="Charge median (MW)", format=".2f"),
-                    alt.Tooltip("charge_p95:Q", title="Charge p95 (MW)", format=".2f"),
-                ],
-            ),
-            alt.Chart(envelope_df)
-            .mark_area(opacity=0.25, color="#7fd18b")
-            .encode(
-                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
-                y=alt.Y("discharge_low:Q", title="MW"),
-                y2="discharge_high:Q",
-                tooltip=[
-                    alt.Tooltip("hour:O", title="Hour"),
-                    alt.Tooltip("discharge_p05:Q", title="Discharge p05 (MW)", format=".2f"),
-                    alt.Tooltip("discharge_p50:Q", title="Discharge median (MW)", format=".2f"),
-                    alt.Tooltip("discharge_p95:Q", title="Discharge p95 (MW)", format=".2f"),
-                ],
-            ),
-            alt.Chart(envelope_df)
-            .mark_line(color="#7d5ba6", strokeWidth=2)
-            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("charge_median_neg:Q", title="MW")),
-            alt.Chart(envelope_df)
-            .mark_line(color="#2e7b53", strokeWidth=2)
-            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("discharge_p50:Q", title="MW")),
-        ).properties(height=300)
-        st.altair_chart(envelope_chart, use_container_width=True)
-    else:
-        st.info("SOC heatmap and charge/discharge envelope are hidden because simulation logs are unavailable.")
-
     st.markdown("#### Augmentation impact trace")
     augmentation_retired = getattr(
         sim_output, "augmentation_retired_energy_mwh", [0.0 for _ in sim_output.augmentation_energy_added_mwh]
@@ -2898,6 +2798,130 @@ def run_app():
         )
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
+
+    st.markdown("### SOC & dispatch diagnostics")
+    diag_logs: Dict[str, HourlyLog] = {}
+    if first_year_logs is not None:
+        diag_logs["Year 1 (initial)"] = first_year_logs
+    if final_year_logs is not None:
+        diag_logs[f"Year {cfg.years} (final)"] = final_year_logs
+
+    if diag_logs:
+        diag_default = list(diag_logs.keys()).index(f"Year {cfg.years} (final)") if final_year_logs is not None else 0
+        selected_label = st.radio(
+            "Select which year to visualize",
+            options=list(diag_logs.keys()),
+            index=diag_default,
+            help="Toggle between the first-year baseline and final-year (with degradation/augmentation) logs.",
+        )
+        selected_logs = diag_logs[selected_label]
+
+        heatmap_bin_hours = st.select_slider(
+            "Heatmap resolution",
+            options=[1, 2, 3],
+            value=1,
+            format_func=lambda h: f"{h}-hour bands",
+            help="Downsample the heatmap horizontally to shrink the data payload if rendering feels sluggish.",
+        )
+
+        st.caption(
+            "Heatmap: dark troughs near the SOC floor overnight hint at reliability risk; saturated midday bands near 100% "
+            "indicate PV clipping/curtailment. Use the resolution control if the view feels heavy."
+        )
+        heatmap_pivot = prepare_soc_heatmap_data(selected_logs, cfg.initial_usable_mwh)
+        heatmap_source = (
+            heatmap_pivot.reset_index()
+            .melt(id_vars="day_of_year", var_name="hour", value_name="soc_frac")
+            .dropna(subset=["soc_frac"])
+        )
+        heatmap_source["hour_bin"] = (heatmap_source["hour"].astype(int) // heatmap_bin_hours) * heatmap_bin_hours
+        if heatmap_bin_hours > 1:
+            heatmap_source = (
+                heatmap_source
+                .groupby(["day_of_year", "hour_bin"], as_index=False)["soc_frac"]
+                .mean()
+                .rename(columns={"hour_bin": "hour"})
+            )
+        heatmap_source["hour_label"] = heatmap_source["hour"].astype(int).apply(
+            lambda h: (
+                f"{h:02d}:00–{(h + heatmap_bin_hours) % 24:02d}:00"
+                if heatmap_bin_hours > 1
+                else f"{h:02d}:00"
+            )
+        )
+        heatmap_source["soc_pct"] = heatmap_source["soc_frac"] * 100.0
+        heatmap_source["diagnostic_tip"] = (
+            "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/curtailment headroom."
+        )
+        if heatmap_source.empty:
+            st.info("SOC heatmap unavailable — simulation logs were empty for this scenario.")
+        else:
+            axis_x = alt.Axis(values=list(range(0, 24, max(heatmap_bin_hours, 3))))
+            heatmap_chart = (
+                alt.Chart(heatmap_source)
+                .mark_rect()
+                .encode(
+                    x=alt.X("hour:O", title="Hour of day", axis=axis_x),
+                    y=alt.Y("day_of_year:O", title="Day of year"),
+                    color=alt.Color(
+                        "soc_pct:Q",
+                        title="SOC (%) of initial usable energy",
+                        scale=alt.Scale(scheme="turbo", domain=[0, 100]),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("day_of_year:O", title="Day"),
+                        alt.Tooltip("hour_label:N", title="Hour"),
+                        alt.Tooltip("soc_pct:Q", title="SOC (%)", format=".1f"),
+                        alt.Tooltip("diagnostic_tip:N", title="Reading tip"),
+                    ],
+                )
+                .properties(height=320)
+            )
+            st.altair_chart(heatmap_chart, use_container_width=True)
+
+        envelope_df = prepare_charge_discharge_envelope(selected_logs)
+        st.caption(
+            "Charge/discharge envelope shows the median and 5–95% range by hour; widening charge bands or deep discharge "
+            "tails highlight operational stress that may erode reliability."
+        )
+        axis_x = alt.Axis(values=list(range(0, 24, 2)))
+        envelope_chart = alt.layer(
+            alt.Chart(envelope_df)
+            .mark_area(opacity=0.25, color="#caa6ff")
+            .encode(
+                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
+                y=alt.Y("charge_low:Q", title="MW"),
+                y2="charge_high:Q",
+                tooltip=[
+                    alt.Tooltip("hour:O", title="Hour"),
+                    alt.Tooltip("charge_p05:Q", title="Charge p05 (MW)", format=".2f"),
+                    alt.Tooltip("charge_p50:Q", title="Charge median (MW)", format=".2f"),
+                    alt.Tooltip("charge_p95:Q", title="Charge p95 (MW)", format=".2f"),
+                ],
+            ),
+            alt.Chart(envelope_df)
+            .mark_area(opacity=0.25, color="#7fd18b")
+            .encode(
+                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
+                y=alt.Y("discharge_low:Q", title="MW"),
+                y2="discharge_high:Q",
+                tooltip=[
+                    alt.Tooltip("hour:O", title="Hour"),
+                    alt.Tooltip("discharge_p05:Q", title="Discharge p05 (MW)", format=".2f"),
+                    alt.Tooltip("discharge_p50:Q", title="Discharge median (MW)", format=".2f"),
+                    alt.Tooltip("discharge_p95:Q", title="Discharge p95 (MW)", format=".2f"),
+                ],
+            ),
+            alt.Chart(envelope_df)
+            .mark_line(color="#7d5ba6", strokeWidth=2)
+            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("charge_median_neg:Q", title="MW")),
+            alt.Chart(envelope_df)
+            .mark_line(color="#2e7b53", strokeWidth=2)
+            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("discharge_p50:Q", title="MW")),
+        ).properties(height=300)
+        st.altair_chart(envelope_chart, use_container_width=True)
+    else:
+        st.info("SOC heatmap and charge/discharge envelope are hidden because simulation logs are unavailable.")
 
     st.markdown("---")
 
