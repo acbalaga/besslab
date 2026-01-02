@@ -1550,14 +1550,11 @@ def run_app():
                 ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
                 help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.")
 
-    manual_schedule_rows = st.session_state.get("manual_aug_schedule_rows")
-    if manual_schedule_rows is None:
-        manual_schedule_rows = [
+    if "manual_aug_schedule_rows" not in st.session_state:
+        st.session_state["manual_aug_schedule_rows"] = [
             {"Year": 5, "Basis": AUGMENTATION_SCHEDULE_BASIS[0], "Amount": 10.0}
         ]
-        st.session_state["manual_aug_schedule_rows"] = list(manual_schedule_rows)
 
-    manual_schedule_df = pd.DataFrame(manual_schedule_rows)
     manual_schedule_entries: List[AugmentationScheduleEntry] = []
     manual_schedule_errors: List[str] = []
 
@@ -1572,23 +1569,28 @@ def run_app():
 
         if aug_mode == "Manual":
             st.caption(
-                "Define explicit augmentation events by year. Each row adds capacity before other augmentation logic runs."
+                "Define explicit augmentation events by year. Save the table to persist edits across reruns."
             )
-            manual_schedule_df = st.data_editor(
-                manual_schedule_df,
-                key="manual_aug_schedule_editor",
-                column_config={
-                    "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
-                    "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
-                    "Amount": st.column_config.NumberColumn(
-                        "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
-                    ),
-                },
-                num_rows="dynamic",
-                hide_index=True,
-                use_container_width=True,
-            )
-            st.session_state["manual_aug_schedule_rows"] = manual_schedule_df.to_dict("records")
+            with st.form("manual_aug_schedule_form", clear_on_submit=False):
+                manual_schedule_df = st.data_editor(
+                    pd.DataFrame(st.session_state["manual_aug_schedule_rows"]),
+                    key="manual_aug_schedule_editor",
+                    column_config={
+                        "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
+                        "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
+                        "Amount": st.column_config.NumberColumn(
+                            "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
+                        ),
+                    },
+                    num_rows="dynamic",
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
+            if saved_manual_schedule:
+                st.session_state["manual_aug_schedule_rows"] = manual_schedule_df.to_dict("records")
+                st.success("Saved augmentation events for this session.")
+            manual_schedule_df = pd.DataFrame(st.session_state["manual_aug_schedule_rows"])
             manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(
                 manual_schedule_df, int(years)
             )
