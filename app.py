@@ -1740,7 +1740,8 @@ def run_app():
 
     default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
     default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
-    default_wesm_php_per_kwh = default_pv_php_per_kwh
+    wesm_reference_php_per_mwh = 5_583.0  # 2024 Annual Market Assessment Report, PEMC
+    default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
 
     if run_economics:
         wesm_price_usd_per_mwh: Optional[float] = None
@@ -1842,7 +1843,8 @@ def run_app():
                 "Apply WESM price to shortfalls",
                 value=False,
                 help=(
-                    "Deduct contract shortfalls at the WESM average rate below."
+                    "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC);"
+                    " enter a PHP/kWh rate to override."
                 ),
             )
             wesm_price_php_per_kwh = st.number_input(
@@ -1850,7 +1852,10 @@ def run_app():
                 min_value=0.0,
                 value=default_wesm_php_per_kwh,
                 step=0.05,
-                help="Applied to shortfall MWh as either a purchase cost or sale credit.",
+                help=(
+                    "Applied to shortfall MWh as either a purchase cost or sale credit."
+                    " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
+                ),
                 disabled=not wesm_pricing_enabled,
             )
             sell_to_wesm = st.checkbox(
@@ -1882,6 +1887,7 @@ def run_app():
                 st.caption(
                     "WESM pricing active for shortfalls: "
                     f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
+                    " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
                 )
 
         variable_col1, variable_col2 = st.columns(2)

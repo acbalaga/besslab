@@ -69,7 +69,8 @@ dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
 forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
-default_wesm_php_per_kwh = default_pv_php_per_kwh
+wesm_reference_php_per_mwh = 5_583.0  # 2024 Annual Market Assessment Report, PEMC
+default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
 devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd
 
 pv_df, cycle_df = render_layout(pv_df, cycle_df)
@@ -236,14 +237,20 @@ with st.form("size_sweep_form_page"):
         wesm_pricing_enabled = st.checkbox(
             "Apply WESM price to shortfalls",
             value=False,
-            help="Deduct contract shortfalls at the WESM average rate below.",
+            help=(
+                "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC);"
+                " enter a PHP/kWh rate to override."
+            ),
         )
         wesm_price_php_per_kwh = st.number_input(
             "Average WESM price (PHP/kWh)",
             min_value=0.0,
             value=default_wesm_php_per_kwh,
             step=0.05,
-            help="Applied to shortfall MWh as either a purchase cost or sale credit.",
+            help=(
+                "Applied to shortfall MWh as either a purchase cost or sale credit."
+                " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
+            ),
             disabled=False,
         )
         sell_to_wesm = st.checkbox(
@@ -276,9 +283,13 @@ with st.form("size_sweep_form_page"):
             st.caption(
                 "WESM pricing active for shortfalls: "
                 f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
+                " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
             )
         else:
-            st.caption("WESM price is ignored unless the shortfall toggle is enabled.")
+            st.caption(
+                "WESM price is ignored unless the shortfall toggle is enabled."
+                " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
+            )
 
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
