@@ -8,14 +8,14 @@ render_layout = init_page_layout(
     page_title="Landing",
     main_title="BESSLab landing (uploads & session cache)",
     description=(
-        "Upload PV and (optionally) a cycle model once, then navigate the workspace with shared session data."
+        "Upload PV and (optionally) a cycle model once, then navigate the workspace with shared session data and cached uploads."
     ),
     base_dir=BASE_DIR,
 )
 
 with st.expander("Upload your data", expanded=True):
     st.caption(
-        "Session uploads are reused across pages. Skip the upload to use bundled samples from ./data/."
+        "Session uploads are reused across pages and fresh sessions when the file hash matches. Skip the upload to use bundled samples from ./data/."
     )
     upload_cols = st.columns(2)
     with upload_cols[0]:

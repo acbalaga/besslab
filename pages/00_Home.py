@@ -17,15 +17,15 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 ### Prepare your data
 - PV profile CSV with columns `hour_index, pv_mw` (0–8759 or 1–8760). Add a `timestamp` column to keep sub-hourly cadences or leap-year coverage; the app infers the timestep and fills gaps.
 - Optional cycle-model Excel file to override the built-in degradation table.
-- Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours.
+- Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours, and uploads are cached on the Landing page so you can reuse them across pages or fresh sessions.
 
 ### Run the workflow
 1) Upload your PV CSV (and optional cycle model) on the Landing page (or directly on Inputs & Results), or use the bundled samples.
-2) Set contracted MW, duration (hours), discharge windows, and any charge windows.
-3) Adjust efficiency, SOC limits, availability, augmentation triggers, rate-limit settings, and (optionally) enable the economics helper for LCOE/LCOS, NPV, and IRR.
+2) Set contracted MW, duration (hours), discharge windows, and any charge windows (minutes are preserved).
+3) Adjust efficiency (single RTE or split charge/discharge), SOC limits, availability, augmentation triggers (threshold, periodic, or manual schedules), rate-limit settings, and (optionally) enable the economics helper for LCOE/LCOS, NPV, and IRR. Apply a single blended energy price when you want PV and contract revenue aligned.
 4) Run the simulation and review compliance, energy splits, end-of-year capability, daily profiles, and flag guidance.
-5) Use the physics-bounded Design Advisor and SOC/economics sensitivity sweeps to explore mitigations when targets are missed.
-6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the batch tools to compare scenarios.
+5) Use the physics-bounded Design Advisor and SOC/economics sensitivity sweeps to explore mitigations when targets are missed. Re-run sweeps after input changes to refresh results.
+6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the sweep and batch tools to compare scenarios in a structured way.
 7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs.
 
 ### Multipage navigation

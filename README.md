@@ -3,14 +3,15 @@
 An interactive Streamlit app for exploring **battery energy storage** sizing and behavior when it charges only from **PV** and delivers through an **AC-coupled** point of interconnection.
 
 ## What you can do
-- Validate whether a chosen **contracted MW × duration** can be met using PV first and the BESS for any shortfall.
-- Explore how performance changes with **round-trip efficiency, state-of-charge limits, availability, degradation**, and **calendar/cycle fade**.
-- Toggle **augmentation strategies** (threshold- or SOH-based) to keep discharge capability on target across the project life.
-- Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows.
+- Validate whether a chosen **contracted MW × duration** can be met using PV first and the BESS for any shortfall, with minute-level dispatch windows.
+- Explore how performance changes with **round-trip efficiency (single or split charge/discharge), state-of-charge limits, availability, degradation**, and **calendar/cycle fade** assumptions.
+- Toggle **augmentation strategies** (threshold, periodic, or explicit manual schedules) to keep discharge capability on target across the project life.
+- Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows and economics.
 - View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, **typical daily profiles**, and **economics sensitivities**.
-- Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools.
+- Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools seeded from cached inputs.
 - Download **yearly, monthly, hourly**, and **PDF** summaries for sharing, along with sensitivity tables where applicable.
-- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar and download the module for offline use.
+- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar, download the standalone module for offline use, and override energy prices with a blended rate when needed.
+- Reuse uploads across pages and sessions via the landing page cache; bypass the session rate limit with a password when deploying publicly.
 
 ## Quick start
 ```bash
@@ -33,18 +34,19 @@ Open the provided local URL in your browser to launch the app. To remove the ses
 If no files are uploaded, the app uses the sample data in `./data/`.
 
 ## Using the app
-1. **Upload or use defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses included sample data.
-2. **Set your target.** Enter the contracted power (MW) and desired duration (hours), plus discharge and optional charge windows.
-3. **Adjust assumptions.** Use sidebar controls for efficiency, state-of-charge limits, availability, and augmentation options. Enable the economics helper to compute LCOE/LCOS, NPV, and IRR alongside the simulation.
-4. **Review results.** Check compliance, flags, end-of-year capability, daily profiles, and energy split between PV and the BESS.
-5. **Run sensitivities.** Generate SOC-window sweeps, economics heatmaps, and the physics-bounded Design Advisor suggestions when the system misses the target.
-6. **Save & export.** Download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing; use the batch tools for structured comparisons.
+1. **Upload or reuse defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses bundled sample data. The landing page caches uploads by hash so they can be reused across pages or fresh browser sessions until you clear the cache.
+2. **Set your target.** Enter the contracted power (MW) and desired duration (hours), plus discharge and optional charge windows. Minutes are preserved and parsed as fractional hours.
+3. **Adjust assumptions.** Use sidebar controls for efficiency (single or split), state-of-charge limits, availability, augmentation options (threshold, periodic, or explicit schedules), and calendar/cycle fade. Enable the economics helper to compute LCOE/LCOS, NPV, and IRR alongside the simulation, and override prices with a single blended energy rate if desired.
+4. **Review results.** Check compliance, flags, end-of-year capability, daily profiles, PV capture, and energy splits between PV and the BESS.
+5. **Run sensitivities.** Generate SOC-window sweeps, economics heatmaps, and the physics-bounded Design Advisor suggestions when the system misses the target. Re-run sweeps after changing inputs.
+6. **Save & export.** Download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing. Use the sweep and batch tools for structured comparisons.
 
 ## App pages and workflows
-- **Inputs & Results (main page):** Run simulations, view KPIs and charts, download CSV/PDF outputs, and trigger SOC/economics sensitivities plus the Design Advisor.
+- **Landing:** Upload PV/cycle files once, warm the cache, and carry those uploads across other pages (or new sessions) without reloading defaults.
+- **Inputs & Results (main page):** Run simulations, view KPIs and charts, download CSV/PDF outputs, and trigger SOC/economics sensitivities plus the Design Advisor. Disable the session rate limit with the sidebar password when load-testing deployments.
 - **Home (guide):** In-app walkthrough of the multipage workflow with data-format reminders and troubleshooting tips.
 - **BESS sizing sweep:** Sweep usable energy (holding power fixed) using the latest inputs, rank feasible candidates by compliance, shortfall, generation, LCOE, or cost metrics, and visualize LCOE/IRR trends.
-- **Multi-scenario batch:** Run a structured set of parameter variations and compare the resulting KPIs in one table (preferred for scenario reviews).
+- **Multi-scenario batch:** Run a structured set of parameter variations and compare the resulting KPIs in one table (preferred for scenario reviews). Start from the seeded templates, tweak availability, SOC windows, augmentation, or economics, and export the table for external review.
 
 ## Run a quick BESS sizing sweep from the CLI
 The grid-search helper can be exercised without Streamlit using the bundled sample data:
