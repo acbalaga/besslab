@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app import SimConfig, SimulationOutput, SimulationSummary, YearResult
+from services.simulation_core import SimConfig, SimulationOutput, SimulationSummary, YearResult
 from utils.economics import EconomicInputs, PriceInputs
 from utils.sweeps import (
     BessEconomicCandidate,

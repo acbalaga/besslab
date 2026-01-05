@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app import SimConfig, Window, infer_step_hours_from_pv, simulate_project
+from services.simulation_core import SimConfig, Window, infer_step_hours_from_pv, simulate_project
 
 
 def _flat_cycle_table() -> pd.DataFrame:

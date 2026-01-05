@@ -5,7 +5,8 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
-from app import BASE_DIR, SimConfig
+from app import BASE_DIR
+from services.simulation_core import SimConfig
 from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from app import SimConfig, Window, infer_dod_bucket, resolve_efficiencies, simulate_project
+from services.simulation_core import SimConfig, Window, infer_dod_bucket, resolve_efficiencies, simulate_project
 
 
 def test_infer_dod_bucket_scales_with_available_energy():
