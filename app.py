@@ -22,6 +22,7 @@ from frontend.ui.forms import (
     render_simulation_form,
 )
 from frontend.ui.metrics import KPIResults, compute_kpis, render_primary_metrics
+from frontend.ui.rendering import MetricSpec, render_formatted_dataframe, render_metrics
 from frontend.ui.pdf import build_pdf_summary
 from utils import (
     FLAG_DEFINITIONS,
@@ -192,6 +193,25 @@ def run_app():
         'EOY power MW (avail-adjusted)': m.eom_power_mw,
         'PV curtailed MWh': m.pv_curtailed_mwh,
     } for m in monthly_results_all])
+    default_df_formatters = {
+        'Expected firm MWh': '{:,.1f}',
+        'Delivered firm MWh': '{:,.1f}',
+        'Shortfall MWh': '{:,.1f}',
+        'Charge MWh': '{:,.1f}',
+        'Discharge MWh (from BESS)': '{:,.1f}',
+        'Available PV MWh': '{:,.1f}',
+        'PV→Contract MWh': '{:,.1f}',
+        'BESS→Contract MWh': '{:,.1f}',
+        'Avg RTE': '{:,.3f}',
+        'Eq cycles (year)': '{:,.1f}',
+        'Cum cycles': '{:,.1f}',
+        'SOH_cycle': '{:,.3f}',
+        'SOH_calendar': '{:,.3f}',
+        'SOH_total': '{:,.3f}',
+        'EOY usable MWh': '{:,.1f}',
+        'EOY power MW (avail-adjusted)': '{:,.1f}',
+        'PV curtailed MWh': '{:,.1f}',
+    }
 
     # --------- KPIs ---------
     final = results[-1]
@@ -263,32 +283,34 @@ def run_app():
 
     if run_economics and econ_outputs and cash_outputs:
         st.markdown("### Economics summary")
-        econ_c1, econ_c2, econ_c3 = st.columns(3)
-        econ_c1.metric(
-            "Discounted costs (USD million)",
-            f"{econ_outputs.discounted_costs_usd / 1_000_000:,.2f}",
-            help="CAPEX at year 0 plus discounted OPEX and augmentation across the project horizon.",
-        )
+        forex_rate_php_per_usd = getattr(price_inputs, "forex_rate_php_per_usd", 58.0)
         php_per_kwh_factor = forex_rate_php_per_usd / 1000.0
         lcoe_php_per_kwh = econ_outputs.lcoe_usd_per_mwh * php_per_kwh_factor
         lcos_php_per_kwh = econ_outputs.lcos_usd_per_mwh * php_per_kwh_factor
-
-        econ_c2.metric(
-            "LCOE (PHP/kWh delivered)",
-            f"{lcoe_php_per_kwh:,.2f}",
-            help=(
-                "Total discounted costs ÷ discounted firm energy delivered, converted using "
-                f"PHP {forex_rate_php_per_usd:,.0f}/USD."
+        econ_specs = [
+            MetricSpec(
+                label="Discounted costs (USD million)",
+                value=f"{econ_outputs.discounted_costs_usd / 1_000_000:,.2f}",
+                help="CAPEX at year 0 plus discounted OPEX and augmentation across the project horizon.",
             ),
-        )
-        econ_c3.metric(
-            "LCOS (PHP/kWh from BESS)",
-            f"{lcos_php_per_kwh:,.2f}",
-            help=(
-                "Same cost base divided by discounted BESS contribution only, converted with the "
-                f"PHP {forex_rate_php_per_usd:,.0f}/USD rate."
+            MetricSpec(
+                label="LCOE (PHP/kWh delivered)",
+                value=f"{lcoe_php_per_kwh:,.2f}",
+                help=(
+                    "Total discounted costs ÷ discounted firm energy delivered, converted using "
+                    f"PHP {forex_rate_php_per_usd:,.0f}/USD."
+                ),
             ),
-        )
+            MetricSpec(
+                label="LCOS (PHP/kWh from BESS)",
+                value=f"{lcos_php_per_kwh:,.2f}",
+                help=(
+                    "Same cost base divided by discounted BESS contribution only, converted with the "
+                    f"PHP {forex_rate_php_per_usd:,.0f}/USD rate."
+                ),
+            ),
+        ]
+        render_metrics(st.columns(3), econ_specs)
 
         if econ_inputs.include_devex_year0:
             st.caption(
@@ -299,7 +321,6 @@ def run_app():
         else:
             st.caption("DevEx not included; upfront spend reflects CAPEX only.")
 
-        cash_c1, cash_c2, cash_c3 = st.columns(3)
         revenue_help = (
             "Revenues apply the blended energy price to all BESS deliveries and excess PV; "
             "contract/PV-specific rates are ignored in this mode."
@@ -319,26 +340,35 @@ def run_app():
                 revenue_help += (
                     f" PV surplus is credited at ${surplus_sale_rate:,.2f}/MWh while selling to WESM; otherwise surplus is excluded from revenue."
                 )
-        cash_c1.metric(
-            "Discounted revenues (USD million)",
-            f"{cash_outputs.discounted_revenues_usd / 1_000_000:,.2f}",
-            help=revenue_help,
-        )
-        cash_c2.metric(
-            "NPV (USD million)",
-            f"{cash_outputs.npv_usd / 1_000_000:,.2f}",
-            help="Discounted cash flows using the chosen discount rate (year 0 CAPEX included).",
-        )
-        cash_c3.metric(
-            "Project IRR (%)",
-            f"{cash_outputs.irr_pct:,.2f}%" if cash_outputs.irr_pct == cash_outputs.irr_pct else "—",
-            help="IRR computed from annual revenues and OPEX/augmentation outflows.",
-        )
+        cash_specs = [
+            MetricSpec(
+                label="Discounted revenues (USD million)",
+                value=f"{cash_outputs.discounted_revenues_usd / 1_000_000:,.2f}",
+                help=revenue_help,
+            ),
+            MetricSpec(
+                label="NPV (USD million)",
+                value=f"{cash_outputs.npv_usd / 1_000_000:,.2f}",
+                help="Discounted cash flows using the chosen discount rate (year 0 CAPEX included).",
+            ),
+            MetricSpec(
+                label="Project IRR (%)",
+                value=f"{cash_outputs.irr_pct:,.2f}%" if cash_outputs.irr_pct == cash_outputs.irr_pct else "—",
+                help="IRR computed from annual revenues and OPEX/augmentation outflows.",
+            ),
+        ]
+        render_metrics(st.columns(3), cash_specs)
 
         wesm_caption = (
             "WESM pricing disabled; contract shortfalls are not monetized in revenues, NPV, or IRR."
         )
         if price_inputs.apply_wesm_to_shortfall and price_inputs.wesm_price_usd_per_mwh is not None:
+            wesm_price_php_per_kwh = price_inputs.wesm_price_usd_per_mwh / forex_rate_php_per_usd * 1000.0
+            wesm_surplus_price_php_per_kwh = (
+                price_inputs.wesm_surplus_price_usd_per_mwh / forex_rate_php_per_usd * 1000.0
+                if price_inputs.sell_to_wesm and price_inputs.wesm_surplus_price_usd_per_mwh is not None
+                else float("nan")
+            )
             wesm_impact_musd = cash_outputs.discounted_wesm_value_usd / 1_000_000
             surplus_rate_usd = (
                 price_inputs.wesm_surplus_price_usd_per_mwh
@@ -398,17 +428,15 @@ def run_app():
     if aug_rows:
         aug_df = pd.DataFrame(aug_rows)
         st.caption("Per-event summary combines augmentation size, cohort retirements, and year-over-year shifts in compliance and delivered energy.")
-        st.dataframe(
-            aug_df.style.format({
-                "Added (MWh BOL)": "{:.1f}",
-                "Added vs BOL (%)": "{:.2f}",
-                "Retired cohorts (MWh BOL)": "{:.1f}",
-                "Coverage (%)": "{:.2f}",
-                "Coverage Δ (pp)": "{:.2f}",
-                "Generation Δ (MWh)": "{:.1f}",
-            }),
-            use_container_width=True,
-        )
+        augmentation_formatters = {
+            "Added (MWh BOL)": "{:.1f}",
+            "Added vs BOL (%)": "{:.2f}",
+            "Retired cohorts (MWh BOL)": "{:.1f}",
+            "Coverage (%)": "{:.2f}",
+            "Coverage Δ (pp)": "{:.2f}",
+            "Generation Δ (MWh)": "{:.1f}",
+        }
+        render_formatted_dataframe(aug_df, augmentation_formatters)
 
         delta_df = aug_df.melt(
             id_vars=["Year"],
@@ -431,46 +459,10 @@ def run_app():
 
     st.markdown("---")
     st.subheader("Yearly Summary")
-    st.dataframe(res_df.style.format({
-        'Expected firm MWh': '{:,.1f}',
-        'Delivered firm MWh': '{:,.1f}',
-        'Shortfall MWh': '{:,.1f}',
-        'Charge MWh': '{:,.1f}',
-        'Discharge MWh (from BESS)': '{:,.1f}',
-        'Available PV MWh': '{:,.1f}',
-        'PV→Contract MWh': '{:,.1f}',
-        'BESS→Contract MWh': '{:,.1f}',
-        'Avg RTE': '{:,.3f}',
-        'Eq cycles (year)': '{:,.1f}',
-        'Cum cycles': '{:,.1f}',
-        'SOH_cycle': '{:,.3f}',
-        'SOH_calendar': '{:,.3f}',
-        'SOH_total': '{:,.3f}',
-        'EOY usable MWh': '{:,.1f}',
-        'EOY power MW (avail-adjusted)': '{:,.1f}',
-        'PV curtailed MWh': '{:,.1f}',
-    }))
+    render_formatted_dataframe(res_df, default_df_formatters)
 
     with st.expander("Monthly summary preview", expanded=False):
-        st.dataframe(monthly_df.style.format({
-            'Expected firm MWh': '{:,.1f}',
-            'Delivered firm MWh': '{:,.1f}',
-            'Shortfall MWh': '{:,.1f}',
-            'Charge MWh': '{:,.1f}',
-            'Discharge MWh (from BESS)': '{:,.1f}',
-            'Available PV MWh': '{:,.1f}',
-            'PV→Contract MWh': '{:,.1f}',
-            'BESS→Contract MWh': '{:,.1f}',
-            'Avg RTE': '{:,.3f}',
-            'Eq cycles (year)': '{:,.1f}',
-            'Cum cycles': '{:,.1f}',
-            'SOH_cycle': '{:,.3f}',
-            'SOH_calendar': '{:,.3f}',
-            'SOH_total': '{:,.3f}',
-            'EOY usable MWh': '{:,.1f}',
-            'EOY power MW (avail-adjusted)': '{:,.1f}',
-            'PV curtailed MWh': '{:,.1f}',
-        }))
+        render_formatted_dataframe(monthly_df, default_df_formatters)
 
     # ---------- EOY Delivered Firm Split (per day): PV vs BESS ----------
     st.subheader("EOY Delivered Firm Split (per day) — PV vs BESS")
@@ -503,14 +495,17 @@ def run_app():
         'soc_floor_hits': sum(r.flags['soc_floor_hits'] for r in results),
         'soc_ceiling_hits': sum(r.flags['soc_ceiling_hits'] for r in results),
     }
-    f1, f2, f3 = st.columns(3)
-    for key, col in zip(
-        ["firm_shortfall_hours", "soc_floor_hits", "soc_ceiling_hits"],
-        [f1, f2, f3],
-    ):
+    flag_specs = []
+    for key in ["firm_shortfall_hours", "soc_floor_hits", "soc_ceiling_hits"]:
         meta = FLAG_DEFINITIONS[key]
-        col.metric(meta["label"], f"{flag_totals[key]:,}")
-        col.caption(f"Meaning: {meta['meaning']}\nFix knobs: {meta['knobs']}")
+        flag_specs.append(
+            MetricSpec(
+                label=meta["label"],
+                value=f"{flag_totals[key]:,}",
+                caption=f"Meaning: {meta['meaning']}\nFix knobs: {meta['knobs']}",
+            )
+        )
+    render_metrics(st.columns(len(flag_specs)), flag_specs)
 
     insights = build_flag_insights(flag_totals)
     st.markdown("**What the flags suggest:**")
