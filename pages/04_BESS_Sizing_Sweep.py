@@ -369,12 +369,17 @@ with st.form("size_sweep_form_page"):
                 placeholder="e.g., 250000, 275000, 300000",
                 help="Comma or newline separated values applied per project year.",
             )
+            st.caption(
+                "Use commas or newlines between entries; provide one value per project year "
+                f"({cfg.years} entries)."
+            )
             if custom_variable_text.strip():
                 try:
                     variable_opex_schedule_usd = tuple(
                         parse_numeric_series("Variable expense schedule", custom_variable_text)
                     )
-                except ValueError:
+                except ValueError as exc:
+                    st.error(str(exc))
                     st.stop()
 
     submitted = st.form_submit_button("Run BESS energy sweep", use_container_width=True)
