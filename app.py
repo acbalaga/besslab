@@ -472,8 +472,6 @@ def run_app():
         cycle_file = st.file_uploader(
             "Cycle model Excel (optional override)", type=["xlsx"], key="inputs_cycle_upload"
         )
-        pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
-
         st.caption(
             "If no files are uploaded, built-in defaults are read from ./data/. "
             "Current session caches the latest uploads."
@@ -502,61 +500,63 @@ def run_app():
         elif st.session_state.get("rate_limit_bypass", False):
             st.caption("Rate limit disabled for this session.")
 
+    pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
+
     pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
-    with st.form("inputs_form"):
-        st.subheader("Inputs")
+    st.subheader("Inputs")
 
-        # Project & PV
-        with st.expander("Project & PV", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                years = st.selectbox("Project life (years)", list(range(10, 36, 5)), index=2,
-                    help="Extend to test augmentation schedules and end effects.")
-            with c2:
-                pv_deg = st.number_input("PV degradation %/yr", 0.0, 5.0, 0.6, 0.1,
-                    help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).") / 100.0
-            with c3:
-                pv_avail = st.slider("PV availability", 0.90, 1.00, 0.98, 0.01,
-                    help="Uptime factor applied to PV output.")
+    # Project & PV
+    with st.expander("Project & PV", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            years = st.selectbox("Project life (years)", list(range(10, 36, 5)), index=2,
+                help="Extend to test augmentation schedules and end effects.")
+        with c2:
+            pv_deg = st.number_input("PV degradation %/yr", 0.0, 5.0, 0.6, 0.1,
+                help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).") / 100.0
+        with c3:
+            pv_avail = st.slider("PV availability", 0.90, 1.00, 0.98, 0.01,
+                help="Uptime factor applied to PV output.")
 
-        # Availability
-        with st.expander("Availability", expanded=True):
-            c1, c2 = st.columns(2)
-            with c1:
-                bess_avail = st.slider("BESS availability", 0.90, 1.00, 0.99, 0.01,
-                    help="Uptime factor applied to BESS power capability.")
-            with c2:
-                use_split_rte = st.checkbox(
-                    "Use separate charge/discharge efficiencies",
-                    value=False,
-                    help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
+    # Availability (kept outside the main form so toggles rerender immediately)
+    with st.expander("Availability", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            bess_avail = st.slider("BESS availability", 0.90, 1.00, 0.99, 0.01,
+                help="Uptime factor applied to BESS power capability.")
+        with c2:
+            use_split_rte = st.checkbox(
+                "Use separate charge/discharge efficiencies",
+                value=False,
+                help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
+            )
+            if use_split_rte:
+                charge_eff = st.slider(
+                    "Charge efficiency (AC-AC)",
+                    0.70,
+                    0.99,
+                    0.94,
+                    0.01,
+                    help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
                 )
-                if use_split_rte:
-                    charge_eff = st.slider(
-                        "Charge efficiency (AC-AC)",
-                        0.70,
-                        0.99,
-                        0.94,
-                        0.01,
-                        help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
-                    )
-                    discharge_eff = st.slider(
-                        "Discharge efficiency (AC-AC)",
-                        0.70,
-                        0.99,
-                        0.94,
-                        0.01,
-                        help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
-                    )
-                    rte = charge_eff * discharge_eff
-                    st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
-                else:
-                    rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
-                        help="Single RTE; internally split √RTE for charge/discharge.")
-                    charge_eff = None
-                    discharge_eff = None
+                discharge_eff = st.slider(
+                    "Discharge efficiency (AC-AC)",
+                    0.70,
+                    0.99,
+                    0.94,
+                    0.01,
+                    help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
+                )
+                rte = charge_eff * discharge_eff
+                st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
+            else:
+                rte = st.slider("Round-trip efficiency (single, at POI)", 0.70, 0.99, 0.88, 0.01,
+                    help="Single RTE; internally split √RTE for charge/discharge.")
+                charge_eff = None
+                discharge_eff = None
 
+    with st.form("inputs_form"):
         # BESS Specs
         with st.expander("BESS Specs (high-level)", expanded=True):
             c1, c2, c3 = st.columns(3)
