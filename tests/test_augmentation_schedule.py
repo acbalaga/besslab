@@ -1,6 +1,6 @@
 import pandas as pd
 
-from app import (
+from services.simulation_core import (
     AugmentationScheduleEntry,
     BatteryCohort,
     SimConfig,

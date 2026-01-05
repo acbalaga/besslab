@@ -7,14 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import streamlit as st
 
-from app import (
-    BASE_DIR,
-    SimConfig,
-    Window,
-    parse_windows,
-    simulate_project,
-    summarize_simulation,
-)
+from app import BASE_DIR
+from services.simulation_core import SimConfig, Window, parse_windows, simulate_project, summarize_simulation
 from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import (
     EconomicInputs,
@@ -135,9 +129,14 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     config = deepcopy(template)
 
     dis_windows_text = str(row.get("discharge_windows") or "").strip()
-    dis_windows = parse_windows(dis_windows_text)
+    dis_windows, dis_warnings = parse_windows(dis_windows_text)
 
     charge_windows_text = str(row.get("charge_windows") or template.charge_windows_text or "").strip()
+    charge_windows, charge_warnings = parse_windows(charge_windows_text)
+    if dis_warnings or charge_warnings:
+        raise ValueError("; ".join(dis_warnings + charge_warnings))
+    if not dis_windows:
+        raise ValueError("Please provide at least one discharge window.")
 
     years = int(row.get("years") or template.years)
     soc_floor = float(row.get("soc_floor") or template.soc_floor)
@@ -159,6 +158,7 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     )
     config.discharge_windows = dis_windows
     config.charge_windows_text = charge_windows_text
+    config.charge_windows = charge_windows
     config.augmentation = str(row.get("augmentation") or template.augmentation)
     config.aug_trigger_type = str(row.get("aug_trigger_type") or template.aug_trigger_type)
     config.aug_threshold_margin = float(row.get("aug_threshold_margin") or template.aug_threshold_margin)
@@ -187,12 +187,10 @@ def _validate_row(row: pd.Series, idx: int) -> List[str]:
 
     errors: List[str] = []
     dis_windows_text = str(row.get("discharge_windows") or "").strip()
-    try:
-        dis_windows = parse_windows(dis_windows_text)
-        if not dis_windows:
-            errors.append("Missing discharge windows (HH:MM-HH:MM).")
-    except ValueError:
-        errors.append("Discharge windows are invalid. Use HH:MM-HH:MM ranges.")
+    dis_windows, dis_warnings = parse_windows(dis_windows_text)
+    errors.extend(dis_warnings)
+    if not dis_windows:
+        errors.append("Missing discharge windows (HH:MM-HH:MM).")
 
     years_value = row.get("years")
     try:

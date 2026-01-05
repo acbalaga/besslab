@@ -1,10 +1,7 @@
 import numpy as np
 
-from app import (
-    SimConfig,
-    YearResult,
-    build_pdf_summary,
-)
+from app import build_pdf_summary
+from services.simulation_core import SimConfig, YearResult
 
 
 def _sample_year_result() -> YearResult:

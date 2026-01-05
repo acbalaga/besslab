@@ -6,7 +6,7 @@ from functools import partial
 import inspect
 import logging
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Sequence, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Iterable, List, Sequence, Tuple
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
 
 import math
@@ -23,7 +23,7 @@ from utils.economics import (
 )
 
 if TYPE_CHECKING:
-    from app import SimConfig, SimulationOutput, SimulationSummary
+    from services.simulation_core import SimConfig, SimulationOutput, SimulationSummary
 
 
 @dataclass(frozen=True)
@@ -197,7 +197,7 @@ def _load_default_simulation_hooks() -> tuple[
 ]:
     """Import default simulation and summary functions lazily to avoid UI side effects."""
 
-    from app import SimConfig, SimulationOutput, SimulationSummary, simulate_project, summarize_simulation
+    from services.simulation_core import SimulationOutput, SimulationSummary, simulate_project, summarize_simulation
 
     return simulate_project, summarize_simulation
 
@@ -1070,7 +1070,7 @@ def sweep_bess_sizes(
 def _load_sample_inputs() -> tuple["SimConfig", pd.DataFrame, pd.DataFrame]:
     """Load the packaged sample PV and cycle-model inputs for quick demos."""
 
-    from app import SimConfig
+    from services.simulation_core import SimConfig
 
     repo_root = Path(__file__).resolve().parent.parent
     # PV profile is stored in MW and the cycle model rows are dimensionless;

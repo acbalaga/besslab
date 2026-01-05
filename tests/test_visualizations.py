@@ -8,7 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import HourlyLog, prepare_soc_heatmap_data
+from app import prepare_soc_heatmap_data
+from services.simulation_core import HourlyLog
 
 
 def test_prepare_soc_heatmap_data_dimensions():
