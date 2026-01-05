@@ -2,7 +2,9 @@ import streamlit as st
 
 from app import BASE_DIR
 from utils.ui_layout import init_page_layout
-from utils.ui_state import load_shared_data
+from utils.ui_state import bootstrap_session_state, load_shared_data
+
+bootstrap_session_state()
 
 render_layout = init_page_layout(
     page_title="Landing",

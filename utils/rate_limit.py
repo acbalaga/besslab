@@ -7,6 +7,7 @@ import time
 
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
+from utils.ui_state import get_rate_limit_state, update_rate_limit_state
 
 
 def enforce_rate_limit(
@@ -20,11 +21,12 @@ def enforce_rate_limit(
     a single UI action (e.g., widget update + state change) from being counted as
     separate runs, which otherwise exhausts the allowance during small batches.
     """
-    if st.session_state.get("rate_limit_bypass", False):
+    state = get_rate_limit_state()
+    if state.bypass:
         return
 
     now = time.time()
-    recent = st.session_state.get("recent_runs", [])
+    recent = list(state.recent_runs)
     recent = [t for t in recent if now - t < window_seconds]
     if len(recent) >= max_runs:
         wait_for = int(window_seconds - (now - min(recent)))
@@ -36,12 +38,13 @@ def enforce_rate_limit(
         )
         st.stop()
 
-    last_recorded = st.session_state.get("last_rate_limit_ts")
+    last_recorded = state.last_rate_limit_ts
     if last_recorded is None or now - last_recorded >= min_spacing_seconds:
         recent.append(now)
-        st.session_state["last_rate_limit_ts"] = now
+        state.last_rate_limit_ts = now
 
-    st.session_state["recent_runs"] = recent
+    state.recent_runs = recent
+    update_rate_limit_state(state)
 
 
 def get_rate_limit_password() -> str:

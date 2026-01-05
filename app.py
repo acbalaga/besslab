@@ -1,5 +1,5 @@
-import math
 import json
+import math
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -39,13 +39,22 @@ from utils.economics import (
     estimate_augmentation_costs_by_year,
 )
 from utils.ui_layout import init_page_layout
-from utils.ui_state import get_base_dir, load_shared_data
+from utils.ui_state import (
+    bootstrap_session_state,
+    get_base_dir,
+    get_simulation_results,
+    load_shared_data,
+    save_simulation_config,
+    save_simulation_results,
+    save_simulation_snapshot,
+)
 
 
 BASE_DIR = get_base_dir()
 
 
 def run_app():
+    bootstrap_session_state()
     render_layout = init_page_layout(
         page_title="Simulation",
         main_title="BESS LAB — PV-only charging, AC-coupled",
@@ -87,11 +96,11 @@ def run_app():
     run_submitted = form_result.run_submitted
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
+    bootstrap_session_state(cfg)
 
-    st.session_state["latest_sim_config"] = cfg
-    st.session_state["latest_dod_override"] = dod_override
+    save_simulation_config(cfg, dod_override)
 
-    cached_results = st.session_state.get("latest_simulation_results")
+    cached_results = get_simulation_results()
 
     if not run_submitted and cached_results is None:
         st.info("Click 'Run simulation' to generate results after updating inputs.")
@@ -117,15 +126,12 @@ def run_app():
         except ValueError as exc:  # noqa: BLE001
             st.error(str(exc))
             st.stop()
+        else:
+            st.toast("Simulation complete.")
 
-        st.toast("Simulation complete.")
-
-        st.session_state["latest_simulation_results"] = {
-            "sim_output": sim_output,
-            "dod_override": dod_override,
-        }
+        save_simulation_results(sim_output, dod_override)
     elif cached_results is not None:
-        sim_output = cached_results["sim_output"]
+        sim_output = cached_results.sim_output
         st.caption(
             "Showing the latest completed simulation. Click 'Run simulation' to refresh after editing inputs."
         )
@@ -232,7 +238,7 @@ def run_app():
             st.error(str(exc))
             st.stop()
 
-    st.session_state["latest_simulation_snapshot"] = {
+    save_simulation_snapshot({
         "Contracted MW": cfg.contracted_mw,
         "Power (BOL MW)": cfg.initial_power_mw,
         "Usable (BOL MWh)": cfg.initial_usable_mwh,
@@ -251,7 +257,7 @@ def run_app():
         "Final EOY power (MW)": final.eoy_power_mw,
         "Final eq cycles (year)": final.eq_cycles,
         "Final SOH_total": final.soh_total,
-    }
+    })
 
     render_primary_metrics(cfg, kpis)
 

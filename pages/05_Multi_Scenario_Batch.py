@@ -16,6 +16,12 @@ from utils.economics import (
     compute_lcoe_lcos_with_augmentation_fallback,
 )
 from utils.ui_layout import init_page_layout
+from utils.ui_state import (
+    bootstrap_session_state,
+    cache_latest_economics_payload,
+    get_cached_simulation_config,
+    get_latest_economics_payload,
+)
 
 render_layout = init_page_layout(
     page_title="Multi-scenario batch",
@@ -27,6 +33,7 @@ render_layout = init_page_layout(
     base_dir=BASE_DIR,
 )
 
+bootstrap_session_state()
 
 def _format_hhmm(hour_value: float) -> str:
     """Return HH:MM text for a fractional hour."""
@@ -312,8 +319,9 @@ def _render_summary_table(df: pd.DataFrame) -> None:
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 
-cached_cfg: SimConfig = st.session_state.get("latest_sim_config", SimConfig())
-dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
+caching_cfg, dod_override = get_cached_simulation_config()
+cached_cfg: SimConfig = caching_cfg or SimConfig()
+bootstrap_session_state(cached_cfg)
 forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
@@ -321,7 +329,7 @@ default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 # Pull PV/cycle inputs from the shared session cache instead of any external API.
 pv_df, cycle_df = render_layout()
 
-econ_defaults = st.session_state.get("latest_economics_payload", {})
+econ_defaults = get_latest_economics_payload() or {}
 econ_inputs_default: Optional[EconomicInputs] = econ_defaults.get("economic_inputs")
 econ_price_default: Optional[PriceInputs] = econ_defaults.get("price_inputs")
 
@@ -542,10 +550,12 @@ price_inputs = PriceInputs(
     escalate_with_inflation=escalate_prices,
     blended_price_usd_per_mwh=blended_price_usd_per_mwh,
 )
-st.session_state["latest_economics_payload"] = {
-    "economic_inputs": economic_inputs,
-    "price_inputs": price_inputs,
-}
+cache_latest_economics_payload(
+    {
+        "economic_inputs": economic_inputs,
+        "price_inputs": price_inputs,
+    }
+)
 
 st.markdown("### Scenario inputs")
 st.caption(
@@ -782,7 +792,7 @@ def _run_batch() -> pd.DataFrame | None:
         st.warning("Add at least one scenario before running.", icon="⚠️")
         return None
 
-    econ_payload = st.session_state.get("latest_economics_payload")
+    econ_payload = get_latest_economics_payload()
     validation_errors: List[str] = []
     for idx, row in table_df.reset_index(drop=True).iterrows():
         validation_errors.extend(_validate_row(row, idx))
@@ -947,7 +957,7 @@ with results_container:
                 mime="application/json",
                 use_container_width=True,
             )
-        if st.session_state.get("latest_economics_payload"):
+        if econ_defaults:
             st.caption("Economic columns populate when economics inputs are cached from the main page.")
         else:
             st.caption("LCOE/LCOS will populate once economics assumptions have been cached on the main page.")
