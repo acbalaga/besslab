@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import asdict
 from functools import lru_cache
@@ -9,6 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, root_validator, validator
 
 from services.simulation_core import (
@@ -419,6 +421,30 @@ app = FastAPI(
     title="BESSLab API",
     description="Lightweight REST API for running BESSLab simulations outside Streamlit.",
     version="0.1.0",
+)
+
+
+_default_cors_origins = [
+    # Vite dev/preview servers
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+]
+_allowed_origins_env = os.getenv("BESSLAB_CORS_ORIGINS", "")
+_allowed_origins = [
+    origin.strip()
+    for origin in _allowed_origins_env.split(",")
+    if origin.strip()
+] or _default_cors_origins
+
+# Allow browser-based clients (e.g., Vite dev server) to call the API.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
