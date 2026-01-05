@@ -4,8 +4,8 @@ Centralizing the form setup keeps `app.run_app` focused on orchestration and
 lets other pages reuse the same config construction logic.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,66 @@ class SimulationFormResult:
     run_submitted: bool
     discharge_windows_text: str
     charge_windows_text: str
+    validation_errors: List[str] = field(default_factory=list)
+    validation_warnings: List[str] = field(default_factory=list)
+    validation_details: List[str] = field(default_factory=list)
+    debug_mode: bool = False
+    is_valid: bool = True
+
+
+@dataclass
+class DispatchWindowValidation:
+    discharge_windows: List[Tuple[int, int]]
+    charge_windows: List[Tuple[int, int]]
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    details: List[str] = field(default_factory=list)
+
+
+def validate_dispatch_windows(discharge_text: str, charge_text: str) -> DispatchWindowValidation:
+    """Parse and validate dispatch windows, returning user-facing feedback."""
+
+    discharge_windows, discharge_window_warnings = parse_windows(discharge_text)
+    charge_windows, charge_window_warnings = parse_windows(charge_text)
+    warnings = list(discharge_window_warnings + charge_window_warnings)
+    errors: List[str] = []
+    details = [
+        f"Raw discharge text: {discharge_text or '<blank>'}",
+        f"Raw charge text: {charge_text or '<blank>'}",
+        f"Parsed discharge windows: {discharge_windows or 'none'}",
+        f"Parsed charge windows: {charge_windows or 'none'}",
+    ]
+
+    if not discharge_windows:
+        errors.append("Provide at least one discharge window in HH:MM-HH:MM format (e.g., 10:00-14:00).")
+
+    return DispatchWindowValidation(
+        discharge_windows=discharge_windows,
+        charge_windows=charge_windows,
+        errors=errors,
+        warnings=warnings,
+        details=details,
+    )
+
+
+def validate_manual_augmentation_schedule(
+    aug_mode: str, manual_schedule_entries: List[AugmentationScheduleEntry], manual_schedule_errors: List[str]
+) -> Tuple[List[str], List[str]]:
+    """Return manual augmentation errors and debug details without halting the app."""
+
+    if aug_mode != "Manual":
+        return [], []
+
+    errors = list(manual_schedule_errors)
+    if not manual_schedule_entries:
+        errors.append("Add at least one valid manual augmentation event before running the simulation.")
+
+    details = [
+        f"Manual augmentation rows: {len(manual_schedule_entries)}",
+        f"Manual augmentation errors: {errors or 'none'}",
+    ]
+
+    return errors, details
 
 
 def render_rate_limit_section() -> None:
@@ -66,6 +126,11 @@ def render_rate_limit_section() -> None:
 def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> SimulationFormResult:
     """Render the main simulation inputs and return the assembled configuration."""
     st.subheader("Inputs")
+    debug_mode = st.checkbox(
+        "Debug mode",
+        value=False,
+        help="Show validation details and recent inputs without exposing stack traces to all users.",
+    )
 
     # Project & PV
     with st.expander("Project & PV", expanded=True):
@@ -379,18 +444,20 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         / 100.0
                     )
 
-        if aug_mode == "Manual" and (manual_schedule_errors or not manual_schedule_entries):
-            st.error("Manual augmentation requires at least one valid year and no duplicate years.")
-            st.stop()
+        validation_errors, validation_warnings, validation_details = [], [], []
+        dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
+        validation_warnings.extend(dispatch_validation.warnings)
+        manual_errors, manual_details = validate_manual_augmentation_schedule(
+            aug_mode, manual_schedule_entries, manual_schedule_errors
+        )
+        validation_errors.extend(manual_errors)
+        validation_details.extend(manual_details)
+        validation_details.extend(dispatch_validation.details)
 
-        discharge_windows, discharge_window_warnings = parse_windows(discharge_windows_text)
-        charge_windows, charge_window_warnings = parse_windows(charge_windows_text)
-        for msg in discharge_window_warnings + charge_window_warnings:
+        for msg in validation_warnings:
             st.warning(msg)
-
-        if not discharge_windows:
-            st.error("Please provide at least one discharge window.")
-            st.stop()
+        for msg in validation_errors:
+            st.error(msg)
 
         cfg = SimConfig(
             years=int(years),
@@ -406,9 +473,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             initial_power_mw=float(init_power),
             initial_usable_mwh=float(init_energy),
             contracted_mw=float(contracted_mw),
-            discharge_windows=discharge_windows,
+            discharge_windows=dispatch_validation.discharge_windows,
             charge_windows_text=charge_windows_text,
-            charge_windows=charge_windows,
+            charge_windows=dispatch_validation.charge_windows,
             max_cycles_per_day_cap=1.2,
             calendar_fade_rate=float(cal_fade),
             use_calendar_exp_model=True,
@@ -433,8 +500,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
 
         duration_error = validate_pv_profile_duration(pv_df, cfg.step_hours)
         if duration_error:
-            st.error(duration_error)
-            st.stop()
+            validation_errors.append(duration_error)
+            validation_details.append(f"PV profile validation error: {duration_error}")
 
         st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
         run_economics = st.checkbox(
@@ -686,6 +753,31 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         with run_cols[1]:
             st.caption("Edit parameters freely, then run when ready.")
 
+    is_valid = not validation_errors
+    if validation_errors and run_submitted:
+        st.info("Fix the validation errors above before re-running the simulation.")
+
+    if debug_mode:
+        recent_inputs: Dict[str, Any] = {
+            "years": years,
+            "initial_power_mw": init_power,
+            "initial_usable_mwh": init_energy,
+            "contracted_mw": contracted_mw,
+            "discharge_windows_text": discharge_windows_text,
+            "charge_windows_text": charge_windows_text or "<blank>",
+            "augmentation_mode": aug_mode,
+            "augmentation_schedule_rows": len(manual_schedule_entries),
+            "use_split_rte": use_split_rte,
+        }
+        with st.expander("Debug: validation details and recent inputs", expanded=False):
+            st.write("Validation details:")
+            if validation_details:
+                st.markdown("\n".join(f"- {msg}" for msg in validation_details))
+            else:
+                st.caption("No validation details available.")
+            st.write("Recent inputs:")
+            st.json(recent_inputs)
+
     return SimulationFormResult(
         config=cfg,
         econ_inputs=econ_inputs,
@@ -695,4 +787,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         run_submitted=run_submitted,
         discharge_windows_text=discharge_windows_text,
         charge_windows_text=charge_windows_text,
+        validation_errors=validation_errors,
+        validation_warnings=validation_warnings,
+        validation_details=validation_details,
+        debug_mode=debug_mode,
+        is_valid=is_valid,
     )
