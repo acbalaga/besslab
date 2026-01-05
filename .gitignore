@@ -14,9 +14,3 @@ Thumbs.db
 
 # Data (ignore local/sensitive by default)
 data/
-
-# Frontend build artifacts
-frontend/node_modules/
-frontend/dist/
-frontend/.env.local
-frontend/.env
