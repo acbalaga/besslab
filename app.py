@@ -56,6 +56,7 @@ BASE_DIR = get_base_dir()
 
 def run_app():
     bootstrap_session_state()
+    debug_mode: bool = False
     render_layout = init_page_layout(
         page_title="Simulation",
         main_title="BESS LAB — PV-only charging, AC-coupled",
@@ -89,6 +90,7 @@ def run_app():
     pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
     form_result = render_simulation_form(pv_df, cycle_df)
+    debug_mode = form_result.debug_mode
     cfg = form_result.config
     econ_inputs = form_result.econ_inputs
     price_inputs = form_result.price_inputs
@@ -102,6 +104,13 @@ def run_app():
     save_simulation_config(cfg, dod_override)
 
     cached_results = get_simulation_results()
+
+    def render_exception_alert(message: str, exc: Exception) -> None:
+        """Show a user-friendly error with optional debug details."""
+        st.error(message)
+        if debug_mode:
+            with st.expander("Show technical details", expanded=False):
+                st.exception(exc)
 
     if not run_submitted and cached_results is None:
         st.info("Click 'Run simulation' to generate results after updating inputs.")
@@ -118,15 +127,29 @@ def run_app():
         )
         st.stop()
 
-    if run_submitted:
+    if not form_result.is_valid:
+        st.error("Resolve the validation issues above before running a new simulation.")
+        if form_result.validation_warnings:
+            for msg in form_result.validation_warnings:
+                st.warning(msg)
+        if form_result.validation_details and debug_mode:
+            with st.expander("Debug: validation details", expanded=False):
+                st.markdown("\n".join(f"- {msg}" for msg in form_result.validation_details))
+        if cached_results is None:
+            return
+
+    if run_submitted and form_result.is_valid:
         enforce_rate_limit()
 
         try:
             with st.spinner("Running simulation..."):
                 sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
         except ValueError as exc:  # noqa: BLE001
-            st.error(str(exc))
-            st.stop()
+            render_exception_alert("Simulation failed. Please adjust inputs and try again.", exc)
+            return
+        except Exception as exc:  # noqa: BLE001
+            render_exception_alert("Unexpected simulation error. Please retry or contact support.", exc)
+            return
         else:
             st.toast("Simulation complete.")
 
@@ -255,8 +278,11 @@ def run_app():
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
             )
         except ValueError as exc:  # noqa: BLE001
-            st.error(str(exc))
-            st.stop()
+            render_exception_alert("Economics inputs are invalid. Please review the assumptions.", exc)
+            return
+        except Exception as exc:  # noqa: BLE001
+            render_exception_alert("Unexpected error while computing economics. Please retry.", exc)
+            return
 
     save_simulation_snapshot({
         "Contracted MW": cfg.contracted_mw,
