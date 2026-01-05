@@ -21,6 +21,25 @@ streamlit run app.py
 
 Open the provided local URL in your browser to launch the app. To remove the session rate limit in an open deployment, enter the password in the sidebar (default: `besslab`).
 
+## Web front-end (React/Vite SPA)
+A lightweight React SPA lives in `frontend/` and mirrors the Streamlit flows (uploads, single simulation, sizing sweep, and batch runs) while consuming the FastAPI endpoints.
+
+1. Install dependencies:
+   ```bash
+   cd frontend
+   npm install
+   ```
+2. Create a `.env.local` (or `.env`) with your API base URL:
+   ```
+   VITE_API_BASE_URL=http://localhost:8000
+   ```
+3. Start the dev server and open the printed localhost URL:
+   ```bash
+   npm run dev
+   ```
+
+The SPA posts uploads to `/uploads`, passes the returned tokens into `/simulate`, `/sweep`, and `/batch`, and renders KPIs/charts for compliance, coverage, round-trip efficiency, SOH, augmentation events, and economics flags. Use the cached upload tokens from the landing page to reuse PV/cycle files across routes.
+
 ### Installation tips
 - Use a virtual environment to isolate dependencies: `python -m venv .venv && source .venv/bin/activate` before installing.
 - The bundled sample data lives in `data/` and loads automatically if you skip uploads. The sample PV profile is hourly (8,760 rows); timestamped uploads can be sub-hourly or leap-year length.
