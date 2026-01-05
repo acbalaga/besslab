@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Streamlit: Run app.py",
+            "type": "python",
+            "request": "launch",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "${workspaceFolder}/app.py"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "STREAMLIT_BROWSER_GATHER_USAGE_STATS": "false"
+            }
+        }
+    ]
+}
