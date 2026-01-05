@@ -817,9 +817,10 @@ def _run_batch() -> pd.DataFrame | None:
         status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
         progress.progress((idx - 1) / total_scenarios, text=f"Running {label}...")
         try:
-            sim_output = simulate_project(
-                cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override=dod_override, need_logs=False
-            )
+            with st.spinner(f"Running {label} simulation..."):
+                sim_output = simulate_project(
+                    cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override=dod_override, need_logs=False
+                )
         except ValueError as exc:  # noqa: BLE001
             status_rows[idx - 1]["Status"] = f"❌ {exc}"
             status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
@@ -873,6 +874,7 @@ def _run_batch() -> pd.DataFrame | None:
 
     progress.progress(1.0, text="Batch complete.")
     st.balloons()
+    st.toast("Batch run complete.")
     if not results:
         st.warning("No runs finished successfully. Please review the errors above.", icon="⚠️")
         return None

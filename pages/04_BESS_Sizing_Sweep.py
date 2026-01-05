@@ -478,6 +478,7 @@ if submitted:
         st.session_state["bess_size_sweep_results"] = None
     else:
         st.session_state["bess_size_sweep_results"] = sweep_df
+        st.toast("BESS energy sweep complete.")
 
 sweep_df = st.session_state.get("bess_size_sweep_results")
 if sweep_df is not None:
