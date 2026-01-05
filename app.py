@@ -1108,10 +1108,13 @@ def run_app():
         enforce_rate_limit()
 
         try:
-            sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
+            with st.spinner("Running simulation..."):
+                sim_output = simulate_project(cfg, pv_df, cycle_df, dod_override)
         except ValueError as exc:  # noqa: BLE001
             st.error(str(exc))
             st.stop()
+
+        st.toast("Simulation complete.")
 
         st.session_state["latest_simulation_results"] = {
             "sim_output": sim_output,
