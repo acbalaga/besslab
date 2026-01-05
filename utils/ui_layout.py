@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
-from utils.ui_state import DATA_SOURCE_SESSION_KEY, get_base_dir, get_shared_data
+from utils.ui_state import get_base_dir, get_data_source_status, get_rate_limit_state, get_shared_data
 
 NavRenderer = Callable[[Optional[pd.DataFrame], Optional[pd.DataFrame]], Tuple[pd.DataFrame, pd.DataFrame]]
 
@@ -46,8 +46,9 @@ def _render_status_block(
 ) -> None:
     """Show concise session status for shared uploads and the rate limit."""
 
-    rate_limit_bypassed = bool(st.session_state.get("rate_limit_bypass", False))
-    recent_runs = len(st.session_state.get("recent_runs", []))
+    rate_limit_state = get_rate_limit_state()
+    rate_limit_bypassed = rate_limit_state.bypass
+    recent_runs = len(rate_limit_state.recent_runs)
     rate_limit_state = "Bypassed" if rate_limit_bypassed else "Active"
     rate_limit_detail = (
         "Password accepted for this session."
@@ -58,7 +59,7 @@ def _render_status_block(
     container.markdown("#### Session status")
     container.caption(f"PV rows loaded: {len(pv_df):,}")
     container.caption(f"Cycle rows loaded: {len(cycle_df):,}")
-    data_source = st.session_state.get(DATA_SOURCE_SESSION_KEY, {})
+    data_source = get_data_source_status()
     pv_source = data_source.get("pv", "default")
     cycle_source = data_source.get("cycle", "default")
     container.caption(f"Data source: PV ({pv_source}), cycle ({cycle_source}).")

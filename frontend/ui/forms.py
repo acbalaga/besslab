@@ -20,9 +20,14 @@ from services.simulation_core import (
     parse_windows,
     validate_pv_profile_duration,
 )
-from utils import get_rate_limit_password
+from utils import get_rate_limit_password, parse_numeric_series
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
-from utils import parse_numeric_series
+from utils.ui_state import (
+    get_manual_aug_schedule_rows,
+    get_rate_limit_state,
+    save_manual_aug_schedule_rows,
+    set_rate_limit_bypass,
+)
 
 
 @dataclass
@@ -40,6 +45,7 @@ class SimulationFormResult:
 def render_rate_limit_section() -> None:
     """Allow users to enter a password to bypass the per-session rate limit."""
     expected_password = get_rate_limit_password()
+    rate_limit_state = get_rate_limit_state()
     rate_limit_password = st.text_input(
         "Remove rate limit (password)",
         type="password",
@@ -48,12 +54,12 @@ def render_rate_limit_section() -> None:
     )
     if rate_limit_password:
         if rate_limit_password == expected_password:
-            st.session_state["rate_limit_bypass"] = True
+            set_rate_limit_bypass(True)
             st.success("Rate limit disabled for this session.")
         else:
-            st.session_state["rate_limit_bypass"] = False
+            set_rate_limit_bypass(False)
             st.error("Incorrect password. Rate limit still active.")
-    elif st.session_state.get("rate_limit_bypass", False):
+    elif rate_limit_state.bypass:
         st.caption("Rate limit disabled for this session.")
 
 
@@ -195,13 +201,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.",
                 )
 
-        if "manual_aug_schedule_rows" not in st.session_state:
-            st.session_state["manual_aug_schedule_rows"] = [
-                {"Year": 5, "Basis": AUGMENTATION_SCHEDULE_BASIS[0], "Amount": 10.0}
-            ]
-
         manual_schedule_entries: List[AugmentationScheduleEntry] = []
         manual_schedule_errors: List[str] = []
+        manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
 
         # Augmentation (conditional, with explainers)
         with st.expander("Augmentation strategy", expanded=False):
@@ -216,7 +218,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
                 with st.form("manual_aug_schedule_form", clear_on_submit=False):
                     manual_schedule_df = st.data_editor(
-                        pd.DataFrame(st.session_state["manual_aug_schedule_rows"]),
+                        pd.DataFrame(manual_schedule_rows),
                         key="manual_aug_schedule_editor",
                         column_config={
                             "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
@@ -231,9 +233,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     )
                     saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
                 if saved_manual_schedule:
-                    st.session_state["manual_aug_schedule_rows"] = manual_schedule_df.to_dict("records")
+                    save_manual_aug_schedule_rows(manual_schedule_df.to_dict("records"), int(years))
+                    manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
                     st.success("Saved augmentation events for this session.")
-                manual_schedule_df = pd.DataFrame(st.session_state["manual_aug_schedule_rows"])
+                manual_schedule_df = pd.DataFrame(manual_schedule_rows)
                 manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(manual_schedule_df, int(years))
                 if manual_schedule_errors:
                     for err in manual_schedule_errors:

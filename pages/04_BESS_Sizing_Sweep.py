@@ -11,6 +11,9 @@ from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
+from utils.ui_state import bootstrap_session_state, get_cached_simulation_config
+
+bootstrap_session_state()
 
 render_layout = init_page_layout(
     page_title="BESS Sizing Sweep",
@@ -63,8 +66,8 @@ def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float
     chosen = best_row.iloc[0]
     return float(chosen["energy_mwh"]), float(chosen[npv_column]), float(chosen["irr_pct"])
 
-cfg: Optional[SimConfig] = st.session_state.get("latest_sim_config")
-dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
+cfg, dod_override = get_cached_simulation_config()
+bootstrap_session_state(cfg)
 forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
