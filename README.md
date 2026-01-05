@@ -57,6 +57,32 @@ python -m utils.legacy.bess_size_sweeps
 
 The command sweeps a handful of power/duration combinations, prints the KPI table, and flags the best feasible candidate. Use this as a template—adjust the power/duration lists or replace the sample CSV/XLSX with your own inputs.
 
+## Lightweight API (FastAPI)
+Run the lightweight REST API outside Streamlit to reuse the simulation core:
+
+```bash
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+```
+
+- Health check: `curl http://localhost:8000/health`
+- Run a simulation with bundled sample data:
+
+  ```bash
+  curl -X POST http://localhost:8000/simulate \
+    -H "Content-Type: application/json" \
+    -d '{"config":{"contracted_mw":20,"discharge_windows_text":"10:00-14:00,18:00-22:00"},"data":{"use_sample_pv":true,"use_sample_cycle":true},"dod_override":"Auto (infer)"}'
+  ```
+
+- Run a small sweep over two BESS sizes:
+
+  ```bash
+  curl -X POST http://localhost:8000/sweep \
+    -H "Content-Type: application/json" \
+    -d '{"config":{"contracted_mw":20,"discharge_windows_text":"10:00-14:00,18:00-22:00"},"data":{"use_sample_pv":true,"use_sample_cycle":true},"power_values":[20,30],"duration_values":[2,4]}'
+  ```
+
+Use `/uploads` to cache JSON PV or cycle tables across requests, and `/batch` to run multiple configurations against shared inputs.
+
 ## Tips for best results
 - Keep `hour_index` consecutive (0–8759 or 1–8760); the app auto-corrects the starting index. Timestamped uploads can be sub-hourly and can include leap-year days—the timestep is inferred automatically.
 - If you see frequent shortfalls, try widening the SOC range, improving efficiency, or enabling augmentation.
