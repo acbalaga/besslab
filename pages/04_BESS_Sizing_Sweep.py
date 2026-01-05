@@ -87,7 +87,7 @@ if cfg is None:
 
 st.session_state.setdefault("bess_size_sweep_results", None)
 
-with st.form("size_sweep_form_page"):
+with st.container():
     size_col1, size_col2, size_col3, price_col = st.columns(4)
     with size_col1:
         default_energy = max(10.0, cfg.initial_usable_mwh)
@@ -231,7 +231,7 @@ with st.form("size_sweep_form_page"):
             value=default_contract_php_per_kwh,
             step=0.05,
             help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
-            disabled=False,
+            disabled=not use_blended_price,
         )
         escalate_prices = st.checkbox(
             "Escalate prices with inflation",
@@ -254,7 +254,7 @@ with st.form("size_sweep_form_page"):
                 "Applied to shortfall MWh as either a purchase cost or sale credit."
                 " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
             ),
-            disabled=False,
+            disabled=not wesm_pricing_enabled,
         )
         sell_to_wesm = st.checkbox(
             "Sell PV surplus to WESM",
@@ -382,7 +382,7 @@ with st.form("size_sweep_form_page"):
                     st.error(str(exc))
                     st.stop()
 
-    submitted = st.form_submit_button("Run BESS energy sweep", use_container_width=True)
+    submitted = st.button("Run BESS energy sweep", use_container_width=True)
 
 if submitted:
     enforce_rate_limit()
