@@ -16,7 +16,6 @@ from utils.economics import (
     compute_lcoe_lcos_with_augmentation_fallback,
 )
 from utils.ui_layout import init_page_layout
-from utils.ui_state import get_shared_data
 
 render_layout = init_page_layout(
     page_title="Multi-scenario batch",
@@ -313,14 +312,14 @@ def _render_summary_table(df: pd.DataFrame) -> None:
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 
-pv_df, cycle_df = get_shared_data(BASE_DIR)
 cached_cfg: SimConfig = st.session_state.get("latest_sim_config", SimConfig())
 dod_override = st.session_state.get("latest_dod_override", "Auto (infer)")
 forex_rate_php_per_usd = 58.0
 default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
 default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
-pv_df, cycle_df = render_layout(pv_df, cycle_df)
+# Pull PV/cycle inputs from the shared session cache instead of any external API.
+pv_df, cycle_df = render_layout()
 
 econ_defaults = st.session_state.get("latest_economics_payload", {})
 econ_inputs_default: Optional[EconomicInputs] = econ_defaults.get("economic_inputs")
