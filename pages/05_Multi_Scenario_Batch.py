@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -11,9 +12,15 @@ from app import BASE_DIR
 from services.simulation_core import SimConfig, Window, parse_windows, simulate_project, summarize_simulation
 from utils import enforce_rate_limit, parse_numeric_series
 from utils.economics import (
+    DEFAULT_FOREX_RATE_PHP_PER_USD,
+    DEVEX_COST_PHP,
     EconomicInputs,
     PriceInputs,
+    compute_cash_flows_and_irr,
+    compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
+    estimate_augmentation_costs_by_year,
+    normalize_economic_inputs,
 )
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
@@ -322,9 +329,6 @@ def _render_summary_table(df: pd.DataFrame) -> None:
 caching_cfg, dod_override = get_cached_simulation_config()
 cached_cfg: SimConfig = caching_cfg or SimConfig()
 bootstrap_session_state(cached_cfg)
-forex_rate_php_per_usd = 58.0
-default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
-default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
 
 # Pull PV/cycle inputs from the shared session cache instead of any external API.
 pv_df, cycle_df = render_layout()
@@ -334,14 +338,83 @@ econ_inputs_default: Optional[EconomicInputs] = econ_defaults.get("economic_inpu
 econ_price_default: Optional[PriceInputs] = econ_defaults.get("price_inputs")
 
 with st.expander("Economics (optional)", expanded=False):
-    econ_col1, econ_col2 = st.columns(2)
+    econ_col1, econ_col2, econ_col3 = st.columns(3)
     with econ_col1:
-        capex_musd = st.number_input(
-            "Total CAPEX (USD million)",
+        wacc_pct = st.number_input(
+            "WACC (%)",
             min_value=0.0,
-            value=float(econ_inputs_default.capex_musd) if econ_inputs_default else 40.0,
+            max_value=30.0,
+            value=float(econ_inputs_default.wacc * 100.0) if econ_inputs_default else 8.0,
             step=0.1,
         )
+        inflation_pct = st.number_input(
+            "Inflation rate (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(econ_inputs_default.inflation_rate * 100.0) if econ_inputs_default else 3.0,
+            step=0.1,
+            help="Used to derive the real discount rate applied to costs and revenues.",
+        )
+        discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+        st.caption(f"Real discount rate derived from WACC and inflation: {discount_rate * 100:.2f}%.")
+        forex_rate_php_per_usd = st.number_input(
+            "FX rate (PHP/USD)",
+            min_value=1.0,
+            value=float(econ_inputs_default.forex_rate_php_per_usd)
+            if econ_inputs_default
+            else float(DEFAULT_FOREX_RATE_PHP_PER_USD),
+            step=0.5,
+            help="Used to convert PHP-denominated inputs (prices, OPEX, DevEx) to USD.",
+        )
+
+    default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+    default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+    wesm_surplus_reference_php_per_kwh = 3.29
+    default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
+    wesm_reference_php_per_mwh = 5_583.0
+    default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
+
+    with econ_col2:
+        capex_mode_default = "Total CAPEX (USD)"
+        if econ_inputs_default and econ_inputs_default.capex_usd_per_kwh is not None:
+            capex_mode_default = "USD/kWh (BOL)"
+        capex_mode = st.radio(
+            "CAPEX input",
+            options=["USD/kWh (BOL)", "Total CAPEX (USD)"],
+            index=["USD/kWh (BOL)", "Total CAPEX (USD)"].index(capex_mode_default),
+            horizontal=True,
+            help="Enter CAPEX as a unit rate per kWh of BOL energy or override with a total USD value.",
+        )
+        capex_usd_per_kwh = 0.0
+        capex_total_usd = 0.0
+        bess_bol_kwh_default = cached_cfg.initial_usable_mwh * 1000.0
+        if capex_mode == "USD/kWh (BOL)":
+            default_capex_usd_per_kwh = 0.0
+            if econ_inputs_default and econ_inputs_default.capex_usd_per_kwh is not None:
+                default_capex_usd_per_kwh = float(econ_inputs_default.capex_usd_per_kwh)
+            elif bess_bol_kwh_default > 0:
+                default_capex_usd_per_kwh = 40_000_000.0 / bess_bol_kwh_default
+            capex_usd_per_kwh = st.number_input(
+                "CAPEX (USD/kWh, BOL)",
+                min_value=0.0,
+                value=round(default_capex_usd_per_kwh, 2),
+                step=1.0,
+                help="Applied to BOL usable energy (kWh) to derive total CAPEX in USD.",
+            )
+            capex_total_usd = capex_usd_per_kwh * bess_bol_kwh_default
+        else:
+            default_capex_total_usd = 40_000_000.0
+            if econ_inputs_default:
+                if econ_inputs_default.capex_total_usd is not None:
+                    default_capex_total_usd = float(econ_inputs_default.capex_total_usd)
+                elif econ_inputs_default.capex_musd:
+                    default_capex_total_usd = float(econ_inputs_default.capex_musd) * 1_000_000.0
+            capex_total_usd = st.number_input(
+                "Total CAPEX (USD)",
+                min_value=0.0,
+                value=float(default_capex_total_usd),
+                step=100_000.0,
+            )
         fixed_opex_pct = st.number_input(
             "Fixed OPEX (% of CAPEX per year)",
             min_value=0.0,
@@ -349,30 +422,49 @@ with st.expander("Economics (optional)", expanded=False):
             value=float(econ_inputs_default.fixed_opex_pct_of_capex) if econ_inputs_default else 2.0,
             step=0.1,
         )
+        opex_php_default = (
+            float(econ_inputs_default.opex_php_per_kwh)
+            if econ_inputs_default and econ_inputs_default.opex_php_per_kwh is not None
+            else 0.0
+        )
+        opex_php_per_kwh = st.number_input(
+            "OPEX (PHP/kWh on total generation)",
+            min_value=0.0,
+            value=opex_php_default,
+            step=0.05,
+            help="Converted to USD/MWh using the FX rate; applied to total generation.",
+        )
+        if opex_php_per_kwh > 0:
+            opex_usd_per_mwh = opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
+            st.caption(f"Converted OPEX: ${opex_usd_per_mwh:,.2f}/MWh.")
         fixed_opex_musd = st.number_input(
             "Additional fixed OPEX (USD million/yr)",
             min_value=0.0,
             value=float(econ_inputs_default.fixed_opex_musd) if econ_inputs_default else 0.0,
             step=0.1,
         )
-    with econ_col2:
-        inflation_pct = st.number_input(
-            "Inflation rate (%)",
+        include_devex_year0 = st.checkbox(
+            "Include DevEx at year 0",
+            value=bool(econ_inputs_default.include_devex_year0) if econ_inputs_default else False,
+            help=(
+                "Adds a PHP-denominated development expenditure upfront; enter the amount to convert it "
+                "using the FX rate. Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+            ),
+        )
+        devex_cost_php = st.number_input(
+            "DevEx amount (PHP)",
             min_value=0.0,
-            max_value=20.0,
-            value=float(econ_inputs_default.inflation_rate * 100) if econ_inputs_default else 3.0,
-            step=0.1,
+            value=float(econ_inputs_default.devex_cost_php) if econ_inputs_default else float(DEVEX_COST_PHP),
+            step=1_000_000.0,
+            help="Used only when the DevEx toggle is enabled.",
+            disabled=not include_devex_year0,
         )
-        discount_rate_pct = st.number_input(
-            "Discount rate (%)",
-            min_value=0.0,
-            max_value=30.0,
-            value=float(econ_inputs_default.discount_rate * 100) if econ_inputs_default else 5.0,
-            step=0.1,
-        )
-        st.caption(
-            "Discount rate is applied directly. Use WACC-derived values if you prefer real/nominal alignment."
-        )
+        devex_cost_usd = devex_cost_php / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
+        if include_devex_year0:
+            st.caption(
+                "DevEx conversion: "
+                f"PHP {devex_cost_php:,.0f} ≈ ${devex_cost_usd / 1_000_000:,.2f}M."
+            )
 
     blended_price_default_php_per_kwh = (
         float(econ_price_default.blended_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
@@ -382,8 +474,7 @@ with st.expander("Economics (optional)", expanded=False):
     blended_price_default_active = bool(
         econ_price_default and econ_price_default.blended_price_usd_per_mwh is not None
     )
-    price_col1, price_col2 = st.columns(2)
-    with price_col1:
+    with econ_col3:
         use_blended_price = st.checkbox(
             "Use blended energy price",
             value=blended_price_default_active,
@@ -401,7 +492,6 @@ with st.expander("Economics (optional)", expanded=False):
             step=0.05,
             disabled=use_blended_price,
         )
-    with price_col2:
         pv_market_price_php_per_kwh = st.number_input(
             "PV market price (PHP/kWh for excess PV)",
             min_value=0.0,
@@ -419,11 +509,64 @@ with st.expander("Economics (optional)", expanded=False):
             help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
             disabled=not use_blended_price,
         )
-    escalate_prices = st.checkbox(
-        "Escalate prices with inflation",
-        value=bool(econ_price_default.escalate_with_inflation) if econ_price_default else False,
-    )
+        escalate_prices = st.checkbox(
+            "Escalate prices with inflation",
+            value=bool(econ_price_default.escalate_with_inflation) if econ_price_default else False,
+        )
+        wesm_pricing_enabled = st.checkbox(
+            "Apply WESM pricing to contract shortfalls",
+            value=bool(econ_price_default.apply_wesm_to_shortfall) if econ_price_default else False,
+            help=(
+                "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC); "
+                "enter a PHP/kWh rate to override."
+            ),
+        )
+        wesm_deficit_price_php_per_kwh = st.number_input(
+            "WESM deficit price for contract shortfalls (PHP/kWh)",
+            min_value=0.0,
+            value=float(
+                econ_price_default.wesm_deficit_price_usd_per_mwh
+                * forex_rate_php_per_usd
+                / 1000.0
+            )
+            if econ_price_default and econ_price_default.wesm_deficit_price_usd_per_mwh is not None
+            else default_wesm_php_per_kwh,
+            step=0.05,
+            help=(
+                "Applied to contract shortfall MWh (annual_shortfall_mwh) as a purchase cost. "
+                "This is separate from the PV surplus sale price."
+            ),
+            disabled=not wesm_pricing_enabled,
+        )
+        sell_to_wesm = st.checkbox(
+            "Sell PV surplus to WESM",
+            value=bool(econ_price_default.sell_to_wesm) if econ_price_default else False,
+            help=(
+                "When enabled, PV surplus (excess MWh) is credited at a WESM sale price; otherwise surplus "
+                "is excluded from revenue. This does not change the deficit price applied to shortfalls."
+            ),
+            disabled=not wesm_pricing_enabled,
+        )
+        wesm_surplus_price_php_per_kwh = st.number_input(
+            "WESM sale price for PV surplus (PHP/kWh)",
+            min_value=0.0,
+            value=float(
+                econ_price_default.wesm_surplus_price_usd_per_mwh
+                * forex_rate_php_per_usd
+                / 1000.0
+            )
+            if econ_price_default and econ_price_default.wesm_surplus_price_usd_per_mwh is not None
+            else default_wesm_surplus_php_per_kwh,
+            step=0.05,
+            help=(
+                "Used only when selling PV surplus. Defaults to PHP 3.29/kWh based on the 2025 weighted "
+                "average WESM price; adjust to use your own PHP/kWh rate. This does not affect shortfall pricing."
+            ),
+            disabled=not (wesm_pricing_enabled and sell_to_wesm),
+        )
     blended_price_usd_per_mwh: Optional[float] = None
+    wesm_deficit_price_usd_per_mwh: Optional[float] = None
+    wesm_surplus_price_usd_per_mwh: Optional[float] = None
     contract_price_usd_per_mwh = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
     pv_market_price_usd_per_mwh = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
     if use_blended_price:
@@ -438,13 +581,26 @@ with st.expander("Economics (optional)", expanded=False):
             f"Converted contract price: ${contract_price_usd_per_mwh:,.2f}/MWh | "
             f"PV market price: ${pv_market_price_usd_per_mwh:,.2f}/MWh"
         )
+    if wesm_pricing_enabled:
+        wesm_deficit_price_usd_per_mwh = wesm_deficit_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+        wesm_surplus_price_usd_per_mwh = (
+            wesm_surplus_price_php_per_kwh / forex_rate_php_per_usd * 1000.0 if sell_to_wesm else None
+        )
+        st.caption(
+            "WESM deficit pricing active for contract shortfalls: "
+            f"PHP {wesm_deficit_price_php_per_kwh:,.2f}/kWh "
+            f"(≈${wesm_deficit_price_usd_per_mwh:,.2f}/MWh)."
+        )
+        if sell_to_wesm and wesm_surplus_price_usd_per_mwh is not None:
+            st.caption(
+                "PV surplus credited at a separate WESM sale rate: "
+                f"PHP {wesm_surplus_price_php_per_kwh:,.2f}/kWh "
+                f"(≈${wesm_surplus_price_usd_per_mwh:,.2f}/MWh)."
+            )
 
-    variable_opex_default_php = (
-        float(econ_inputs_default.variable_opex_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
-        if econ_inputs_default and econ_inputs_default.variable_opex_usd_per_mwh is not None
-        else 0.0
+    variable_schedule_default = (
+        econ_inputs_default.variable_opex_schedule_usd if econ_inputs_default else None
     )
-    variable_schedule_default = econ_inputs_default.variable_opex_schedule_usd if econ_inputs_default else None
     periodic_variable_amount_default = (
         float(econ_inputs_default.periodic_variable_opex_usd)
         if econ_inputs_default and econ_inputs_default.periodic_variable_opex_usd is not None
@@ -457,22 +613,12 @@ with st.expander("Economics (optional)", expanded=False):
     )
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
-        variable_opex_php_per_kwh = st.number_input(
-            "Variable OPEX (PHP/kWh)",
-            min_value=0.0,
-            value=variable_opex_default_php,
-            step=0.05,
-            help=(
-                "Optional per-kWh operating expense applied to annual firm energy. "
-                "Escalates with inflation and overrides fixed OPEX when provided."
-            ),
+        st.markdown("**Variable OPEX overrides**")
+        st.caption(
+            "Use the schedule controls to override the % of CAPEX or PHP/kWh inputs above. "
+            "Amounts are in USD and are treated as nominal per-year values."
         )
         variable_opex_usd_per_mwh: Optional[float] = None
-        if variable_opex_php_per_kwh > 0:
-            variable_opex_usd_per_mwh = variable_opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
-            st.caption(
-                f"Converted variable OPEX: ${variable_opex_usd_per_mwh:,.2f}/MWh (applied to delivered energy)."
-            )
     with variable_col2:
         default_radio = "None"
         if variable_schedule_default:
@@ -520,7 +666,7 @@ with st.expander("Economics (optional)", expanded=False):
             )
             st.caption(
                 "Use commas or newlines between entries; provide one value per project year "
-                f"({cfg.years} entries)."
+                f"({cached_cfg.years} entries)."
             )
             if custom_variable_text.strip():
                 try:
@@ -533,22 +679,69 @@ with st.expander("Economics (optional)", expanded=False):
             else:
                 variable_opex_schedule_usd = None
 
+    financing_col1, financing_col2, financing_col3 = st.columns(3)
+    with financing_col1:
+        default_debt_equity_ratio = 1.0
+        if econ_inputs_default and 0.0 < econ_inputs_default.debt_ratio < 1.0:
+            default_debt_equity_ratio = econ_inputs_default.debt_ratio / (1.0 - econ_inputs_default.debt_ratio)
+        debt_equity_ratio = st.number_input(
+            "Debt/Equity ratio (D/E)",
+            min_value=0.0,
+            value=default_debt_equity_ratio,
+            step=0.1,
+            help="Debt divided by equity; 1.0 implies 50% debt and 50% equity.",
+        )
+        debt_ratio = debt_equity_ratio / (1.0 + debt_equity_ratio) if debt_equity_ratio > 0 else 0.0
+        st.caption(f"Implied debt share of capital: {debt_ratio * 100:.1f}%.")
+    with financing_col2:
+        cost_of_debt_pct = st.number_input(
+            "Cost of debt (%)",
+            min_value=0.0,
+            max_value=30.0,
+            value=float(econ_inputs_default.cost_of_debt * 100.0) if econ_inputs_default else 6.0,
+            step=0.1,
+            help="Annual interest rate applied to the debt balance.",
+        )
+    with financing_col3:
+        tenor_years = st.number_input(
+            "Debt tenor (years)",
+            min_value=1,
+            value=int(econ_inputs_default.tenor_years) if econ_inputs_default and econ_inputs_default.tenor_years else 10,
+            step=1,
+            help="Years over which debt is amortized using level payments.",
+        )
+
 economic_inputs = EconomicInputs(
-    capex_musd=capex_musd,
+    capex_musd=capex_total_usd / 1_000_000.0,
+    capex_usd_per_kwh=capex_usd_per_kwh if capex_mode == "USD/kWh (BOL)" else None,
+    capex_total_usd=capex_total_usd if capex_mode == "Total CAPEX (USD)" else None,
+    bess_bol_kwh=bess_bol_kwh_default if capex_mode == "USD/kWh (BOL)" else None,
     fixed_opex_pct_of_capex=fixed_opex_pct,
     fixed_opex_musd=fixed_opex_musd,
+    opex_php_per_kwh=opex_php_per_kwh,
     inflation_rate=inflation_pct / 100.0,
-    discount_rate=discount_rate_pct / 100.0,
+    discount_rate=discount_rate,
     variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
     variable_opex_schedule_usd=variable_opex_schedule_usd,
     periodic_variable_opex_usd=periodic_variable_opex_usd,
     periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
+    forex_rate_php_per_usd=forex_rate_php_per_usd,
+    devex_cost_php=devex_cost_php,
+    include_devex_year0=include_devex_year0,
+    debt_ratio=debt_ratio,
+    cost_of_debt=cost_of_debt_pct / 100.0,
+    tenor_years=int(tenor_years),
+    wacc=wacc_pct / 100.0,
 )
 price_inputs = PriceInputs(
     contract_price_usd_per_mwh=contract_price_usd_per_mwh,
     pv_market_price_usd_per_mwh=pv_market_price_usd_per_mwh,
     escalate_with_inflation=escalate_prices,
     blended_price_usd_per_mwh=blended_price_usd_per_mwh,
+    wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
+    wesm_surplus_price_usd_per_mwh=wesm_surplus_price_usd_per_mwh if wesm_pricing_enabled and sell_to_wesm else None,
+    apply_wesm_to_shortfall=wesm_pricing_enabled,
+    sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
 )
 cache_latest_economics_payload(
     {
@@ -838,19 +1031,89 @@ def _run_batch() -> pd.DataFrame | None:
         summary = summarize_simulation(sim_output)
         final_year = sim_output.results[-1]
         economics_fields: Dict[str, Any] = {}
-        if isinstance(econ_payload, dict) and econ_payload.get("economic_inputs"):
+        economics_columns = [
+            "Discounted costs (USD million)",
+            "LCOE (PHP/kWh delivered)",
+            "LCOS (PHP/kWh from BESS)",
+            "Discounted revenues (USD million)",
+            "Project NPV (USD million, WACC)",
+            "PIRR (%)",
+            "EBITDA (USD million)",
+            "EBITDA margin (%)",
+            "EIRR (%)",
+        ]
+        if (
+            isinstance(econ_payload, dict)
+            and econ_payload.get("economic_inputs")
+            and econ_payload.get("price_inputs")
+        ):
             try:
-                econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
-                    annual_delivered_mwh=[r.delivered_firm_mwh for r in sim_output.results],
-                    annual_bess_mwh=[r.bess_to_contract_mwh for r in sim_output.results],
-                    inputs=econ_payload["economic_inputs"],
-                    augmentation_costs_usd=econ_payload.get("augmentation_costs_usd"),
+                econ_inputs: EconomicInputs = econ_payload["economic_inputs"]
+                price_inputs: PriceInputs = econ_payload["price_inputs"]
+                if econ_inputs.capex_usd_per_kwh is not None:
+                    econ_inputs = replace(
+                        econ_inputs,
+                        bess_bol_kwh=cfg.initial_usable_mwh * 1000.0,
+                    )
+                normalized_econ_inputs = normalize_economic_inputs(econ_inputs)
+                augmentation_costs_usd = estimate_augmentation_costs_by_year(
+                    sim_output.augmentation_energy_added_mwh,
+                    cfg.initial_usable_mwh,
+                    normalized_econ_inputs.capex_musd,
                 )
-                economics_fields["LCOE ($/MWh)"] = econ_outputs.lcoe_usd_per_mwh
-                economics_fields["LCOS ($/MWh)"] = econ_outputs.lcos_usd_per_mwh
+                annual_delivered = [r.delivered_firm_mwh for r in sim_output.results]
+                annual_bess = [r.bess_to_contract_mwh for r in sim_output.results]
+                annual_pv_delivered = [
+                    float(delivered) - float(bess)
+                    for delivered, bess in zip(annual_delivered, annual_bess)
+                ]
+                annual_pv_excess = [r.pv_curtailed_mwh for r in sim_output.results]
+                annual_shortfall = [r.shortfall_mwh for r in sim_output.results]
+                annual_total_generation = [r.available_pv_mwh for r in sim_output.results]
+                econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
+                    annual_delivered_mwh=annual_delivered,
+                    annual_bess_mwh=annual_bess,
+                    inputs=normalized_econ_inputs,
+                    augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
+                    annual_total_generation_mwh=annual_total_generation,
+                )
+                cash_outputs = compute_cash_flows_and_irr(
+                    annual_delivered,
+                    annual_bess,
+                    annual_pv_excess,
+                    normalized_econ_inputs,
+                    price_inputs,
+                    annual_pv_delivered_mwh=annual_pv_delivered,
+                    annual_shortfall_mwh=annual_shortfall,
+                    augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
+                    annual_total_generation_mwh=annual_total_generation,
+                )
+                financing_outputs = compute_financing_cash_flows(
+                    annual_delivered,
+                    annual_bess,
+                    annual_pv_excess,
+                    normalized_econ_inputs,
+                    price_inputs,
+                    annual_shortfall_mwh=annual_shortfall,
+                    augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
+                    annual_total_generation_mwh=annual_total_generation,
+                )
+                php_per_kwh_factor = normalized_econ_inputs.forex_rate_php_per_usd / 1000.0
+                economics_fields = {
+                    "Discounted costs (USD million)": econ_outputs.discounted_costs_usd / 1_000_000.0,
+                    "LCOE (PHP/kWh delivered)": econ_outputs.lcoe_usd_per_mwh * php_per_kwh_factor,
+                    "LCOS (PHP/kWh from BESS)": econ_outputs.lcos_usd_per_mwh * php_per_kwh_factor,
+                    "Discounted revenues (USD million)": cash_outputs.discounted_revenues_usd / 1_000_000.0,
+                    "Project NPV (USD million, WACC)": financing_outputs.project_npv_usd / 1_000_000.0,
+                    "PIRR (%)": financing_outputs.project_irr_pct,
+                    "EBITDA (USD million)": financing_outputs.ebitda_usd / 1_000_000.0,
+                    "EBITDA margin (%)": financing_outputs.ebitda_margin * 100.0,
+                    "EIRR (%)": financing_outputs.equity_irr_pct,
+                }
             except ValueError:
-                economics_fields["LCOE ($/MWh)"] = float("nan")
-                economics_fields["LCOS ($/MWh)"] = float("nan")
+                economics_fields = {column: float("nan") for column in economics_columns}
+            except Exception:  # noqa: BLE001
+                economics_fields = {column: float("nan") for column in economics_columns}
 
         results.append(
             {
@@ -917,8 +1180,15 @@ with results_container:
                 "Final SOH_total": "{:,.3f}",
                 "EOY usable MWh": "{:,.1f}",
                 "EOY power MW": "{:,.2f}",
-                "LCOE ($/MWh)": "{:,.2f}",
-                "LCOS ($/MWh)": "{:,.2f}",
+                "Discounted costs (USD million)": "{:,.2f}",
+                "LCOE (PHP/kWh delivered)": "{:,.2f}",
+                "LCOS (PHP/kWh from BESS)": "{:,.2f}",
+                "Discounted revenues (USD million)": "{:,.2f}",
+                "Project NPV (USD million, WACC)": "{:,.2f}",
+                "PIRR (%)": "{:,.2f}",
+                "EBITDA (USD million)": "{:,.2f}",
+                "EBITDA margin (%)": "{:,.2f}",
+                "EIRR (%)": "{:,.2f}",
             }
         )
         st.dataframe(formatted, use_container_width=True, hide_index=True)
@@ -957,10 +1227,7 @@ with results_container:
                 mime="application/json",
                 use_container_width=True,
             )
-        if econ_defaults:
-            st.caption("Economic columns populate when economics inputs are cached from the main page.")
-        else:
-            st.caption("LCOE/LCOS will populate once economics assumptions have been cached on the main page.")
+        st.caption("Economics columns use the assumptions entered in the Economics section above.")
     else:
         st.info("No batch results yet. Add rows above and click Run scenarios.", icon="ℹ️")
 
