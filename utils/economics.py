@@ -35,6 +35,10 @@ class EconomicInputs:
     periodic_variable_opex_interval_years: int | None = None
     devex_cost_usd: float = DEVEX_COST_USD
     include_devex_year0: bool = False
+    debt_ratio: float = 0.0
+    cost_of_debt: float = 0.0
+    tenor_years: int | None = None
+    wacc: float = 0.0
 
 
 @dataclass
@@ -82,6 +86,17 @@ class CashFlowOutputs:
     irr_pct: float
 
 
+@dataclass
+class FinancingOutputs:
+    """Financing-aware metrics such as EBITDA and project/equity IRR."""
+
+    ebitda_usd: float
+    ebitda_margin: float
+    project_npv_usd: float
+    project_irr_pct: float
+    equity_irr_pct: float
+
+
 def _discount_factor(discount_rate: float, year_index: int) -> float:
     """Return the discount factor for a given year index (1-indexed)."""
 
@@ -119,6 +134,15 @@ def _validate_inputs(
     _ensure_non_negative_finite(inputs.fixed_opex_musd, "fixed_opex_musd")
     _ensure_non_negative_finite(inputs.inflation_rate, "inflation_rate")
     _ensure_non_negative_finite(inputs.discount_rate, "discount_rate")
+    _ensure_non_negative_finite(inputs.debt_ratio, "debt_ratio")
+    _ensure_non_negative_finite(inputs.cost_of_debt, "cost_of_debt")
+    _ensure_non_negative_finite(inputs.wacc, "wacc")
+    if inputs.debt_ratio > 1:
+        raise ValueError("debt_ratio must be between 0 and 1")
+    if inputs.tenor_years is not None and inputs.tenor_years <= 0:
+        raise ValueError("tenor_years must be positive when provided")
+    if inputs.debt_ratio > 0 and (inputs.tenor_years is None or inputs.tenor_years <= 0):
+        raise ValueError("tenor_years must be provided when debt_ratio is greater than zero")
 
     if inputs.variable_opex_usd_per_mwh is not None:
         _ensure_non_negative_finite(inputs.variable_opex_usd_per_mwh, "variable_opex_usd_per_mwh")
@@ -186,6 +210,47 @@ def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[
         return schedule
 
     return None
+
+
+def _build_debt_service_schedule(
+    principal_usd: float,
+    annual_rate: float,
+    tenor_years: int,
+    project_years: int,
+) -> list[float]:
+    """Return annual debt service (principal + interest) for the project horizon."""
+
+    if principal_usd <= 0 or tenor_years <= 0 or project_years <= 0:
+        return [0.0 for _ in range(project_years)]
+
+    balance = principal_usd
+    debt_service: list[float] = []
+    if annual_rate == 0:
+        annual_principal = principal_usd / tenor_years
+        for year_idx in range(1, project_years + 1):
+            if year_idx <= tenor_years:
+                payment = min(annual_principal, balance)
+                balance -= payment
+                debt_service.append(payment)
+            else:
+                debt_service.append(0.0)
+        return debt_service
+
+    payment = (
+        principal_usd
+        * (annual_rate * (1.0 + annual_rate) ** tenor_years)
+        / ((1.0 + annual_rate) ** tenor_years - 1.0)
+    )
+    for year_idx in range(1, project_years + 1):
+        if year_idx <= tenor_years and balance > 0:
+            interest = balance * annual_rate
+            principal_payment = max(payment - interest, 0.0)
+            principal_payment = min(principal_payment, balance)
+            balance -= principal_payment
+            debt_service.append(interest + principal_payment)
+        else:
+            debt_service.append(0.0)
+    return debt_service
 
 
 def _initial_project_spend(inputs: EconomicInputs) -> float:
@@ -427,6 +492,154 @@ def compute_cash_flows_and_irr(
     )
 
 
+def compute_financing_cash_flows(
+    annual_delivered_mwh: Sequence[float],
+    annual_bess_mwh: Sequence[float],
+    annual_pv_excess_mwh: Sequence[float],
+    inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+    annual_shortfall_mwh: Sequence[float] | None = None,
+    augmentation_costs_usd: Sequence[float] | None = None,
+    max_iterations: int = 200,
+) -> FinancingOutputs:
+    """Compute financing-aware cash flows, EBITDA, and project/equity IRR.
+
+    Debt service is modeled as a level-payment amortizing loan sized using the
+    provided debt ratio. Augmentation costs are treated as equity-funded CAPEX
+    outflows in the year they occur. WACC is used to discount project cash
+    flows for NPV; equity metrics are reported via IRR in the absence of a
+    separate equity discount rate input.
+    """
+
+    _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
+    if len(annual_pv_excess_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_pv_excess_mwh must match number of years")
+    for idx, value in enumerate(annual_pv_excess_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_pv_excess_mwh[{idx}]")
+    if annual_shortfall_mwh is None:
+        annual_shortfall_mwh = [0.0 for _ in annual_delivered_mwh]
+    if len(annual_shortfall_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_shortfall_mwh must match number of years")
+    for idx, value in enumerate(annual_shortfall_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
+    _validate_price_inputs(price_inputs)
+
+    if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("augmentation_costs_usd must match number of years")
+    if augmentation_costs_usd is not None:
+        for idx, value in enumerate(augmentation_costs_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    years = len(annual_delivered_mwh)
+    if years == 0:
+        return FinancingOutputs(
+            ebitda_usd=float("nan"),
+            ebitda_margin=float("nan"),
+            project_npv_usd=float("nan"),
+            project_irr_pct=float("nan"),
+            equity_irr_pct=float("nan"),
+        )
+
+    total_capex = _initial_project_spend(inputs)
+    debt_principal = total_capex * inputs.debt_ratio
+    equity_contribution = total_capex - debt_principal
+    debt_schedule = (
+        _build_debt_service_schedule(
+            debt_principal, inputs.cost_of_debt, int(inputs.tenor_years or 0), years
+        )
+        if inputs.debt_ratio > 0
+        else [0.0 for _ in range(years)]
+    )
+
+    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
+    blended_price = price_inputs.blended_price_usd_per_mwh
+    contract_price = price_inputs.contract_price_usd_per_mwh
+    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
+    if blended_price is not None:
+        contract_price = float(blended_price)
+        pv_market_price = float(blended_price)
+    wesm_price = (
+        float(price_inputs.wesm_price_usd_per_mwh) if price_inputs.wesm_price_usd_per_mwh is not None else None
+    )
+    wesm_surplus_price = (
+        float(price_inputs.wesm_surplus_price_usd_per_mwh)
+        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
+        else None
+    )
+
+    total_revenue = 0.0
+    total_ebitda = 0.0
+    project_cash_flows = [-total_capex]
+    equity_cash_flows = [-equity_contribution]
+
+    for year_idx in range(1, years + 1):
+        firm_mwh = float(annual_delivered_mwh[year_idx - 1])
+        bess_mwh = float(annual_bess_mwh[year_idx - 1])
+        pv_excess_mwh = float(annual_pv_excess_mwh[year_idx - 1])
+        shortfall_mwh = float(annual_shortfall_mwh[year_idx - 1])
+        inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
+
+        annual_opex = 0.0
+        if variable_opex_schedule is not None:
+            if year_idx - 1 >= len(variable_opex_schedule):
+                raise ValueError("variable_opex_schedule_usd must match the number of project years")
+            annual_opex = float(variable_opex_schedule[year_idx - 1])
+        elif inputs.variable_opex_usd_per_mwh is not None:
+            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+        else:
+            annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+            annual_opex = annual_fixed_opex * inflation_multiplier
+
+        augmentation_cost = 0.0
+        if augmentation_costs_usd is not None:
+            augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
+
+        bess_revenue = firm_mwh * contract_price if blended_price is not None else bess_mwh * contract_price
+        pv_revenue = pv_excess_mwh * pv_market_price
+        wesm_shortfall_cost = 0.0
+        wesm_surplus_revenue = 0.0
+        if price_inputs.apply_wesm_to_shortfall and wesm_price is not None:
+            wesm_shortfall_cost = shortfall_mwh * wesm_price
+            pv_revenue = 0.0
+            if price_inputs.sell_to_wesm:
+                surplus_price = wesm_surplus_price if wesm_surplus_price is not None else wesm_price
+                wesm_surplus_revenue = pv_excess_mwh * surplus_price
+
+        if price_inputs.escalate_with_inflation:
+            bess_revenue *= inflation_multiplier
+            pv_revenue *= inflation_multiplier
+            wesm_shortfall_cost *= inflation_multiplier
+            wesm_surplus_revenue *= inflation_multiplier
+
+        revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
+        ebitda = revenue - annual_opex
+        total_revenue += revenue
+        total_ebitda += ebitda
+
+        project_cash_flow = ebitda - augmentation_cost
+        debt_service = debt_schedule[year_idx - 1]
+        equity_cash_flow = project_cash_flow - debt_service
+
+        project_cash_flows.append(project_cash_flow)
+        equity_cash_flows.append(equity_cash_flow)
+
+    ebitda_margin = total_ebitda / total_revenue if total_revenue > 0 else float("nan")
+    project_npv = _compute_npv(project_cash_flows, inputs.wacc)
+    project_irr_pct = _solve_irr_pct(project_cash_flows, max_iterations=max_iterations)
+    equity_irr_pct = _solve_irr_pct(equity_cash_flows, max_iterations=max_iterations)
+
+    return FinancingOutputs(
+        ebitda_usd=total_ebitda,
+        ebitda_margin=ebitda_margin,
+        project_npv_usd=project_npv,
+        project_irr_pct=project_irr_pct,
+        equity_irr_pct=equity_irr_pct,
+    )
+
+
 def _discount_augmentation_costs(
     augmentation_costs_usd: Sequence[float] | None, discount_rate: float
 ) -> float:
@@ -577,13 +790,16 @@ __all__ = [
     "EconomicOutputs",
     "PriceInputs",
     "CashFlowOutputs",
+    "FinancingOutputs",
     "compute_lcoe_lcos",
     "compute_cash_flows_and_irr",
+    "compute_financing_cash_flows",
     "compute_lcoe_lcos_with_augmentation_fallback",
     "_discount_factor",
     "_ensure_non_negative_finite",
     "_validate_inputs",
     "_validate_price_inputs",
+    "_build_debt_service_schedule",
     "_discount_augmentation_costs",
     "_compute_npv",
     "_solve_irr_pct",
