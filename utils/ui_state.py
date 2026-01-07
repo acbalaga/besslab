@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from services.simulation_core import SimConfig, SimulationOutput
+from utils.economics import EconomicInputs, PriceInputs
 from utils import read_cycle_model, read_pv_profile
 
 PV_SESSION_KEY = "shared_pv_profile_df"
@@ -26,6 +27,7 @@ SIM_CONFIG_FINGERPRINT_KEY = "latest_sim_config_fingerprint"
 DOD_OVERRIDE_KEY = "latest_dod_override"
 SIM_RESULTS_KEY = "latest_simulation_results"
 SIM_SNAPSHOT_KEY = "latest_simulation_snapshot"
+SIM_INPUTS_FINGERPRINT_KEY = "latest_simulation_inputs_fingerprint"
 MANUAL_AUG_SCHEDULE_KEY = "manual_aug_schedule_rows"
 RATE_LIMIT_BYPASS_KEY = "rate_limit_bypass"
 RATE_LIMIT_RECENT_RUNS_KEY = "recent_runs"
@@ -264,6 +266,25 @@ def _config_fingerprint(cfg: SimConfig) -> str:
     return hashlib.sha256(json.dumps(cfg_dict, sort_keys=True, default=str).encode()).hexdigest()
 
 
+def build_inputs_fingerprint(
+    cfg: SimConfig,
+    dod_override: str,
+    run_economics: bool,
+    econ_inputs: Optional[EconomicInputs],
+    price_inputs: Optional[PriceInputs],
+) -> str:
+    """Return a hash of the latest simulation + economics inputs."""
+
+    payload: Dict[str, Any] = {
+        "config": asdict(cfg),
+        "dod_override": dod_override,
+        "run_economics": run_economics,
+        "econ_inputs": asdict(econ_inputs) if econ_inputs is not None else None,
+        "price_inputs": asdict(price_inputs) if price_inputs is not None else None,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def get_cached_simulation_config(default_dod: str = "Auto (infer)") -> Tuple[Optional[SimConfig], str]:
     """Return the latest simulation config and DoD override stored in session."""
 
@@ -350,6 +371,19 @@ def clear_simulation_results() -> None:
     st.session_state.pop(SIM_SNAPSHOT_KEY, None)
 
 
+def get_last_run_inputs_fingerprint() -> Optional[str]:
+    """Return the fingerprint captured when results were last computed."""
+
+    fingerprint = st.session_state.get(SIM_INPUTS_FINGERPRINT_KEY)
+    return str(fingerprint) if fingerprint is not None else None
+
+
+def save_last_run_inputs_fingerprint(fingerprint: str) -> None:
+    """Store the fingerprint for the latest completed run."""
+
+    st.session_state[SIM_INPUTS_FINGERPRINT_KEY] = fingerprint
+
+
 def save_simulation_snapshot(snapshot: Dict[str, Any]) -> None:
     """Persist the latest simulation snapshot for cross-page reuse."""
 
@@ -391,7 +425,10 @@ def set_rate_limit_bypass(enabled: bool) -> None:
     update_rate_limit_state(state)
 
 
-def bootstrap_session_state(expected_config: Optional[SimConfig] = None) -> None:
+def bootstrap_session_state(
+    expected_config: Optional[SimConfig] = None,
+    current_inputs_fingerprint: Optional[str] = None,
+) -> None:
     """Initialize known session keys and clear stale caches when inputs change."""
 
     _ = get_manual_aug_schedule_rows(getattr(expected_config, "years", None))
@@ -410,3 +447,8 @@ def bootstrap_session_state(expected_config: Optional[SimConfig] = None) -> None
 
     if expected_fp is not None:
         st.session_state[SIM_CONFIG_FINGERPRINT_KEY] = expected_fp
+
+    if current_inputs_fingerprint:
+        last_run_fp = get_last_run_inputs_fingerprint()
+        if last_run_fp is not None and last_run_fp != current_inputs_fingerprint:
+            clear_simulation_results()

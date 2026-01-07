@@ -44,9 +44,11 @@ from utils.economics import (
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
     bootstrap_session_state,
+    build_inputs_fingerprint,
     get_base_dir,
     get_simulation_results,
     load_shared_data,
+    save_last_run_inputs_fingerprint,
     save_simulation_config,
     save_simulation_results,
     save_simulation_snapshot,
@@ -101,7 +103,8 @@ def run_app():
     run_submitted = form_result.run_submitted
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
-    bootstrap_session_state(cfg)
+    inputs_fingerprint = build_inputs_fingerprint(cfg, dod_override, run_economics, econ_inputs, price_inputs)
+    bootstrap_session_state(cfg, current_inputs_fingerprint=inputs_fingerprint)
 
     save_simulation_config(cfg, dod_override)
 
@@ -156,6 +159,7 @@ def run_app():
             st.toast("Simulation complete.")
 
         save_simulation_results(sim_output, dod_override)
+        save_last_run_inputs_fingerprint(inputs_fingerprint)
     elif cached_results is not None:
         sim_output = cached_results.sim_output
         st.caption(

@@ -206,7 +206,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 charge_eff = None
                 discharge_eff = None
 
-    # Keep the economics toggle outside the form so checking it reveals inputs immediately.
+    # Keep the economics toggle outside the main input block so checking it reveals inputs immediately.
     st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
     run_economics = st.checkbox(
         "Compute economics using simulation outputs",
@@ -397,7 +397,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     / 100.0
                 )
 
-    with st.form("inputs_form"):
+    with st.container():
         # BESS Specs
         with st.expander("BESS Specs (high-level)", expanded=True):
             c1, c2, c3 = st.columns(3)
@@ -856,10 +856,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
 
         run_cols = st.columns([2, 1])
         with run_cols[0]:
-            run_submitted = st.form_submit_button(
+            run_submitted = st.button(
                 "Run simulation",
                 use_container_width=True,
-                help="Prevents auto-reruns while you adjust inputs; click to compute results.",
+                help="Click to compute results with the current inputs.",
             )
         with run_cols[1]:
             st.caption("Edit parameters freely, then run when ready.")
