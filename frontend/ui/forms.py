@@ -206,6 +206,14 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 charge_eff = None
                 discharge_eff = None
 
+    # Keep the economics toggle outside the form so checking it reveals inputs immediately.
+    st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
+    run_economics = st.checkbox(
+        "Compute economics using simulation outputs",
+        value=False,
+        help=("Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."),
+    )
+
     with st.form("inputs_form"):
         # BESS Specs
         with st.expander("BESS Specs (high-level)", expanded=True):
@@ -503,12 +511,6 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             validation_errors.append(duration_error)
             validation_details.append(f"PV profile validation error: {duration_error}")
 
-        st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
-        run_economics = st.checkbox(
-            "Compute economics using simulation outputs",
-            value=False,
-            help=("Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."),
-        )
         econ_inputs: Optional[EconomicInputs] = None
         price_inputs: Optional[PriceInputs] = None
         forex_rate_php_per_usd = DEFAULT_FOREX_RATE_PHP_PER_USD
