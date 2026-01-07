@@ -10,6 +10,7 @@ from utils.economics import (
     compute_financing_cash_flows,
     compute_lcoe_lcos,
     _solve_irr_pct,
+    normalize_economic_inputs,
 )
 
 
@@ -461,6 +462,89 @@ class EconomicModuleTests(unittest.TestCase):
 
         self.assertAlmostEqual(outputs.discounted_costs_usd, 50.0)
         self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, 0.5)
+
+    def test_normalize_capex_per_kwh(self) -> None:
+        inputs = EconomicInputs(
+            capex_usd_per_kwh=250.0,
+            bess_bol_kwh=80_000.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+
+        normalized = normalize_economic_inputs(inputs)
+
+        self.assertAlmostEqual(normalized.capex_musd, 20.0)
+
+    def test_normalize_capex_total_override(self) -> None:
+        inputs = EconomicInputs(
+            capex_total_usd=55_000_000.0,
+            capex_usd_per_kwh=250.0,
+            bess_bol_kwh=80_000.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+
+        normalized = normalize_economic_inputs(inputs)
+
+        self.assertAlmostEqual(normalized.capex_musd, 55.0)
+
+    def test_normalize_opex_php_per_kwh(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            opex_php_per_kwh=5.0,
+            forex_rate_php_per_usd=50.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+
+        normalized = normalize_economic_inputs(inputs)
+
+        self.assertAlmostEqual(normalized.variable_opex_usd_per_mwh, 100.0)
+        self.assertEqual(normalized.variable_opex_basis, "total_generation")
+
+    def test_variable_opex_on_total_generation(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            variable_opex_usd_per_mwh=10.0,
+            variable_opex_basis="total_generation",
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0],
+            annual_bess_mwh=[100.0],
+            annual_total_generation_mwh=[150.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, 1_500.0)
+
+    def test_devex_toggle_off_ignores_amount(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            devex_cost_php=150_000_000.0,
+            include_devex_year0=False,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+        outputs = compute_lcoe_lcos(
+            annual_delivered_mwh=[100.0],
+            annual_bess_mwh=[100.0],
+            inputs=inputs,
+        )
+
+        self.assertAlmostEqual(outputs.discounted_costs_usd, 0.0)
 
 
 if __name__ == "__main__":

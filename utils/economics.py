@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Callable, Sequence
+from dataclasses import dataclass, replace
+from typing import Callable, Literal, Sequence
 
 
 DEFAULT_FOREX_RATE_PHP_PER_USD = 58.0
@@ -18,22 +18,32 @@ DEVEX_COST_USD = DEVEX_COST_PHP / DEFAULT_FOREX_RATE_PHP_PER_USD
 class EconomicInputs:
     """High-level project economics.
 
-    All monetary values are expressed in USD to avoid mixing units. CAPEX and
-    fixed OPEX can be entered in millions to keep UI inputs compact. The
-    inflation_rate is applied as an annual escalator to fixed OPEX before
-    discounting.
+    Unit conventions:
+    - CAPEX can be entered as USD/kWh (with a BOL size in kWh) or as a total USD override.
+      Canonical CAPEX is stored in ``capex_musd`` (USD millions).
+    - Fixed OPEX may be entered as % of CAPEX per year (percent value, e.g., 2.0 for 2%).
+    - Variable OPEX may be entered in PHP/kWh on total generation and is converted to USD/MWh.
+    - FX conversion uses ``forex_rate_php_per_usd`` (PHP per 1 USD).
+    - BESS size inputs are in kWh for conversions and MWh for annual energy series.
     """
 
-    capex_musd: float
-    fixed_opex_pct_of_capex: float
-    fixed_opex_musd: float
-    inflation_rate: float
-    discount_rate: float
+    capex_musd: float = 0.0
+    capex_usd_per_kwh: float | None = None
+    capex_total_usd: float | None = None
+    bess_bol_kwh: float | None = None
+    fixed_opex_pct_of_capex: float = 0.0
+    fixed_opex_musd: float = 0.0
+    opex_php_per_kwh: float | None = None
+    inflation_rate: float = 0.0
+    discount_rate: float = 0.0
     variable_opex_usd_per_mwh: float | None = None
     variable_opex_schedule_usd: tuple[float, ...] | None = None
     periodic_variable_opex_usd: float | None = None
     periodic_variable_opex_interval_years: int | None = None
-    devex_cost_usd: float = DEVEX_COST_USD
+    variable_opex_basis: Literal["delivered", "total_generation"] = "delivered"
+    forex_rate_php_per_usd: float = DEFAULT_FOREX_RATE_PHP_PER_USD
+    devex_cost_php: float = DEVEX_COST_PHP
+    devex_cost_usd: float | None = None
     include_devex_year0: bool = False
     debt_ratio: float = 0.0
     cost_of_debt: float = 0.0
@@ -112,6 +122,66 @@ def _ensure_non_negative_finite(value: float, name: str) -> None:
         raise ValueError(f"{name} must be non-negative")
 
 
+def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
+    """Normalize economic inputs to canonical USD-based values.
+
+    This helper converts CAPEX and OPEX inputs into the USD terms consumed by
+    the core cash-flow calculations. It also applies the PHP-based DevEx input
+    (defaulting to 100M PHP) and sets variable OPEX to use total-generation
+    energy when the PHP/kWh mode is supplied.
+    """
+
+    forex_rate = float(inputs.forex_rate_php_per_usd or DEFAULT_FOREX_RATE_PHP_PER_USD)
+    _ensure_non_negative_finite(forex_rate, "forex_rate_php_per_usd")
+    if forex_rate == 0:
+        raise ValueError("forex_rate_php_per_usd must be greater than zero")
+
+    capex_total_usd: float | None = None
+    if inputs.capex_total_usd is not None:
+        capex_total_usd = float(inputs.capex_total_usd)
+        _ensure_non_negative_finite(capex_total_usd, "capex_total_usd")
+    elif inputs.capex_usd_per_kwh is not None:
+        capex_usd_per_kwh = float(inputs.capex_usd_per_kwh)
+        _ensure_non_negative_finite(capex_usd_per_kwh, "capex_usd_per_kwh")
+        if inputs.bess_bol_kwh is None:
+            raise ValueError("bess_bol_kwh must be provided when capex_usd_per_kwh is set")
+        bess_bol_kwh = float(inputs.bess_bol_kwh)
+        _ensure_non_negative_finite(bess_bol_kwh, "bess_bol_kwh")
+        capex_total_usd = capex_usd_per_kwh * bess_bol_kwh
+    else:
+        capex_total_usd = float(inputs.capex_musd) * 1_000_000.0
+        _ensure_non_negative_finite(capex_total_usd, "capex_musd")
+
+    devex_cost_usd = inputs.devex_cost_usd
+    if devex_cost_usd is None:
+        devex_cost_php = float(inputs.devex_cost_php)
+        _ensure_non_negative_finite(devex_cost_php, "devex_cost_php")
+        devex_cost_usd = devex_cost_php / forex_rate
+    else:
+        devex_cost_usd = float(devex_cost_usd)
+        _ensure_non_negative_finite(devex_cost_usd, "devex_cost_usd")
+
+    variable_opex_usd_per_mwh = inputs.variable_opex_usd_per_mwh
+    variable_opex_basis = inputs.variable_opex_basis
+    if inputs.opex_php_per_kwh is not None:
+        opex_php_per_kwh = float(inputs.opex_php_per_kwh)
+        _ensure_non_negative_finite(opex_php_per_kwh, "opex_php_per_kwh")
+        variable_opex_usd_per_mwh = opex_php_per_kwh / forex_rate * 1000.0
+        variable_opex_basis = "total_generation"
+
+    if variable_opex_basis not in {"delivered", "total_generation"}:
+        raise ValueError("variable_opex_basis must be 'delivered' or 'total_generation'")
+
+    return replace(
+        inputs,
+        capex_musd=capex_total_usd / 1_000_000.0,
+        variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
+        variable_opex_basis=variable_opex_basis,
+        forex_rate_php_per_usd=forex_rate,
+        devex_cost_usd=devex_cost_usd,
+    )
+
+
 def _validate_inputs(
     annual_delivered_mwh: Sequence[float],
     annual_bess_mwh: Sequence[float],
@@ -134,6 +204,8 @@ def _validate_inputs(
     _ensure_non_negative_finite(inputs.fixed_opex_musd, "fixed_opex_musd")
     _ensure_non_negative_finite(inputs.inflation_rate, "inflation_rate")
     _ensure_non_negative_finite(inputs.discount_rate, "discount_rate")
+    _ensure_non_negative_finite(inputs.forex_rate_php_per_usd, "forex_rate_php_per_usd")
+    _ensure_non_negative_finite(inputs.devex_cost_usd, "devex_cost_usd")
     _ensure_non_negative_finite(inputs.debt_ratio, "debt_ratio")
     _ensure_non_negative_finite(inputs.cost_of_debt, "cost_of_debt")
     _ensure_non_negative_finite(inputs.wacc, "wacc")
@@ -154,6 +226,9 @@ def _validate_inputs(
     if inputs.variable_opex_schedule_usd is not None:
         for idx, value in enumerate(inputs.variable_opex_schedule_usd, start=1):
             _ensure_non_negative_finite(float(value), f"variable_opex_schedule_usd[{idx}]")
+
+    if inputs.variable_opex_basis not in {"delivered", "total_generation"}:
+        raise ValueError("variable_opex_basis must be 'delivered' or 'total_generation'")
 
 
 def _validate_price_inputs(price_inputs: PriceInputs) -> None:
@@ -267,6 +342,7 @@ def compute_lcoe_lcos(
     annual_bess_mwh: Sequence[float],
     inputs: EconomicInputs,
     augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
 ) -> EconomicOutputs:
     """Compute LCOE and LCOS using discounted cash-flow style math.
 
@@ -280,6 +356,9 @@ def compute_lcoe_lcos(
         Economic assumptions such as CAPEX, OPEX, and discount rate.
     augmentation_costs_usd
         Optional per-year augmentation CAPEX (USD, undiscounted) to include in the cash flows.
+    annual_total_generation_mwh
+        Optional per-year total generation (MWh). Used when variable OPEX is defined per kWh
+        of total generation rather than delivered firm energy.
 
     Notes
     -----
@@ -289,6 +368,7 @@ def compute_lcoe_lcos(
     year spending and are not escalated further.
     """
 
+    inputs = normalize_economic_inputs(inputs)
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
 
     if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
@@ -298,6 +378,14 @@ def compute_lcoe_lcos(
     if augmentation_costs_usd is not None:
         for idx, value in enumerate(augmentation_costs_usd, start=1):
             _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    if annual_total_generation_mwh is not None and len(annual_total_generation_mwh) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_total_generation_mwh must match number of years")
+    if annual_total_generation_mwh is not None:
+        for idx, value in enumerate(annual_total_generation_mwh, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_total_generation_mwh[{idx}]")
 
     years = len(annual_delivered_mwh)
     if years == 0:
@@ -328,7 +416,13 @@ def compute_lcoe_lcos(
                 raise ValueError("variable_opex_schedule_usd must match the number of project years")
             annual_opex = float(variable_opex_schedule[year_idx - 1])
         elif inputs.variable_opex_usd_per_mwh is not None:
-            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+            opex_basis_mwh = firm_mwh
+            if inputs.variable_opex_basis == "total_generation" and annual_total_generation_mwh is not None:
+                opex_basis_mwh = float(annual_total_generation_mwh[year_idx - 1])
+            elif inputs.variable_opex_basis == "total_generation":
+                # Fall back to delivered energy when total generation is unavailable.
+                opex_basis_mwh = firm_mwh
+            annual_opex = opex_basis_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
         else:
             annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
             annual_opex = annual_fixed_opex * inflation_multiplier
@@ -362,6 +456,7 @@ def compute_cash_flows_and_irr(
     price_inputs: PriceInputs,
     annual_shortfall_mwh: Sequence[float] | None = None,
     augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
     max_iterations: int = 200,
 ) -> CashFlowOutputs:
     """Compute discounted revenues, project NPV, and an implied IRR.
@@ -380,6 +475,11 @@ def compute_cash_flows_and_irr(
     fixed OPEX. The IRR calculation uses the undiscounted cash-flow list to
     avoid dependence on the chosen discount rate.
 
+    Variable OPEX can be applied to total generation (e.g., PV output) when
+    ``annual_total_generation_mwh`` is supplied; otherwise it defaults to firm
+    deliveries (or delivered + PV excess when using the built-in generation
+    proxy).
+
     When provided, variable OPEX schedules override per-MWh costs, which in turn
     override fixed OPEX derived from CAPEX-based percentages and adders. When
     ``apply_wesm_to_shortfall`` is True, shortfall MWh are monetized using the
@@ -389,6 +489,7 @@ def compute_cash_flows_and_irr(
     otherwise it is excluded from revenue when WESM pricing is enabled.
     """
 
+    inputs = normalize_economic_inputs(inputs)
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
     if len(annual_pv_excess_mwh) != len(annual_delivered_mwh):
         raise ValueError("annual_pv_excess_mwh must match number of years")
@@ -409,6 +510,14 @@ def compute_cash_flows_and_irr(
     if augmentation_costs_usd is not None:
         for idx, value in enumerate(augmentation_costs_usd, start=1):
             _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    if annual_total_generation_mwh is not None and len(annual_total_generation_mwh) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_total_generation_mwh must match number of years")
+    if annual_total_generation_mwh is not None:
+        for idx, value in enumerate(annual_total_generation_mwh, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_total_generation_mwh[{idx}]")
 
     years = len(annual_delivered_mwh)
     if years == 0:
@@ -448,7 +557,12 @@ def compute_cash_flows_and_irr(
                 raise ValueError("variable_opex_schedule_usd must match the number of project years")
             annual_opex = float(variable_opex_schedule[year_idx - 1])
         elif inputs.variable_opex_usd_per_mwh is not None:
-            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+            opex_basis_mwh = firm_mwh + pv_excess_mwh
+            if inputs.variable_opex_basis == "delivered":
+                opex_basis_mwh = firm_mwh
+            elif annual_total_generation_mwh is not None:
+                opex_basis_mwh = float(annual_total_generation_mwh[year_idx - 1])
+            annual_opex = opex_basis_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
         else:
             annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
             annual_opex = annual_fixed_opex * inflation_multiplier
@@ -500,6 +614,7 @@ def compute_financing_cash_flows(
     price_inputs: PriceInputs,
     annual_shortfall_mwh: Sequence[float] | None = None,
     augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
     max_iterations: int = 200,
 ) -> FinancingOutputs:
     """Compute financing-aware cash flows, EBITDA, and project/equity IRR.
@@ -508,9 +623,11 @@ def compute_financing_cash_flows(
     provided debt ratio. Augmentation costs are treated as equity-funded CAPEX
     outflows in the year they occur. WACC is used to discount project cash
     flows for NPV; equity metrics are reported via IRR in the absence of a
-    separate equity discount rate input.
+    separate equity discount rate input. Variable OPEX can be applied to total
+    generation when ``annual_total_generation_mwh`` is supplied.
     """
 
+    inputs = normalize_economic_inputs(inputs)
     _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
     if len(annual_pv_excess_mwh) != len(annual_delivered_mwh):
         raise ValueError("annual_pv_excess_mwh must match number of years")
@@ -531,6 +648,14 @@ def compute_financing_cash_flows(
     if augmentation_costs_usd is not None:
         for idx, value in enumerate(augmentation_costs_usd, start=1):
             _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    if annual_total_generation_mwh is not None and len(annual_total_generation_mwh) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_total_generation_mwh must match number of years")
+    if annual_total_generation_mwh is not None:
+        for idx, value in enumerate(annual_total_generation_mwh, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_total_generation_mwh[{idx}]")
 
     years = len(annual_delivered_mwh)
     if years == 0:
@@ -588,7 +713,12 @@ def compute_financing_cash_flows(
                 raise ValueError("variable_opex_schedule_usd must match the number of project years")
             annual_opex = float(variable_opex_schedule[year_idx - 1])
         elif inputs.variable_opex_usd_per_mwh is not None:
-            annual_opex = firm_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+            opex_basis_mwh = firm_mwh + pv_excess_mwh
+            if inputs.variable_opex_basis == "delivered":
+                opex_basis_mwh = firm_mwh
+            elif annual_total_generation_mwh is not None:
+                opex_basis_mwh = float(annual_total_generation_mwh[year_idx - 1])
+            annual_opex = opex_basis_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
         else:
             annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
             annual_opex = annual_fixed_opex * inflation_multiplier
@@ -707,36 +837,45 @@ def compute_lcoe_lcos_with_augmentation_fallback(
     annual_bess_mwh: Sequence[float],
     inputs: EconomicInputs,
     augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
     compute_fn: Callable[..., EconomicOutputs] = compute_lcoe_lcos,
 ) -> EconomicOutputs:
     """Run ``compute_lcoe_lcos`` and add augmentation even if the function signature lags.
 
-    ``compute_lcoe_lcos`` gained an ``augmentation_costs_usd`` parameter, but
-    deployed environments can lag behind the codebase. This wrapper first tries
-    the new API. If ``compute_fn`` raises ``TypeError`` due to the keyword, it
-    falls back to calling without augmentation and then manually layers the
-    discounted augmentation spend onto the outputs so LCOE/LCOS still reflect
-    the added costs.
+    ``compute_lcoe_lcos`` gained ``augmentation_costs_usd`` and optional total
+    generation inputs, but deployed environments can lag behind the codebase.
+    This wrapper first tries the new API. If ``compute_fn`` raises ``TypeError``
+    due to keyword mismatches, it falls back to calling without unsupported
+    args and then manually layers the discounted augmentation spend onto the
+    outputs so LCOE/LCOS still reflect the added costs.
     """
 
+    kwargs: dict[str, object] = {"augmentation_costs_usd": augmentation_costs_usd}
+    if annual_total_generation_mwh is not None:
+        kwargs["annual_total_generation_mwh"] = annual_total_generation_mwh
+
     try:
-        return compute_fn(
-            annual_delivered_mwh,
-            annual_bess_mwh,
-            inputs,
-            augmentation_costs_usd=augmentation_costs_usd,
-        )
+        return compute_fn(annual_delivered_mwh, annual_bess_mwh, inputs, **kwargs)
     except TypeError as exc:
-        # Only fall back when the TypeError indicates the compute function rejected the
-        # augmentation keyword argument. Re-raise other TypeErrors (e.g., input validation)
-        # so calling code is not masked.
-        if "augmentation_costs_usd" not in str(exc):
+        message = str(exc)
+        if "annual_total_generation_mwh" in message:
+            kwargs.pop("annual_total_generation_mwh", None)
+            try:
+                return compute_fn(annual_delivered_mwh, annual_bess_mwh, inputs, **kwargs)
+            except TypeError as nested_exc:
+                message = str(nested_exc)
+                if "augmentation_costs_usd" not in message:
+                    raise
+        elif "augmentation_costs_usd" not in message:
             raise
 
         discounted_augmentation_costs = _discount_augmentation_costs(
             augmentation_costs_usd, inputs.discount_rate
         )
-        base_outputs = compute_fn(annual_delivered_mwh, annual_bess_mwh, inputs)
+        base_kwargs: dict[str, object] = {}
+        if "annual_total_generation_mwh" in kwargs:
+            base_kwargs["annual_total_generation_mwh"] = kwargs["annual_total_generation_mwh"]
+        base_outputs = compute_fn(annual_delivered_mwh, annual_bess_mwh, inputs, **base_kwargs)
         updated_discounted_costs = base_outputs.discounted_costs_usd + discounted_augmentation_costs
 
         return EconomicOutputs(
@@ -795,6 +934,7 @@ __all__ = [
     "compute_cash_flows_and_irr",
     "compute_financing_cash_flows",
     "compute_lcoe_lcos_with_augmentation_fallback",
+    "normalize_economic_inputs",
     "_discount_factor",
     "_ensure_non_negative_finite",
     "_validate_inputs",

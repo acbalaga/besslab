@@ -21,7 +21,7 @@ from services.simulation_core import (
     validate_pv_profile_duration,
 )
 from utils import get_rate_limit_password, parse_numeric_series
-from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
+from utils.economics import DEFAULT_FOREX_RATE_PHP_PER_USD, DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.ui_state import (
     get_manual_aug_schedule_rows,
     get_rate_limit_state,
@@ -511,15 +511,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         )
         econ_inputs: Optional[EconomicInputs] = None
         price_inputs: Optional[PriceInputs] = None
-        forex_rate_php_per_usd = 58.0
-        devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd
-
-        default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
-        default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
-        wesm_surplus_reference_php_per_kwh = 3.29
-        default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
-        wesm_reference_php_per_mwh = 5_583.0
-        default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
+        forex_rate_php_per_usd = DEFAULT_FOREX_RATE_PHP_PER_USD
 
         if run_economics:
             wesm_pricing_enabled = False
@@ -538,30 +530,106 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 )
                 discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
                 st.caption(f"Real discount rate derived from WACC and inflation: {discount_rate * 100:.2f}%.")
+                forex_rate_php_per_usd = st.number_input(
+                    "FX rate (PHP/USD)",
+                    min_value=1.0,
+                    value=float(DEFAULT_FOREX_RATE_PHP_PER_USD),
+                    step=0.5,
+                    help="Used to convert PHP-denominated inputs (prices, OPEX, DevEx) to USD.",
+                )
+            default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
+            default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+            wesm_surplus_reference_php_per_kwh = 3.29
+            default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
+            wesm_reference_php_per_mwh = 5_583.0
+            default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
             with econ_col2:
-                capex_musd = st.number_input("Total CAPEX (USD million)", min_value=0.0, value=40.0, step=0.1)
-                fixed_opex_pct = (
-                    st.number_input(
+                capex_mode = st.radio(
+                    "CAPEX input",
+                    options=["USD/kWh (BOL)", "Total CAPEX (USD)"],
+                    horizontal=True,
+                    help=(
+                        "Enter CAPEX as a unit rate per kWh of BOL energy or override with a total USD value."
+                    ),
+                )
+                capex_usd_per_kwh = 0.0
+                capex_total_usd = 0.0
+                bess_bol_kwh = cfg.initial_usable_mwh * 1000.0
+                if capex_mode == "USD/kWh (BOL)":
+                    default_capex_usd_per_kwh = 0.0
+                    if bess_bol_kwh > 0:
+                        default_capex_usd_per_kwh = 40_000_000.0 / bess_bol_kwh
+                    capex_usd_per_kwh = st.number_input(
+                        "CAPEX (USD/kWh, BOL)",
+                        min_value=0.0,
+                        value=round(default_capex_usd_per_kwh, 2),
+                        step=1.0,
+                        help="Applied to BOL usable energy (kWh) to derive total CAPEX in USD.",
+                    )
+                    capex_total_usd = capex_usd_per_kwh * bess_bol_kwh
+                    st.caption(f"Implied total CAPEX: ${capex_total_usd / 1_000_000:,.2f}M.")
+                else:
+                    capex_total_usd = st.number_input(
+                        "Total CAPEX override (USD)",
+                        min_value=0.0,
+                        value=40_000_000.0,
+                        step=1_000_000.0,
+                        help="Single-number override for total CAPEX in USD.",
+                    )
+                opex_mode = st.radio(
+                    "OPEX input",
+                    options=["% of CAPEX per year", "PHP/kWh on total generation"],
+                    horizontal=True,
+                    help="Choose a fixed % of CAPEX/year or a PHP/kWh rate applied to total generation.",
+                )
+                fixed_opex_pct = 0.0
+                opex_php_per_kwh = None
+                if opex_mode == "% of CAPEX per year":
+                    fixed_opex_pct = st.number_input(
                         "Fixed OPEX (% of CAPEX per year)",
                         min_value=0.0,
                         max_value=20.0,
                         value=2.0,
                         step=0.1,
+                        help="Enter the percent value (e.g., 2.0 for 2%).",
                     )
-                    / 100.0
-                )
+                else:
+                    opex_php_per_kwh = st.number_input(
+                        "OPEX (PHP/kWh on total generation)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=0.05,
+                        help="Converted to USD/MWh using the FX rate; applied to total generation.",
+                    )
+                    if opex_php_per_kwh > 0:
+                        opex_usd_per_mwh = opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                        st.caption(f"Converted OPEX: ${opex_usd_per_mwh:,.2f}/MWh.")
                 fixed_opex_musd = st.number_input(
                     "Additional fixed OPEX (USD million/yr)", min_value=0.0, value=0.0, step=0.1
                 )
                 include_devex_year0 = st.checkbox(
-                    "Include ₱100M DevEx at year 0",
+                    "Include DevEx at year 0",
                     value=False,
                     help=(
-                        "Adds a fixed ₱100 million development expenditure upfront (≈"
-                        f"${devex_cost_usd / 1_000_000:,.2f}M using PHP {forex_rate_php_per_usd:,.0f}/USD). "
+                        "Adds a PHP-denominated development expenditure upfront; "
+                        "enter the amount to convert it using the FX rate. "
                         "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
                     ),
                 )
+                devex_cost_php = st.number_input(
+                    "DevEx amount (PHP)",
+                    min_value=0.0,
+                    value=float(DEVEX_COST_PHP),
+                    step=1_000_000.0,
+                    help="Used only when the DevEx toggle is enabled.",
+                    disabled=not include_devex_year0,
+                )
+                devex_cost_usd = devex_cost_php / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
+                if include_devex_year0:
+                    st.caption(
+                        "DevEx conversion: "
+                        f"PHP {devex_cost_php:,.0f} ≈ ${devex_cost_usd / 1_000_000:,.2f}M."
+                    )
             with econ_col3:
                 use_blended_price = st.checkbox(
                     "Use blended energy price",
@@ -576,7 +644,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     min_value=0.0,
                     value=default_contract_php_per_kwh,
                     step=0.05,
-                    help="Price converted to USD/MWh internally using PHP 58/USD.",
+                    help="Price converted to USD/MWh using the FX rate above.",
                     disabled=use_blended_price,
                 )
                 pv_market_price_php_per_kwh = st.number_input(
@@ -584,7 +652,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     min_value=0.0,
                     value=default_pv_php_per_kwh,
                     step=0.05,
-                    help="Price converted to USD/MWh internally using PHP 58/USD.",
+                    help="Price converted to USD/MWh using the FX rate above.",
                     disabled=use_blended_price,
                 )
                 blended_price_php_per_kwh = st.number_input(
@@ -697,20 +765,12 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
 
             variable_col1, variable_col2 = st.columns(2)
             with variable_col1:
-                variable_opex_php_per_kwh = st.number_input(
-                    "Variable OPEX (PHP/kWh)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=0.05,
-                    help=(
-                        "Optional per-kWh operating expense applied to annual firm energy. "
-                        "Escalates with inflation and overrides fixed OPEX when provided."
-                    ),
+                st.markdown("**Variable OPEX overrides**")
+                st.caption(
+                    "Use the schedule controls to override the % of CAPEX or PHP/kWh inputs above. "
+                    "Amounts are in USD and are treated as nominal per-year values."
                 )
                 variable_opex_usd_per_mwh: Optional[float] = None
-                if variable_opex_php_per_kwh > 0:
-                    variable_opex_usd_per_mwh = variable_opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
-                    st.caption(f"Converted variable OPEX: ${variable_opex_usd_per_mwh:,.2f}/MWh (applied to delivered energy).")
             with variable_col2:
                 variable_schedule_choice = st.radio(
                     "Variable expense schedule",
@@ -749,16 +809,21 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             st.stop()
 
             econ_inputs = EconomicInputs(
-                capex_musd=capex_musd,
+                capex_musd=capex_total_usd / 1_000_000.0,
+                capex_usd_per_kwh=capex_usd_per_kwh if capex_mode == "USD/kWh (BOL)" else None,
+                capex_total_usd=capex_total_usd if capex_mode == "Total CAPEX (USD)" else None,
+                bess_bol_kwh=bess_bol_kwh,
                 fixed_opex_pct_of_capex=fixed_opex_pct,
                 fixed_opex_musd=fixed_opex_musd,
+                opex_php_per_kwh=opex_php_per_kwh,
                 inflation_rate=inflation_pct / 100.0,
                 discount_rate=discount_rate,
                 variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
                 variable_opex_schedule_usd=variable_opex_schedule_usd,
                 periodic_variable_opex_usd=periodic_variable_opex_usd,
                 periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
-                devex_cost_usd=devex_cost_usd,
+                forex_rate_php_per_usd=forex_rate_php_per_usd,
+                devex_cost_php=devex_cost_php,
                 include_devex_year0=include_devex_year0,
                 debt_ratio=debt_ratio,
                 cost_of_debt=cost_of_debt_pct / 100.0,

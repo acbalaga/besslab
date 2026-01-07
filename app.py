@@ -31,7 +31,6 @@ from utils import (
 )
 from utils.economics import (
     CashFlowOutputs,
-    DEVEX_COST_PHP,
     EconomicInputs,
     EconomicOutputs,
     FinancingOutputs,
@@ -40,6 +39,7 @@ from utils.economics import (
     compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
     estimate_augmentation_costs_by_year,
+    normalize_economic_inputs,
 )
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
@@ -247,12 +247,14 @@ def run_app():
     cash_outputs: Optional[CashFlowOutputs] = None
     financing_outputs: Optional[FinancingOutputs] = None
     augmentation_costs_usd: Optional[List[float]] = None
+    normalized_econ_inputs: Optional[EconomicInputs] = None
 
     if run_economics and econ_inputs and price_inputs:
+        normalized_econ_inputs = normalize_economic_inputs(econ_inputs)
         augmentation_costs_usd = estimate_augmentation_costs_by_year(
             sim_output.augmentation_energy_added_mwh,
             cfg.initial_usable_mwh,
-            econ_inputs.capex_musd,
+            normalized_econ_inputs.capex_musd,
         )
         if any(augmentation_costs_usd):
             st.caption(
@@ -263,31 +265,36 @@ def run_app():
         annual_bess = [r.bess_to_contract_mwh for r in results]
         annual_pv_excess = [r.pv_curtailed_mwh for r in results]
         annual_shortfall = [r.shortfall_mwh for r in results]
+        # available_pv_mwh represents total PV generation (MWh) for variable OPEX scaling.
+        annual_total_generation = [r.available_pv_mwh for r in results]
 
         try:
             econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
                 annual_delivered,
                 annual_bess,
-                econ_inputs,
+                normalized_econ_inputs,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+                annual_total_generation_mwh=annual_total_generation,
             )
             cash_outputs = compute_cash_flows_and_irr(
                 annual_delivered,
                 annual_bess,
                 annual_pv_excess,
-                econ_inputs,
+                normalized_econ_inputs,
                 price_inputs,
                 annual_shortfall_mwh=annual_shortfall,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+                annual_total_generation_mwh=annual_total_generation,
             )
             financing_outputs = compute_financing_cash_flows(
                 annual_delivered,
                 annual_bess,
                 annual_pv_excess,
-                econ_inputs,
+                normalized_econ_inputs,
                 price_inputs,
                 annual_shortfall_mwh=annual_shortfall,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+                annual_total_generation_mwh=annual_total_generation,
             )
         except ValueError as exc:  # noqa: BLE001
             render_exception_alert("Economics inputs are invalid. Please review the assumptions.", exc)
@@ -321,7 +328,9 @@ def run_app():
 
     if run_economics and econ_outputs and cash_outputs and financing_outputs:
         st.markdown("### Economics summary")
-        forex_rate_php_per_usd = getattr(price_inputs, "forex_rate_php_per_usd", 58.0)
+        forex_rate_php_per_usd = (
+            normalized_econ_inputs.forex_rate_php_per_usd if normalized_econ_inputs else 58.0
+        )
         php_per_kwh_factor = forex_rate_php_per_usd / 1000.0
         lcoe_php_per_kwh = econ_outputs.lcoe_usd_per_mwh * php_per_kwh_factor
         lcos_php_per_kwh = econ_outputs.lcos_usd_per_mwh * php_per_kwh_factor
@@ -350,10 +359,11 @@ def run_app():
         ]
         render_metrics(st.columns(3), econ_specs)
 
-        if econ_inputs.include_devex_year0:
+        if normalized_econ_inputs and normalized_econ_inputs.include_devex_year0:
             st.caption(
-                "DevEx: Included an additional ₱100M "
-                f"(≈${econ_inputs.devex_cost_usd / 1_000_000:,.2f}M) at year 0 across discounted costs, "
+                "DevEx: Included an additional "
+                f"₱{normalized_econ_inputs.devex_cost_php / 1_000_000:,.0f}M "
+                f"(≈${normalized_econ_inputs.devex_cost_usd / 1_000_000:,.2f}M) at year 0 across discounted costs, "
                 "LCOE/LCOS, NPV, and IRR."
             )
         else:
