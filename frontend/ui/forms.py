@@ -231,6 +231,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         aug_fixed_energy = 0.0
         retire_enabled = False
         retire_soh = 0.60
+        retire_replace_mode = "None"
+        retire_replace_pct = 0.0
+        retire_replace_fixed_mwh = 0.0
 
         if aug_mode == "Manual":
             st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
@@ -396,6 +399,32 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     )
                     / 100.0
                 )
+                retire_replace_mode = st.selectbox(
+                    "Replacement after retirement",
+                    ["None", "Percent", "Fixed"],
+                    format_func=lambda k: "None" if k == "None" else ("% of BOL energy" if k == "Percent" else "Fixed energy (MWh)"),
+                    help="Optionally replace retired cohorts with new energy on a BOL basis.",
+                )
+                if retire_replace_mode == "Percent":
+                    retire_replace_pct = (
+                        st.number_input(
+                            "Replacement % of BOL energy",
+                            min_value=0.0,
+                            max_value=200.0,
+                            value=0.0,
+                            step=1.0,
+                            help="Add this fraction of initial BOL energy when retirement happens.",
+                        )
+                        / 100.0
+                    )
+                elif retire_replace_mode == "Fixed":
+                    retire_replace_fixed_mwh = st.number_input(
+                        "Replacement energy (MWh, BOL basis)",
+                        min_value=0.0,
+                        value=0.0,
+                        step=1.0,
+                        help="Add this BOL-equivalent energy when retirement happens.",
+                    )
 
     with st.container():
         # BESS Specs
@@ -504,6 +533,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             aug_fixed_energy_mwh=float(aug_fixed_energy),
             aug_retire_old_cohort=bool(retire_enabled),
             aug_retire_soh_pct=float(retire_soh),
+            aug_retire_replacement_mode=retire_replace_mode,
+            aug_retire_replacement_pct_bol=float(retire_replace_pct),
+            aug_retire_replacement_fixed_mwh=float(retire_replace_fixed_mwh),
             augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
         )
 

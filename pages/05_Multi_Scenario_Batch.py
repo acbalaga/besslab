@@ -89,6 +89,9 @@ def _seed_rows(cfg: SimConfig) -> pd.DataFrame:
         "aug_fixed_energy_mwh": cfg.aug_fixed_energy_mwh,
         "aug_retire_old_cohort": cfg.aug_retire_old_cohort,
         "aug_retire_soh_pct": cfg.aug_retire_soh_pct,
+        "aug_retire_replacement_mode": cfg.aug_retire_replacement_mode,
+        "aug_retire_replacement_pct_bol": cfg.aug_retire_replacement_pct_bol,
+        "aug_retire_replacement_fixed_mwh": cfg.aug_retire_replacement_fixed_mwh,
     }
     return pd.DataFrame([defaults])
 
@@ -191,6 +194,15 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     retire_value = row.get("aug_retire_old_cohort")
     config.aug_retire_old_cohort = template.aug_retire_old_cohort if pd.isna(retire_value) else bool(retire_value)
     config.aug_retire_soh_pct = float(row.get("aug_retire_soh_pct") or template.aug_retire_soh_pct)
+    config.aug_retire_replacement_mode = str(
+        row.get("aug_retire_replacement_mode") or template.aug_retire_replacement_mode
+    )
+    config.aug_retire_replacement_pct_bol = float(
+        row.get("aug_retire_replacement_pct_bol") or template.aug_retire_replacement_pct_bol
+    )
+    config.aug_retire_replacement_fixed_mwh = float(
+        row.get("aug_retire_replacement_fixed_mwh") or template.aug_retire_replacement_fixed_mwh
+    )
 
     return label, config
 
@@ -257,6 +269,9 @@ def _expected_column_order() -> List[str]:
         "aug_fixed_energy_mwh",
         "aug_retire_old_cohort",
         "aug_retire_soh_pct",
+        "aug_retire_replacement_mode",
+        "aug_retire_replacement_pct_bol",
+        "aug_retire_replacement_fixed_mwh",
     ]
 
 
@@ -945,6 +960,25 @@ column_config = {
         max_value=1.0,
         step=0.01,
         help="Augmentation: retire cohorts whose SOH falls below this fraction.",
+    ),
+    "aug_retire_replacement_mode": st.column_config.SelectboxColumn(
+        "Retire replacement mode",
+        options=["None", "Percent", "Fixed"],
+        help="Augmentation: replacement sizing for retired cohorts.",
+    ),
+    "aug_retire_replacement_pct_bol": st.column_config.NumberColumn(
+        "Retire replacement % BOL",
+        min_value=0.0,
+        max_value=2.0,
+        step=0.01,
+        help="Augmentation: replacement energy as a fraction of initial BOL energy.",
+    ),
+    "aug_retire_replacement_fixed_mwh": st.column_config.NumberColumn(
+        "Retire replacement MWh",
+        min_value=0.0,
+        max_value=2_000.0,
+        step=1.0,
+        help="Augmentation: fixed replacement energy in MWh.",
     ),
 }
 column_order = _expected_column_order()

@@ -217,6 +217,9 @@ class SimConfig:
     aug_fixed_energy_mwh: float = 0.0  # fixed augmentation size when aug_add_mode='Fixed'
     aug_retire_old_cohort: bool = False
     aug_retire_soh_pct: float = 0.60
+    aug_retire_replacement_mode: str = "None"  # 'None'|'Percent'|'Fixed'
+    aug_retire_replacement_pct_bol: float = 0.0  # fractional, based on initial BOL energy
+    aug_retire_replacement_fixed_mwh: float = 0.0  # fixed BOL energy replacement (MWh)
     augmentation_schedule: List[AugmentationScheduleEntry] = field(default_factory=list)
 
 
@@ -696,11 +699,38 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     return yr, logs, monthly_results
 
 
-def retire_cohorts_if_needed(state: SimState, cfg: SimConfig, year_idx: int) -> float:
-    """Retire cohorts whose SOH is below the configured threshold."""
+def _compute_retirement_replacement_energy(
+    retired_energy_bol: float, state: SimState, cfg: SimConfig
+) -> Tuple[float, float]:
+    """Return replacement power/energy for retired cohorts (BOL basis)."""
+
+    if retired_energy_bol <= 0:
+        return 0.0, 0.0
+
+    if cfg.aug_retire_replacement_mode == "Percent":
+        add_energy_bol = state.initial_bol_energy_mwh * cfg.aug_retire_replacement_pct_bol
+    elif cfg.aug_retire_replacement_mode == "Fixed":
+        add_energy_bol = cfg.aug_retire_replacement_fixed_mwh
+    else:
+        return 0.0, 0.0
+
+    add_energy_bol = max(0.0, float(add_energy_bol))
+    if add_energy_bol <= 0:
+        return 0.0, 0.0
+
+    c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
+    add_power = add_energy_bol / c_hours
+    return float(add_power), float(add_energy_bol)
+
+
+def retire_cohorts_if_needed(state: SimState, cfg: SimConfig, year_idx: int) -> Tuple[float, float, float]:
+    """Retire cohorts whose SOH is below the configured threshold.
+
+    Returns a tuple of (retired_energy_bol, replacement_power_mw, replacement_energy_bol).
+    """
 
     if not cfg.aug_retire_old_cohort:
-        return 0.0
+        return 0.0, 0.0, 0.0
 
     dod_key = state.last_dod_key or 80
     c_hours = max(1e-9, state.initial_bol_energy_mwh / max(1e-9, state.initial_bol_power_mw))
@@ -723,12 +753,13 @@ def retire_cohorts_if_needed(state: SimState, cfg: SimConfig, year_idx: int) -> 
             remaining_cohorts.append(cohort)
 
     if retired_energy_bol <= 0:
-        return 0.0
+        return 0.0, 0.0, 0.0
 
     state.cohorts = remaining_cohorts
     state.current_usable_mwh_bolref = max(0.0, state.current_usable_mwh_bolref - retired_energy_bol)
     state.current_power_mw = max(0.0, state.current_power_mw - retired_energy_bol / c_hours)
-    return retired_energy_bol
+    add_power, add_energy_bol = _compute_retirement_replacement_energy(retired_energy_bol, state, cfg)
+    return retired_energy_bol, add_power, add_energy_bol
 
 
 def _find_manual_schedule_entry(schedule: List[AugmentationScheduleEntry], year_idx: int) -> Optional[AugmentationScheduleEntry]:
@@ -902,8 +933,14 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         state.cum_cycles = yr.cum_cycles
         results.append(yr)
         monthly_results_all.extend(monthly_results)
-        retired_energy = retire_cohorts_if_needed(state, cfg, y)
+        retired_energy, retire_add_p, retire_add_e = retire_cohorts_if_needed(state, cfg, y)
         augmentation_retired_energy[y - 1] = retired_energy
+        if retire_add_p > 0 or retire_add_e > 0:
+            augmentation_events += 1
+            augmentation_energy_added[y - 1] += retire_add_e
+            state.current_power_mw += retire_add_p
+            state.current_usable_mwh_bolref += retire_add_e
+            state.cohorts.append(BatteryCohort(energy_mwh_bol=retire_add_e, start_year=y))
         add_p, add_e = apply_augmentation(state, cfg, yr, dis_hours_per_day)
         if add_p > 0 or add_e > 0:
             augmentation_events += 1
