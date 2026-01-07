@@ -263,6 +263,10 @@ def run_app():
 
         annual_delivered = [r.delivered_firm_mwh for r in results]
         annual_bess = [r.bess_to_contract_mwh for r in results]
+        annual_pv_delivered = [
+            float(delivered) - float(bess)
+            for delivered, bess in zip(annual_delivered, annual_bess)
+        ]
         annual_pv_excess = [r.pv_curtailed_mwh for r in results]
         annual_shortfall = [r.shortfall_mwh for r in results]
         # available_pv_mwh represents total PV generation (MWh) for variable OPEX scaling.
@@ -282,6 +286,7 @@ def run_app():
                 annual_pv_excess,
                 normalized_econ_inputs,
                 price_inputs,
+                annual_pv_delivered_mwh=annual_pv_delivered,
                 annual_shortfall_mwh=annual_shortfall,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
                 annual_total_generation_mwh=annual_total_generation,

@@ -154,19 +154,22 @@ class EconomicModuleTests(unittest.TestCase):
             contract_price_usd_per_mwh=110.0,
             pv_market_price_usd_per_mwh=35.0,
             escalate_with_inflation=False,
+            wesm_surplus_price_usd_per_mwh=25.0,
+            sell_to_wesm=True,
         )
 
         cashflow_outputs = compute_cash_flows_and_irr(
-            annual_delivered_mwh=[1_000.0],
+            annual_delivered_mwh=[1_200.0],
             annual_bess_mwh=[1_000.0],
             annual_pv_excess_mwh=[100.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[200.0],
         )
 
-        expected_revenue = 1_000.0 * 110.0
-        expected_pv_revenue = 100.0 * 35.0
-        expected_discounted_revenue = (expected_revenue + expected_pv_revenue) / 1.05
+        expected_revenue = (1_000.0 * 110.0) + (200.0 * 35.0) + (100.0 * 25.0)
+        expected_pv_revenue = 100.0 * 25.0
+        expected_discounted_revenue = expected_revenue / 1.05
         expected_npv = -100_000.0 + expected_discounted_revenue
 
         self.assertIsInstance(cashflow_outputs, CashFlowOutputs)
@@ -174,9 +177,11 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(
             cashflow_outputs.discounted_pv_excess_revenue_usd, expected_pv_revenue / 1.05
         )
-        self.assertAlmostEqual(cashflow_outputs.discounted_wesm_value_usd, 0.0)
+        self.assertAlmostEqual(
+            cashflow_outputs.discounted_wesm_value_usd, expected_pv_revenue / 1.05
+        )
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
-        self.assertAlmostEqual(cashflow_outputs.irr_pct, 13.5, places=3)
+        self.assertAlmostEqual(cashflow_outputs.irr_pct, 19.5, places=3)
 
     def test_cash_flows_and_irr_respects_blended_price_override(self) -> None:
         inputs = EconomicInputs(
@@ -194,14 +199,15 @@ class EconomicModuleTests(unittest.TestCase):
         )
 
         cashflow_outputs = compute_cash_flows_and_irr(
-            annual_delivered_mwh=[1_000.0],
+            annual_delivered_mwh=[1_200.0],
             annual_bess_mwh=[1_000.0],
             annual_pv_excess_mwh=[100.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[200.0],
         )
 
-        expected_revenue = (1_000.0 + 100.0) * 80.0
+        expected_revenue = (1_200.0 + 100.0) * 80.0
         expected_pv_revenue = 100.0 * 80.0
         expected_discounted_revenue = expected_revenue / 1.05
         expected_npv = -100_000.0 + expected_discounted_revenue
@@ -212,7 +218,7 @@ class EconomicModuleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(cashflow_outputs.discounted_wesm_value_usd, 0.0)
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
-        self.assertAlmostEqual(cashflow_outputs.irr_pct, -12.0, places=1)
+        self.assertAlmostEqual(cashflow_outputs.irr_pct, 4.0, places=1)
 
     def test_blended_price_monetizes_pv_contribution_to_contract(self) -> None:
         inputs = EconomicInputs(
@@ -234,6 +240,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[50.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[200.0],
         )
 
         expected_revenue = (1_200.0 + 50.0) * 50.0
@@ -263,6 +270,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[0.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[0.0],
             annual_shortfall_mwh=[50.0],
         )
 
@@ -296,6 +304,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[25.0],
             inputs=inputs,
             price_inputs=price_inputs_sell,
+            annual_pv_delivered_mwh=[0.0],
             annual_shortfall_mwh=[0.0],
         )
 
@@ -317,6 +326,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[25.0],
             inputs=inputs,
             price_inputs=price_inputs_hold,
+            annual_pv_delivered_mwh=[0.0],
             annual_shortfall_mwh=[0.0],
         )
 
@@ -347,6 +357,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[10.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[0.0],
             annual_shortfall_mwh=[0.0],
         )
 
@@ -376,6 +387,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_excess_mwh=[0.0],
             inputs=inputs,
             price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[0.0],
         )
 
         expected_revenue = 50.0 * 1_000.0
