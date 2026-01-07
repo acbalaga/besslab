@@ -34,8 +34,10 @@ from utils.economics import (
     DEVEX_COST_PHP,
     EconomicInputs,
     EconomicOutputs,
+    FinancingOutputs,
     PriceInputs,
     compute_cash_flows_and_irr,
+    compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
     estimate_augmentation_costs_by_year,
 )
@@ -243,6 +245,7 @@ def run_app():
 
     econ_outputs: Optional[EconomicOutputs] = None
     cash_outputs: Optional[CashFlowOutputs] = None
+    financing_outputs: Optional[FinancingOutputs] = None
     augmentation_costs_usd: Optional[List[float]] = None
 
     if run_economics and econ_inputs and price_inputs:
@@ -269,6 +272,15 @@ def run_app():
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
             )
             cash_outputs = compute_cash_flows_and_irr(
+                annual_delivered,
+                annual_bess,
+                annual_pv_excess,
+                econ_inputs,
+                price_inputs,
+                annual_shortfall_mwh=annual_shortfall,
+                augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+            )
+            financing_outputs = compute_financing_cash_flows(
                 annual_delivered,
                 annual_bess,
                 annual_pv_excess,
@@ -307,7 +319,7 @@ def run_app():
 
     render_primary_metrics(cfg, kpis)
 
-    if run_economics and econ_outputs and cash_outputs:
+    if run_economics and econ_outputs and cash_outputs and financing_outputs:
         st.markdown("### Economics summary")
         forex_rate_php_per_usd = getattr(price_inputs, "forex_rate_php_per_usd", 58.0)
         php_per_kwh_factor = forex_rate_php_per_usd / 1000.0
@@ -373,17 +385,42 @@ def run_app():
                 help=revenue_help,
             ),
             MetricSpec(
-                label="NPV (USD million)",
-                value=f"{cash_outputs.npv_usd / 1_000_000:,.2f}",
-                help="Discounted cash flows using the chosen discount rate (year 0 CAPEX included).",
+                label="Project NPV (USD million, WACC)",
+                value=f"{financing_outputs.project_npv_usd / 1_000_000:,.2f}",
+                help="Discounted project cash flows using WACC (year 0 CAPEX included).",
             ),
             MetricSpec(
-                label="Project IRR (%)",
-                value=f"{cash_outputs.irr_pct:,.2f}%" if cash_outputs.irr_pct == cash_outputs.irr_pct else "—",
-                help="IRR computed from annual revenues and OPEX/augmentation outflows.",
+                label="PIRR (%)",
+                value=f"{financing_outputs.project_irr_pct:,.2f}%"
+                if financing_outputs.project_irr_pct == financing_outputs.project_irr_pct
+                else "—",
+                help="Project IRR computed from operating cash flows and augmentation outflows.",
             ),
         ]
         render_metrics(st.columns(3), cash_specs)
+
+        financing_specs = [
+            MetricSpec(
+                label="EBITDA (USD million)",
+                value=f"{financing_outputs.ebitda_usd / 1_000_000:,.2f}",
+                help="Total EBITDA over the project horizon (revenues minus operating OPEX).",
+            ),
+            MetricSpec(
+                label="EBITDA margin (%)",
+                value=f"{financing_outputs.ebitda_margin * 100.0:,.2f}%"
+                if financing_outputs.ebitda_margin == financing_outputs.ebitda_margin
+                else "—",
+                help="Total EBITDA divided by total revenue across the project horizon.",
+            ),
+            MetricSpec(
+                label="EIRR (%)",
+                value=f"{financing_outputs.equity_irr_pct:,.2f}%"
+                if financing_outputs.equity_irr_pct == financing_outputs.equity_irr_pct
+                else "—",
+                help="Equity IRR after debt service and equity contributions.",
+            ),
+        ]
+        render_metrics(st.columns(3), financing_specs)
 
         wesm_caption = (
             "WESM pricing disabled; contract shortfalls are not monetized in revenues, NPV, or IRR."

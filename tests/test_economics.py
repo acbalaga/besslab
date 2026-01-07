@@ -7,7 +7,9 @@ from utils.economics import (
     EconomicInputs,
     PriceInputs,
     compute_cash_flows_and_irr,
+    compute_financing_cash_flows,
     compute_lcoe_lcos,
+    _solve_irr_pct,
 )
 
 
@@ -397,6 +399,48 @@ class EconomicModuleTests(unittest.TestCase):
 
         self.assertAlmostEqual(outputs.discounted_costs_usd, 200.0)
         self.assertAlmostEqual(outputs.lcoe_usd_per_mwh, 2.0)
+
+    def test_financing_cash_flows_report_ebitda_and_irr(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.10,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+            debt_ratio=0.5,
+            cost_of_debt=0.0,
+            tenor_years=2,
+            wacc=0.10,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=100.0,
+            pv_market_price_usd_per_mwh=0.0,
+            escalate_with_inflation=False,
+        )
+
+        outputs = compute_financing_cash_flows(
+            annual_delivered_mwh=[1_000.0, 1_000.0],
+            annual_bess_mwh=[1_000.0, 1_000.0],
+            annual_pv_excess_mwh=[0.0, 0.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+        )
+
+        expected_project_cash_flows = [-100_000.0, 100_000.0, 100_000.0]
+        expected_equity_cash_flows = [-50_000.0, 75_000.0, 75_000.0]
+        expected_project_npv = (
+            -100_000.0 + (100_000.0 / 1.1) + (100_000.0 / (1.1**2))
+        )
+
+        self.assertAlmostEqual(outputs.ebitda_usd, 200_000.0)
+        self.assertAlmostEqual(outputs.ebitda_margin, 1.0)
+        self.assertAlmostEqual(outputs.project_npv_usd, expected_project_npv)
+        self.assertAlmostEqual(
+            outputs.project_irr_pct, _solve_irr_pct(expected_project_cash_flows), places=3
+        )
+        self.assertAlmostEqual(
+            outputs.equity_irr_pct, _solve_irr_pct(expected_equity_cash_flows), places=3
+        )
 
     def test_variable_schedule_takes_precedence(self) -> None:
         inputs = EconomicInputs(

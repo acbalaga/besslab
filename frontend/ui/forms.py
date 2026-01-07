@@ -666,6 +666,35 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             " Edit the PHP/kWh value to use a custom surplus rate."
                         )
 
+            financing_col1, financing_col2, financing_col3 = st.columns(3)
+            with financing_col1:
+                debt_equity_ratio = st.number_input(
+                    "Debt/Equity ratio (D/E)",
+                    min_value=0.0,
+                    value=1.0,
+                    step=0.1,
+                    help="Debt divided by equity; 1.0 implies 50% debt and 50% equity.",
+                )
+                debt_ratio = debt_equity_ratio / (1.0 + debt_equity_ratio) if debt_equity_ratio > 0 else 0.0
+                st.caption(f"Implied debt share of capital: {debt_ratio * 100:.1f}%.")
+            with financing_col2:
+                cost_of_debt_pct = st.number_input(
+                    "Cost of debt (%)",
+                    min_value=0.0,
+                    max_value=30.0,
+                    value=6.0,
+                    step=0.1,
+                    help="Annual interest rate applied to the debt balance.",
+                )
+            with financing_col3:
+                tenor_years = st.number_input(
+                    "Debt tenor (years)",
+                    min_value=1,
+                    value=10,
+                    step=1,
+                    help="Years over which debt is amortized using level payments.",
+                )
+
             variable_col1, variable_col2 = st.columns(2)
             with variable_col1:
                 variable_opex_php_per_kwh = st.number_input(
@@ -731,6 +760,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
                 devex_cost_usd=devex_cost_usd,
                 include_devex_year0=include_devex_year0,
+                debt_ratio=debt_ratio,
+                cost_of_debt=cost_of_debt_pct / 100.0,
+                tenor_years=int(tenor_years),
+                wacc=wacc_pct / 100.0,
             )
             price_inputs = PriceInputs(
                 contract_price_usd_per_mwh=contract_price,
