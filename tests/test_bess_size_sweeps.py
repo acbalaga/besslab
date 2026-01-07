@@ -1214,7 +1214,7 @@ def test_static_economic_sweep_penalizes_deficits():
         contract_price_usd_per_mwh=120.0,
         pv_market_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=True,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         sell_to_wesm=True,
     )
 
@@ -1222,7 +1222,7 @@ def test_static_economic_sweep_penalizes_deficits():
         candidates,
         economics_template,
         price_inputs,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         years=5,
     )
 
@@ -1267,7 +1267,7 @@ def test_static_economic_sweep_uses_blended_price() -> None:
         candidates,
         economics_template,
         price_inputs,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         years=1,
     )
 
@@ -1299,27 +1299,27 @@ def test_static_economic_sweep_applies_wesm_penalty_when_enabled() -> None:
         contract_price_usd_per_mwh=120.0,
         pv_market_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=False,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
     )
     price_inputs_enabled = PriceInputs(
         contract_price_usd_per_mwh=120.0,
         pv_market_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=True,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
     )
 
     df_disabled = compute_static_bess_sweep_economics(
         candidates,
         economics_template,
         price_inputs_disabled,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         years=1,
     )
     df_enabled = compute_static_bess_sweep_economics(
         candidates,
         economics_template,
         price_inputs_enabled,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         years=1,
     )
 
@@ -1356,7 +1356,7 @@ def test_candidate_economics_honors_blended_price_and_wesm_shortfalls() -> None:
         pv_market_price_usd_per_mwh=60.0,
         blended_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=True,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         sell_to_wesm=True,
     )
 

@@ -33,8 +33,8 @@ class BessEconomicCandidate:
     The structure mirrors the minimal fields needed to calculate cash flows
     when generation outcomes (e.g., compliance, deficit, surplus) are already
     known. Monetary values are expected in USD. ``deficit_mwh`` may be
-    negative to indicate energy that must be procured at the WESM price and is
-    treated as a cost in the cash-flow stream.
+    negative to indicate energy that must be procured at the WESM deficit price
+    and is treated as a cost in the cash-flow stream.
     """
 
     energy_mwh: float
@@ -280,7 +280,7 @@ def compute_static_bess_sweep_economics(
     candidates: Sequence[BessEconomicCandidate],
     economics_template: EconomicInputs,
     price_inputs: PriceInputs,
-    wesm_price_usd_per_mwh: float,
+    wesm_deficit_price_usd_per_mwh: float,
     wesm_surplus_price_usd_per_mwh: float | None = None,
     *,
     years: int = 1,
@@ -303,7 +303,7 @@ def compute_static_bess_sweep_economics(
         )
         price_inputs_for_run = replace(
             price_inputs,
-            wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+            wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
             wesm_surplus_price_usd_per_mwh=(
                 wesm_surplus_price_usd_per_mwh
                 if wesm_surplus_price_usd_per_mwh is not None
@@ -1112,7 +1112,7 @@ def _main_example() -> None:
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
         pv_market_price_usd_per_mwh=40.0,
-        wesm_price_usd_per_mwh=90.0,
+        wesm_deficit_price_usd_per_mwh=90.0,
         apply_wesm_to_shortfall=True,
     )
 

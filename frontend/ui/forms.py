@@ -665,19 +665,22 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 )
                 escalate_prices = st.checkbox("Escalate prices with inflation", value=False)
                 wesm_pricing_enabled = st.checkbox(
-                    "Apply WESM price to shortfalls",
+                    "Apply WESM pricing to contract shortfalls",
                     value=False,
                     help=(
                         "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC); "
                         "enter a PHP/kWh rate to override."
                     ),
                 )
-                wesm_price_php_per_kwh = st.number_input(
-                    "Average WESM price for shortfalls (PHP/kWh)",
+                wesm_deficit_price_php_per_kwh = st.number_input(
+                    "WESM deficit price for contract shortfalls (PHP/kWh)",
                     min_value=0.0,
                     value=default_wesm_php_per_kwh,
                     step=0.05,
-                    help="Applied to shortfall MWh as either a purchase cost or sale credit.",
+                    help=(
+                        "Applied to contract shortfall MWh (annual_shortfall_mwh) as a purchase cost. "
+                        "This is separate from the PV surplus sale price."
+                    ),
                     disabled=not wesm_pricing_enabled,
                 )
                 sell_to_wesm = st.checkbox(
@@ -685,7 +688,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=False,
                     help=(
                         "When enabled, PV surplus (excess MWh) is credited at a WESM sale price; otherwise surplus "
-                        "is excluded from revenue. Shortfalls always incur a WESM cost while this section is enabled."
+                        "is excluded from revenue. This does not change the deficit price applied to shortfalls."
                     ),
                     disabled=not wesm_pricing_enabled,
                 )
@@ -696,7 +699,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=0.05,
                     help=(
                         "Used only when selling PV surplus. Defaults to PHP 3.29/kWh based on the 2025 weighted "
-                        "average WESM price; adjust to use your own PHP/kWh rate."
+                        "average WESM price; adjust to use your own PHP/kWh rate. This does not affect shortfall pricing."
                     ),
                     disabled=not (wesm_pricing_enabled and sell_to_wesm),
                 )
@@ -704,7 +707,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
                 pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
                 blended_price_usd_per_mwh: Optional[float] = None
-                wesm_price_usd_per_mwh: Optional[float] = None
+                wesm_deficit_price_usd_per_mwh: Optional[float] = None
                 wesm_surplus_price_usd_per_mwh: Optional[float] = None
                 if use_blended_price:
                     blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
@@ -718,13 +721,16 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
                     )
                 if wesm_pricing_enabled:
-                    wesm_price_usd_per_mwh = wesm_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                    wesm_deficit_price_usd_per_mwh = (
+                        wesm_deficit_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                    )
                     wesm_surplus_price_usd_per_mwh = (
                         wesm_surplus_price_php_per_kwh / forex_rate_php_per_usd * 1000.0 if sell_to_wesm else None
                     )
                     st.caption(
-                        "WESM pricing active for shortfalls: "
-                        f"PHP {wesm_price_php_per_kwh:,.2f}/kWh (≈${wesm_price_usd_per_mwh:,.2f}/MWh)."
+                        "WESM deficit pricing active for contract shortfalls: "
+                        f"PHP {wesm_deficit_price_php_per_kwh:,.2f}/kWh "
+                        f"(≈${wesm_deficit_price_usd_per_mwh:,.2f}/MWh)."
                     )
                     if sell_to_wesm and wesm_surplus_price_usd_per_mwh is not None:
                         st.caption(
@@ -835,7 +841,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 pv_market_price_usd_per_mwh=pv_market_price,
                 escalate_with_inflation=escalate_prices,
                 blended_price_usd_per_mwh=blended_price_usd_per_mwh,
-                wesm_price_usd_per_mwh=wesm_price_usd_per_mwh,
+                wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
                 wesm_surplus_price_usd_per_mwh=wesm_surplus_price_usd_per_mwh if wesm_pricing_enabled and sell_to_wesm else None,
                 apply_wesm_to_shortfall=wesm_pricing_enabled,
                 sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
