@@ -214,6 +214,189 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         help=("Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."),
     )
 
+    manual_schedule_entries: List[AugmentationScheduleEntry] = []
+    manual_schedule_errors: List[str] = []
+    manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
+
+    # Augmentation (kept outside the main form so dropdown changes reveal inputs immediately).
+    with st.expander("Augmentation strategy", expanded=False):
+        aug_mode = st.selectbox(
+            "Strategy",
+            ["None", "Threshold", "Periodic", "Manual"],
+            index=0,
+            key="augmentation_strategy_mode",
+        )
+
+        aug_size_mode = "Percent"
+        aug_fixed_energy = 0.0
+        retire_enabled = False
+        retire_soh = 0.60
+
+        if aug_mode == "Manual":
+            st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
+            with st.form("manual_aug_schedule_form", clear_on_submit=False):
+                manual_schedule_df = st.data_editor(
+                    pd.DataFrame(manual_schedule_rows),
+                    key="manual_aug_schedule_editor",
+                    column_config={
+                        "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
+                        "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
+                        "Amount": st.column_config.NumberColumn(
+                            "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
+                        ),
+                    },
+                    num_rows="dynamic",
+                    hide_index=True,
+                    use_container_width=True,
+                )
+                saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
+            if saved_manual_schedule:
+                save_manual_aug_schedule_rows(manual_schedule_df.to_dict("records"), int(years))
+                manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
+                st.success("Saved augmentation events for this session.")
+            manual_schedule_df = pd.DataFrame(manual_schedule_rows)
+            manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(manual_schedule_df, int(years))
+            if manual_schedule_errors:
+                for err in manual_schedule_errors:
+                    st.error(err)
+            elif not manual_schedule_entries:
+                st.warning("Add at least one row to run a manual augmentation schedule.")
+            aug_thr_margin = 0.0
+            aug_topup = 0.0
+            aug_every = 5
+            aug_frac = 0.10
+            aug_trigger_type = "Capability"
+            aug_soh_trig = 0.80
+            aug_soh_add = 0.10
+        elif aug_mode == "Threshold":
+            trigger = st.selectbox(
+                "Trigger type",
+                ["Capability", "SOH"],
+                index=0,
+                help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.",
+            )
+            if trigger == "Capability":
+                c1, c2 = st.columns(2)
+                with c1:
+                    aug_thr_margin = (
+                        st.number_input(
+                            "Allowance margin (%)",
+                            0.0,
+                            None,
+                            0.0,
+                            0.5,
+                            help="Trigger when capability < target × (1 − margin).",
+                        )
+                        / 100.0
+                    )
+                with c2:
+                    aug_topup = (
+                        st.number_input(
+                            "Top-up margin (%)",
+                            0.0,
+                            None,
+                            5.0,
+                            0.5,
+                            help="Augment up to target × (1 + margin) when triggered.",
+                        )
+                        / 100.0
+                    )
+                aug_every = 5
+                aug_frac = 0.10
+                aug_trigger_type = "Capability"
+                aug_soh_trig = 0.80
+                aug_soh_add = 0.10
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    aug_soh_trig = (
+                        st.number_input("SOH trigger (%)", 50.0, 100.0, 80.0, 1.0, help="Augment when SOH falls below this threshold.")
+                        / 100.0
+                    )
+                with c2:
+                    aug_soh_add = (
+                        st.number_input(
+                            "Add % of initial BOL energy",
+                            0.0,
+                            None,
+                            10.0,
+                            1.0,
+                            help="Added energy as % of initial BOL. Power added to keep original C-hours.",
+                        )
+                        / 100.0
+                    )
+                aug_thr_margin = 0.0
+                aug_topup = 0.0
+                aug_every = 5
+                aug_frac = 0.10
+                aug_trigger_type = "SOH"
+        elif aug_mode == "Periodic":
+            c1, c2 = st.columns(2)
+            with c1:
+                aug_every = st.number_input(
+                    "Every N years", 1, None, 5, 1, help="Add capacity on this cadence (e.g., every 5 years)."
+                )
+            with c2:
+                aug_frac = (
+                    st.number_input(
+                        "Add % of current BOL-ref energy",
+                        0.0,
+                        None,
+                        10.0,
+                        1.0,
+                        help="Top-up energy relative to current BOL reference.",
+                    )
+                    / 100.0
+                )
+            aug_thr_margin = 0.0
+            aug_topup = 0.0
+            aug_trigger_type = "Capability"
+            aug_soh_trig = 0.80
+            aug_soh_add = 0.10
+        else:
+            aug_thr_margin = 0.0
+            aug_topup = 0.0
+            aug_every = 5
+            aug_frac = 0.10
+            aug_trigger_type = "Capability"
+            aug_soh_trig = 0.80
+            aug_soh_add = 0.10
+
+        if aug_mode not in ["None", "Manual"]:
+            aug_size_mode = st.selectbox(
+                "Augmentation sizing",
+                ["Percent", "Fixed"],
+                format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
+                help="Choose whether to size augmentation as a percent or a fixed MWh add.",
+            )
+            if aug_size_mode == "Fixed":
+                aug_fixed_energy = st.number_input(
+                    "Fixed energy added per event (MWh, BOL basis)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=1.0,
+                    help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
+                )
+
+        if aug_mode != "None":
+            retire_enabled = st.checkbox(
+                "Retire low-SOH cohorts when augmenting",
+                value=False,
+                help="Remove cohorts once their SOH falls below the retirement threshold.",
+            )
+            if retire_enabled:
+                retire_soh = (
+                    st.number_input(
+                        "Retirement SOH threshold (%)",
+                        min_value=0.0,
+                        max_value=100.0,
+                        value=60.0,
+                        step=1.0,
+                        help="Cohorts at or below this SOH are retired before applying augmentation.",
+                    )
+                    / 100.0
+                )
+
     with st.form("inputs_form"):
         # BESS Specs
         with st.expander("BESS Specs (high-level)", expanded=True):
@@ -273,184 +456,6 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
                     help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.",
                 )
-
-        manual_schedule_entries: List[AugmentationScheduleEntry] = []
-        manual_schedule_errors: List[str] = []
-        manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
-
-        # Augmentation (conditional, with explainers)
-        with st.expander("Augmentation strategy", expanded=False):
-            aug_mode = st.selectbox("Strategy", ["None", "Threshold", "Periodic", "Manual"], index=0)
-
-            aug_size_mode = "Percent"
-            aug_fixed_energy = 0.0
-            retire_enabled = False
-            retire_soh = 0.60
-
-            if aug_mode == "Manual":
-                st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
-                with st.form("manual_aug_schedule_form", clear_on_submit=False):
-                    manual_schedule_df = st.data_editor(
-                        pd.DataFrame(manual_schedule_rows),
-                        key="manual_aug_schedule_editor",
-                        column_config={
-                            "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
-                            "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
-                            "Amount": st.column_config.NumberColumn(
-                                "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
-                            ),
-                        },
-                        num_rows="dynamic",
-                        hide_index=True,
-                        use_container_width=True,
-                    )
-                    saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
-                if saved_manual_schedule:
-                    save_manual_aug_schedule_rows(manual_schedule_df.to_dict("records"), int(years))
-                    manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
-                    st.success("Saved augmentation events for this session.")
-                manual_schedule_df = pd.DataFrame(manual_schedule_rows)
-                manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(manual_schedule_df, int(years))
-                if manual_schedule_errors:
-                    for err in manual_schedule_errors:
-                        st.error(err)
-                elif not manual_schedule_entries:
-                    st.warning("Add at least one row to run a manual augmentation schedule.")
-                aug_thr_margin = 0.0
-                aug_topup = 0.0
-                aug_every = 5
-                aug_frac = 0.10
-                aug_trigger_type = "Capability"
-                aug_soh_trig = 0.80
-                aug_soh_add = 0.10
-            elif aug_mode == "Threshold":
-                trigger = st.selectbox(
-                    "Trigger type",
-                    ["Capability", "SOH"],
-                    index=0,
-                    help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.",
-                )
-                if trigger == "Capability":
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        aug_thr_margin = (
-                            st.number_input(
-                                "Allowance margin (%)",
-                                0.0,
-                                None,
-                                0.0,
-                                0.5,
-                                help="Trigger when capability < target × (1 − margin).",
-                            )
-                            / 100.0
-                        )
-                    with c2:
-                        aug_topup = (
-                            st.number_input(
-                                "Top-up margin (%)",
-                                0.0,
-                                None,
-                                5.0,
-                                0.5,
-                                help="Augment up to target × (1 + margin) when triggered.",
-                            )
-                            / 100.0
-                        )
-                    aug_every = 5
-                    aug_frac = 0.10
-                    aug_trigger_type = "Capability"
-                    aug_soh_trig = 0.80
-                    aug_soh_add = 0.10
-                else:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        aug_soh_trig = (
-                            st.number_input("SOH trigger (%)", 50.0, 100.0, 80.0, 1.0, help="Augment when SOH falls below this threshold.")
-                            / 100.0
-                        )
-                    with c2:
-                        aug_soh_add = (
-                            st.number_input(
-                                "Add % of initial BOL energy",
-                                0.0,
-                                None,
-                                10.0,
-                                1.0,
-                                help="Added energy as % of initial BOL. Power added to keep original C-hours.",
-                            )
-                            / 100.0
-                        )
-                    aug_thr_margin = 0.0
-                    aug_topup = 0.0
-                    aug_every = 5
-                    aug_frac = 0.10
-                    aug_trigger_type = "SOH"
-            elif aug_mode == "Periodic":
-                c1, c2 = st.columns(2)
-                with c1:
-                    aug_every = st.number_input(
-                        "Every N years", 1, None, 5, 1, help="Add capacity on this cadence (e.g., every 5 years)."
-                    )
-                with c2:
-                    aug_frac = (
-                        st.number_input(
-                            "Add % of current BOL-ref energy",
-                            0.0,
-                            None,
-                            10.0,
-                            1.0,
-                            help="Top-up energy relative to current BOL reference.",
-                        )
-                        / 100.0
-                    )
-                aug_thr_margin = 0.0
-                aug_topup = 0.0
-                aug_trigger_type = "Capability"
-                aug_soh_trig = 0.80
-                aug_soh_add = 0.10
-            else:
-                aug_thr_margin = 0.0
-                aug_topup = 0.0
-                aug_every = 5
-                aug_frac = 0.10
-                aug_trigger_type = "Capability"
-                aug_soh_trig = 0.80
-                aug_soh_add = 0.10
-
-            if aug_mode not in ["None", "Manual"]:
-                aug_size_mode = st.selectbox(
-                    "Augmentation sizing",
-                    ["Percent", "Fixed"],
-                    format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
-                    help="Choose whether to size augmentation as a percent or a fixed MWh add.",
-                )
-                if aug_size_mode == "Fixed":
-                    aug_fixed_energy = st.number_input(
-                        "Fixed energy added per event (MWh, BOL basis)",
-                        min_value=0.0,
-                        value=0.0,
-                        step=1.0,
-                        help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
-                    )
-
-            if aug_mode != "None":
-                retire_enabled = st.checkbox(
-                    "Retire low-SOH cohorts when augmenting",
-                    value=False,
-                    help="Remove cohorts once their SOH falls below the retirement threshold.",
-                )
-                if retire_enabled:
-                    retire_soh = (
-                        st.number_input(
-                            "Retirement SOH threshold (%)",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=60.0,
-                            step=1.0,
-                            help="Cohorts at or below this SOH are retired before applying augmentation.",
-                        )
-                        / 100.0
-                    )
 
         validation_errors, validation_warnings, validation_details = [], [], []
         dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
