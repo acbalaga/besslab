@@ -321,6 +321,7 @@ def compute_static_bess_sweep_economics(
             [annual_surplus for _ in range(years)],
             economics_inputs,
             price_inputs_for_run,
+            annual_pv_delivered_mwh=[0.0 for _ in range(years)],
             annual_shortfall_mwh=[annual_shortfall for _ in range(years)],
         )
         rows.append(
@@ -451,6 +452,10 @@ def _compute_candidate_economics(
     shortfall_series = _override_or_results(
         shortfall_mwh, lambda r: r.shortfall_mwh, "shortfall_mwh"
     )
+    pv_delivered_series = [
+        float(delivered) - float(bess)
+        for delivered, bess in zip(delivered_firm_series, bess_to_contract_series)
+    ]
 
     economics_outputs = compute_lcoe_lcos_with_augmentation_fallback(
         delivered_firm_series,
@@ -468,6 +473,7 @@ def _compute_candidate_economics(
             pv_curtailed_series,
             scaled_economics,
             price_inputs,
+            annual_pv_delivered_mwh=pv_delivered_series,
             annual_shortfall_mwh=shortfall_series,
             augmentation_costs_usd=augmentation_costs_usd,
         )
