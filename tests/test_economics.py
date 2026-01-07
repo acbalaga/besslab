@@ -259,7 +259,7 @@ class EconomicModuleTests(unittest.TestCase):
         price_inputs = PriceInputs(
             contract_price_usd_per_mwh=100.0,
             pv_market_price_usd_per_mwh=0.0,
-            wesm_price_usd_per_mwh=120.0,
+            wesm_deficit_price_usd_per_mwh=120.0,
             apply_wesm_to_shortfall=True,
             sell_to_wesm=True,
         )
@@ -282,6 +282,37 @@ class EconomicModuleTests(unittest.TestCase):
         self.assertAlmostEqual(outputs.discounted_revenues_usd, expected_discounted_revenue)
         self.assertAlmostEqual(outputs.npv_usd, expected_discounted_revenue)
 
+    def test_wesm_shortfall_uses_deficit_rate_when_surplus_rate_differs(self) -> None:
+        inputs = EconomicInputs(
+            capex_musd=0.0,
+            fixed_opex_pct_of_capex=0.0,
+            fixed_opex_musd=0.0,
+            inflation_rate=0.0,
+            discount_rate=0.0,
+        )
+        price_inputs = PriceInputs(
+            contract_price_usd_per_mwh=0.0,
+            pv_market_price_usd_per_mwh=0.0,
+            wesm_deficit_price_usd_per_mwh=140.0,
+            wesm_surplus_price_usd_per_mwh=35.0,
+            apply_wesm_to_shortfall=True,
+            sell_to_wesm=True,
+        )
+
+        outputs = compute_cash_flows_and_irr(
+            annual_delivered_mwh=[0.0],
+            annual_bess_mwh=[0.0],
+            annual_pv_excess_mwh=[0.0],
+            inputs=inputs,
+            price_inputs=price_inputs,
+            annual_pv_delivered_mwh=[0.0],
+            annual_shortfall_mwh=[10.0],
+        )
+
+        expected_wesm_cost = -10.0 * 140.0
+        self.assertAlmostEqual(outputs.discounted_wesm_value_usd, expected_wesm_cost)
+        self.assertAlmostEqual(outputs.discounted_revenues_usd, expected_wesm_cost)
+
     def test_wesm_pv_surplus_counted_only_when_selling(self) -> None:
         inputs = EconomicInputs(
             capex_musd=0.0,
@@ -294,7 +325,7 @@ class EconomicModuleTests(unittest.TestCase):
         price_inputs_sell = PriceInputs(
             contract_price_usd_per_mwh=0.0,
             pv_market_price_usd_per_mwh=0.0,
-            wesm_price_usd_per_mwh=80.0,
+            wesm_deficit_price_usd_per_mwh=80.0,
             apply_wesm_to_shortfall=True,
             sell_to_wesm=True,
         )
@@ -316,7 +347,7 @@ class EconomicModuleTests(unittest.TestCase):
         price_inputs_hold = PriceInputs(
             contract_price_usd_per_mwh=0.0,
             pv_market_price_usd_per_mwh=0.0,
-            wesm_price_usd_per_mwh=80.0,
+            wesm_deficit_price_usd_per_mwh=80.0,
             apply_wesm_to_shortfall=True,
             sell_to_wesm=False,
         )
@@ -345,7 +376,7 @@ class EconomicModuleTests(unittest.TestCase):
         price_inputs = PriceInputs(
             contract_price_usd_per_mwh=0.0,
             pv_market_price_usd_per_mwh=0.0,
-            wesm_price_usd_per_mwh=100.0,
+            wesm_deficit_price_usd_per_mwh=100.0,
             wesm_surplus_price_usd_per_mwh=45.0,
             apply_wesm_to_shortfall=True,
             sell_to_wesm=True,
