@@ -578,10 +578,6 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 )
             default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
             default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
-            wesm_surplus_reference_php_per_kwh = 3.29
-            default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
-            wesm_reference_php_per_mwh = 5_583.0
-            default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
             with econ_col2:
                 capex_mode = st.radio(
                     "CAPEX input",
@@ -707,40 +703,17 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "Apply WESM pricing to contract shortfalls",
                     value=False,
                     help=(
-                        "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC); "
-                        "enter a PHP/kWh rate to override."
+                        "Uses the uploaded (or bundled) hourly WESM profile to price contract shortfalls."
                     ),
-                )
-                wesm_deficit_price_php_per_kwh = st.number_input(
-                    "WESM deficit price for contract shortfalls (PHP/kWh)",
-                    min_value=0.0,
-                    value=default_wesm_php_per_kwh,
-                    step=0.05,
-                    help=(
-                        "Applied to contract shortfall MWh (annual_shortfall_mwh) as a purchase cost. "
-                        "This is separate from the PV surplus sale price."
-                    ),
-                    disabled=not wesm_pricing_enabled,
                 )
                 sell_to_wesm = st.checkbox(
                     "Sell PV surplus to WESM",
                     value=False,
                     help=(
                         "When enabled, PV surplus (excess MWh) is credited at a WESM sale price; otherwise surplus "
-                        "is excluded from revenue. This does not change the deficit price applied to shortfalls."
+                        "is excluded from revenue. Pricing comes from the hourly WESM profile."
                     ),
                     disabled=not wesm_pricing_enabled,
-                )
-                wesm_surplus_price_php_per_kwh = st.number_input(
-                    "WESM sale price for PV surplus (PHP/kWh)",
-                    min_value=0.0,
-                    value=default_wesm_surplus_php_per_kwh,
-                    step=0.05,
-                    help=(
-                        "Used only when selling PV surplus. Defaults to PHP 3.29/kWh based on the 2025 weighted "
-                        "average WESM price; adjust to use your own PHP/kWh rate. This does not affect shortfall pricing."
-                    ),
-                    disabled=not (wesm_pricing_enabled and sell_to_wesm),
                 )
 
                 contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
@@ -760,24 +733,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
                     )
                 if wesm_pricing_enabled:
-                    wesm_deficit_price_usd_per_mwh = (
-                        wesm_deficit_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-                    )
-                    wesm_surplus_price_usd_per_mwh = (
-                        wesm_surplus_price_php_per_kwh / forex_rate_php_per_usd * 1000.0 if sell_to_wesm else None
-                    )
                     st.caption(
-                        "WESM deficit pricing active for contract shortfalls: "
-                        f"PHP {wesm_deficit_price_php_per_kwh:,.2f}/kWh "
-                        f"(≈${wesm_deficit_price_usd_per_mwh:,.2f}/MWh)."
+                        "WESM pricing uses the hourly profile (upload or bundled default) for both "
+                        "shortfall costs and surplus revenue."
                     )
-                    if sell_to_wesm and wesm_surplus_price_usd_per_mwh is not None:
-                        st.caption(
-                            "PV surplus credited at a separate WESM sale rate: "
-                            f"PHP {wesm_surplus_price_php_per_kwh:,.2f}/kWh "
-                            f"(≈${wesm_surplus_price_usd_per_mwh:,.2f}/MWh)."
-                            " Edit the PHP/kWh value to use a custom surplus rate."
-                        )
 
             financing_col1, financing_col2, financing_col3 = st.columns(3)
             with financing_col1:
