@@ -339,9 +339,15 @@ def run_app():
         annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
         try:
-            if wesm_file is not None and hourly_logs_by_year:
+            wesm_profile_source = wesm_file
+            if wesm_profile_source is None and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+                default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+                if default_wesm_profile.exists():
+                    wesm_profile_source = str(default_wesm_profile)
+
+            if wesm_profile_source is not None and hourly_logs_by_year:
                 wesm_profile_df = read_wesm_profile(
-                    [wesm_file],
+                    [wesm_profile_source],
                     forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
                 )
                 hourly_summary_by_year = {
