@@ -1,11 +1,14 @@
 import math
 import unittest
 
+import pandas as pd
+
 from utils.economics import (
     CashFlowOutputs,
     DEVEX_COST_USD,
     EconomicInputs,
     PriceInputs,
+    aggregate_wesm_profile_to_annual,
     compute_cash_flows_and_irr,
     compute_financing_cash_flows,
     compute_lcoe_lcos,
@@ -588,6 +591,52 @@ class EconomicModuleTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(outputs.discounted_costs_usd, 0.0)
+
+    def test_wesm_profile_alignment_errors(self) -> None:
+        hourly_summary_by_year = {
+            1: pd.DataFrame(
+                {
+                    "hour_index": list(range(24)),
+                    "shortfall_mw": [1.0] * 24,
+                    "pv_surplus_mw": [0.0] * 24,
+                }
+            )
+        }
+        wesm_profile = pd.DataFrame(
+            {
+                "hour_index": list(range(23)),
+                "wesm_deficit_price_usd_per_mwh": [50.0] * 23,
+            }
+        )
+
+        with self.assertRaises(ValueError):
+            aggregate_wesm_profile_to_annual(hourly_summary_by_year, wesm_profile, step_hours=1.0)
+
+    def test_wesm_profile_costs_vary_with_hourly_prices(self) -> None:
+        hourly_summary_by_year = {
+            1: pd.DataFrame(
+                {
+                    "hour_index": list(range(24)),
+                    "shortfall_mw": [1.0] * 24,
+                    "pv_surplus_mw": [0.0] * 24,
+                }
+            )
+        }
+        wesm_profile = pd.DataFrame(
+            {
+                "hour_index": list(range(24)),
+                "wesm_deficit_price_usd_per_mwh": list(range(1, 25)),
+            }
+        )
+
+        annual_shortfall_costs, _ = aggregate_wesm_profile_to_annual(
+            hourly_summary_by_year,
+            wesm_profile,
+            step_hours=1.0,
+        )
+
+        scalar_shortfall_cost = 24.0 * 10.0
+        self.assertNotEqual(annual_shortfall_costs[0], scalar_shortfall_cost)
 
 
 if __name__ == "__main__":
