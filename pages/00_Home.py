@@ -28,6 +28,13 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the sweep and batch tools to compare scenarios in a structured way.
 7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs.
 
+### Units and conventions
+- Power: MW (nameplate and contracted).
+- Energy: MWh (BOL, usable, and delivered).
+- Prices and costs: USD/MWh unless explicitly labeled as PHP; use the FX rate input to convert PHP ↔ USD.
+- Efficiencies and SOC: fractions (0–1) in calculations; UI sliders display percent where relevant.
+- Time: hourly or sub-hourly inputs supported; timestamped uploads allow leap-year coverage.
+
 ### Multipage navigation
 - **Inputs & Results:** Primary simulation, Design Advisor, sensitivities, and downloads.
 - **BESS sizing sweep:** Sweep usable energy, rank feasible designs, and chart LCOE/IRR trends.
