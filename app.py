@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+import utils.economics as economics
 from services.simulation_core import HourlyLog, SimConfig, YearResult, resolve_efficiencies, simulate_project, summarize_simulation
 from frontend.ui.charts import (
     AvgProfileBundle,
@@ -1158,6 +1159,10 @@ def run_app():
         file_name="bess_config.json",
         mime="application/json",
     )
+    cash_flow_builders_available = (
+        hasattr(economics, "build_operating_cash_flow_table")
+        and hasattr(economics, "build_financing_cash_flow_table")
+    )
     if (
         run_economics
         and cash_outputs
@@ -1170,13 +1175,14 @@ def run_app():
         and annual_pv_excess is not None
         and annual_shortfall is not None
         and annual_total_generation is not None
+        and cash_flow_builders_available
     ):
         daily_df = (
             _build_daily_summary_df(hourly_logs_by_year, cfg.step_hours)
             if hourly_logs_by_year
             else pd.DataFrame()
         )
-        operating_cash_flow_df = build_operating_cash_flow_table(
+        operating_cash_flow_df = economics.build_operating_cash_flow_table(
             annual_delivered,
             annual_bess,
             annual_pv_excess,
@@ -1189,7 +1195,7 @@ def run_app():
             augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
             annual_total_generation_mwh=annual_total_generation,
         )
-        financing_cash_flow_df = build_financing_cash_flow_table(
+        financing_cash_flow_df = economics.build_financing_cash_flow_table(
             annual_delivered,
             annual_bess,
             annual_pv_excess,
@@ -1245,6 +1251,11 @@ def run_app():
         )
         st.caption(
             "Workbook includes yearly/monthly/daily energy traces plus operating and financing cash-flow tables."
+        )
+    elif run_economics and not cash_flow_builders_available:
+        st.warning(
+            "Finance audit workbook unavailable: cash-flow helpers were not found. "
+            "Please refresh the app to load the latest economics helpers."
         )
     st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
                        file_name='bess_yearly_summary.csv', mime='text/csv')
