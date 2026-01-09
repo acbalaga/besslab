@@ -5,6 +5,8 @@ import math
 from dataclasses import dataclass, replace
 from typing import Callable, Literal, Sequence
 
+import pandas as pd
+
 
 DEFAULT_FOREX_RATE_PHP_PER_USD = 58.0
 # DevEx is modeled as a PHP-denominated amount to align with other UI inputs.
@@ -231,7 +233,12 @@ def _validate_inputs(
         raise ValueError("variable_opex_basis must be 'delivered' or 'total_generation'")
 
 
-def _validate_price_inputs(price_inputs: PriceInputs) -> None:
+def _validate_price_inputs(
+    price_inputs: PriceInputs,
+    *,
+    require_wesm_deficit_price: bool = True,
+    require_wesm_surplus_price: bool = True,
+) -> None:
     """Raise ValueError when provided price assumptions are invalid."""
 
     _ensure_non_negative_finite(
@@ -253,14 +260,16 @@ def _validate_price_inputs(price_inputs: PriceInputs) -> None:
             price_inputs.wesm_surplus_price_usd_per_mwh, "wesm_surplus_price_usd_per_mwh"
         )
     if (
-        price_inputs.apply_wesm_to_shortfall
+        require_wesm_deficit_price
+        and price_inputs.apply_wesm_to_shortfall
         and price_inputs.wesm_deficit_price_usd_per_mwh is None
     ):
         raise ValueError(
             "wesm_deficit_price_usd_per_mwh must be provided when applying WESM to shortfalls"
         )
     if (
-        price_inputs.sell_to_wesm
+        require_wesm_surplus_price
+        and price_inputs.sell_to_wesm
         and price_inputs.wesm_surplus_price_usd_per_mwh is None
         and price_inputs.wesm_deficit_price_usd_per_mwh is None
     ):
@@ -462,6 +471,108 @@ def compute_lcoe_lcos(
     )
 
 
+def aggregate_wesm_profile_to_annual(
+    hourly_summary_by_year: dict[int, pd.DataFrame],
+    wesm_profile: pd.DataFrame,
+    *,
+    step_hours: float = 1.0,
+    apply_inflation: bool = False,
+    inflation_rate: float = 0.0,
+) -> tuple[list[float], list[float]]:
+    """Aggregate hourly WESM pricing into annual shortfall costs and surplus revenues.
+
+    Assumes hourly resolution (step_hours) and aligned timestamps or hour_index values
+    between the hourly summary and WESM profile. If using historical WESM prices, keep
+    ``apply_inflation`` disabled; for forecast prices you can either pre-escalate the
+    profile or enable inflation here. Timestamp alignment assumes consistent timezones
+    and no DST gaps; mismatches are surfaced as errors.
+    """
+
+    if step_hours <= 0:
+        raise ValueError("step_hours must be positive for WESM aggregation.")
+
+    if wesm_profile.empty:
+        raise ValueError("WESM profile must not be empty.")
+
+    if not hourly_summary_by_year:
+        return [], []
+
+    profile = wesm_profile.copy()
+    if "wesm_deficit_price_usd_per_mwh" not in profile.columns:
+        raise ValueError("WESM profile must include wesm_deficit_price_usd_per_mwh.")
+    if "wesm_surplus_price_usd_per_mwh" not in profile.columns:
+        profile["wesm_surplus_price_usd_per_mwh"] = profile["wesm_deficit_price_usd_per_mwh"]
+
+    use_timestamp = "timestamp" in profile.columns
+    use_hour_index = "hour_index" in profile.columns
+    if not (use_timestamp or use_hour_index):
+        raise ValueError("WESM profile must include a timestamp or hour_index column.")
+
+    frames = []
+    for year_index, hourly_df in hourly_summary_by_year.items():
+        df = hourly_df.copy()
+        df["year_index"] = year_index
+        frames.append(df)
+    combined = pd.concat(frames, ignore_index=True)
+
+    join_key: str | None = None
+    if use_timestamp and "timestamp" in combined.columns:
+        join_key = "timestamp"
+        combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
+        profile["timestamp"] = pd.to_datetime(profile["timestamp"], errors="coerce")
+    elif use_hour_index and "hour_index" in combined.columns:
+        join_key = "hour_index"
+    else:
+        raise ValueError(
+            "Hourly summary and WESM profile must share timestamp or hour_index for alignment."
+        )
+
+    if profile[join_key].duplicated().any():
+        raise ValueError("WESM profile has duplicate alignment keys; expected unique hours.")
+
+    required_cols = {"shortfall_mw", "pv_surplus_mw"}
+    missing_cols = required_cols.difference(combined.columns)
+    if missing_cols:
+        raise ValueError(f"Hourly summary missing required columns: {sorted(missing_cols)}")
+
+    merged = combined.merge(
+        profile[[join_key, "wesm_deficit_price_usd_per_mwh", "wesm_surplus_price_usd_per_mwh"]],
+        on=join_key,
+        how="left",
+        validate="many_to_one",
+    )
+
+    if merged["wesm_deficit_price_usd_per_mwh"].isna().any():
+        raise ValueError("WESM profile does not cover every hour in the summary.")
+
+    shortfall_mwh = merged["shortfall_mw"] * step_hours
+    surplus_mwh = merged["pv_surplus_mw"] * step_hours
+    shortfall_cost_usd = shortfall_mwh * merged["wesm_deficit_price_usd_per_mwh"]
+    surplus_revenue_usd = surplus_mwh * merged["wesm_surplus_price_usd_per_mwh"]
+
+    if apply_inflation:
+        if inflation_rate < 0:
+            raise ValueError("inflation_rate must be non-negative.")
+        inflation_multiplier = (1.0 + inflation_rate) ** (merged["year_index"] - 1)
+        shortfall_cost_usd = shortfall_cost_usd * inflation_multiplier
+        surplus_revenue_usd = surplus_revenue_usd * inflation_multiplier
+
+    merged = merged.assign(
+        shortfall_cost_usd=shortfall_cost_usd,
+        surplus_revenue_usd=surplus_revenue_usd,
+    )
+
+    annual = (
+        merged.groupby("year_index", as_index=False)[["shortfall_cost_usd", "surplus_revenue_usd"]]
+        .sum()
+        .sort_values("year_index")
+    )
+
+    annual_shortfall_cost = annual["shortfall_cost_usd"].astype(float).tolist()
+    annual_surplus_revenue = annual["surplus_revenue_usd"].astype(float).tolist()
+    return annual_shortfall_cost, annual_surplus_revenue
+
+
 def compute_cash_flows_and_irr(
     annual_delivered_mwh: Sequence[float],
     annual_bess_mwh: Sequence[float],
@@ -471,6 +582,8 @@ def compute_cash_flows_and_irr(
     *,
     annual_pv_delivered_mwh: Sequence[float] | None = None,
     annual_shortfall_mwh: Sequence[float] | None = None,
+    annual_wesm_shortfall_cost_usd: Sequence[float] | None = None,
+    annual_wesm_surplus_revenue_usd: Sequence[float] | None = None,
     augmentation_costs_usd: Sequence[float] | None = None,
     annual_total_generation_mwh: Sequence[float] | None = None,
     max_iterations: int = 200,
@@ -508,6 +621,10 @@ def compute_cash_flows_and_irr(
     is only credited at the WESM sale price (falling back to the deficit price
     when no sale-specific rate is provided) when ``sell_to_wesm`` is True;
     otherwise it is excluded from revenue when WESM pricing is enabled.
+
+    When ``annual_wesm_shortfall_cost_usd`` or ``annual_wesm_surplus_revenue_usd``
+    is supplied, those per-year values override the scalar WESM pricing path
+    (assumed already in USD, with any inflation applied upstream if desired).
     """
 
     inputs = normalize_economic_inputs(inputs)
@@ -541,7 +658,29 @@ def compute_cash_flows_and_irr(
         raise ValueError("annual_shortfall_mwh must match number of years")
     for idx, value in enumerate(annual_shortfall_mwh, start=1):
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
-    _validate_price_inputs(price_inputs)
+    use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
+    use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
+    _validate_price_inputs(
+        price_inputs,
+        require_wesm_deficit_price=not use_wesm_shortfall_profile,
+        require_wesm_surplus_price=not use_wesm_surplus_profile,
+    )
+
+    if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_shortfall_cost_usd must match number of years")
+    if annual_wesm_shortfall_cost_usd is not None:
+        for idx, value in enumerate(annual_wesm_shortfall_cost_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_shortfall_cost_usd[{idx}]")
+
+    if annual_wesm_surplus_revenue_usd is not None and len(annual_wesm_surplus_revenue_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_surplus_revenue_usd must match number of years")
+    if annual_wesm_surplus_revenue_usd is not None:
+        for idx, value in enumerate(annual_wesm_surplus_revenue_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_surplus_revenue_usd[{idx}]")
 
     if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
         annual_delivered_mwh
@@ -625,24 +764,33 @@ def compute_cash_flows_and_irr(
             pv_excess_revenue = 0.0
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
-        if price_inputs.apply_wesm_to_shortfall and wesm_deficit_price is not None:
-            wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
+        if price_inputs.apply_wesm_to_shortfall:
+            if use_wesm_shortfall_profile:
+                wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
+            elif wesm_deficit_price is not None:
+                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             if not price_inputs.sell_to_wesm:
                 pv_excess_revenue = 0.0
         if price_inputs.sell_to_wesm:
-            surplus_price = (
-                wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-            )
-            if surplus_price is not None:
-                pv_excess_revenue = pv_excess_mwh * surplus_price
-                wesm_surplus_revenue = pv_excess_revenue
+            if use_wesm_surplus_profile:
+                wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+                pv_excess_revenue = wesm_surplus_revenue
+            else:
+                surplus_price = (
+                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
+                )
+                if surplus_price is not None:
+                    pv_excess_revenue = pv_excess_mwh * surplus_price
+                    wesm_surplus_revenue = pv_excess_revenue
 
         if price_inputs.escalate_with_inflation:
             bess_revenue *= inflation_multiplier
             pv_delivered_revenue *= inflation_multiplier
             pv_excess_revenue *= inflation_multiplier
-            wesm_shortfall_cost *= inflation_multiplier
-            wesm_surplus_revenue *= inflation_multiplier
+            if not use_wesm_shortfall_profile:
+                wesm_shortfall_cost *= inflation_multiplier
+            if not use_wesm_surplus_profile:
+                wesm_surplus_revenue *= inflation_multiplier
 
         total_revenue = bess_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
         discounted_revenues += total_revenue * factor
@@ -669,6 +817,8 @@ def compute_financing_cash_flows(
     inputs: EconomicInputs,
     price_inputs: PriceInputs,
     annual_shortfall_mwh: Sequence[float] | None = None,
+    annual_wesm_shortfall_cost_usd: Sequence[float] | None = None,
+    annual_wesm_surplus_revenue_usd: Sequence[float] | None = None,
     augmentation_costs_usd: Sequence[float] | None = None,
     annual_total_generation_mwh: Sequence[float] | None = None,
     max_iterations: int = 200,
@@ -695,7 +845,29 @@ def compute_financing_cash_flows(
         raise ValueError("annual_shortfall_mwh must match number of years")
     for idx, value in enumerate(annual_shortfall_mwh, start=1):
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
-    _validate_price_inputs(price_inputs)
+    use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
+    use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
+    _validate_price_inputs(
+        price_inputs,
+        require_wesm_deficit_price=not use_wesm_shortfall_profile,
+        require_wesm_surplus_price=not use_wesm_surplus_profile,
+    )
+
+    if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_shortfall_cost_usd must match number of years")
+    if annual_wesm_shortfall_cost_usd is not None:
+        for idx, value in enumerate(annual_wesm_shortfall_cost_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_shortfall_cost_usd[{idx}]")
+
+    if annual_wesm_surplus_revenue_usd is not None and len(annual_wesm_surplus_revenue_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_surplus_revenue_usd must match number of years")
+    if annual_wesm_surplus_revenue_usd is not None:
+        for idx, value in enumerate(annual_wesm_surplus_revenue_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_surplus_revenue_usd[{idx}]")
 
     if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
         annual_delivered_mwh
@@ -789,20 +961,37 @@ def compute_financing_cash_flows(
         pv_revenue = pv_excess_mwh * pv_market_price
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
-        if price_inputs.apply_wesm_to_shortfall and wesm_deficit_price is not None:
-            wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
+        if price_inputs.apply_wesm_to_shortfall:
+            if use_wesm_shortfall_profile:
+                wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
+            elif wesm_deficit_price is not None:
+                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             pv_revenue = 0.0
             if price_inputs.sell_to_wesm:
+                if use_wesm_surplus_profile:
+                    wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+                else:
+                    surplus_price = (
+                        wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
+                    )
+                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
+        elif price_inputs.sell_to_wesm:
+            if use_wesm_surplus_profile:
+                wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+            else:
                 surplus_price = (
                     wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
                 )
-                wesm_surplus_revenue = pv_excess_mwh * surplus_price
+                if surplus_price is not None:
+                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
 
         if price_inputs.escalate_with_inflation:
             bess_revenue *= inflation_multiplier
             pv_revenue *= inflation_multiplier
-            wesm_shortfall_cost *= inflation_multiplier
-            wesm_surplus_revenue *= inflation_multiplier
+            if not use_wesm_shortfall_profile:
+                wesm_shortfall_cost *= inflation_multiplier
+            if not use_wesm_surplus_profile:
+                wesm_surplus_revenue *= inflation_multiplier
 
         revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
         ebitda = revenue - annual_opex
@@ -991,6 +1180,7 @@ __all__ = [
     "CashFlowOutputs",
     "FinancingOutputs",
     "compute_lcoe_lcos",
+    "aggregate_wesm_profile_to_annual",
     "compute_cash_flows_and_irr",
     "compute_financing_cash_flows",
     "compute_lcoe_lcos_with_augmentation_fallback",

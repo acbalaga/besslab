@@ -29,6 +29,7 @@ from utils import (
     FLAG_DEFINITIONS,
     build_flag_insights,
     enforce_rate_limit,
+    read_wesm_profile,
 )
 from utils.economics import (
     CashFlowOutputs,
@@ -36,6 +37,7 @@ from utils.economics import (
     EconomicOutputs,
     FinancingOutputs,
     PriceInputs,
+    aggregate_wesm_profile_to_annual,
     compute_cash_flows_and_irr,
     compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
@@ -68,6 +70,8 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
         "pv_mw": logs.pv_mw,
         "pv_to_contract_mw": logs.pv_to_contract_mw,
         "bess_to_contract_mw": logs.bess_to_contract_mw,
+        "delivered_mw": logs.delivered_mw,
+        "shortfall_mw": logs.shortfall_mw,
         "charge_mw": logs.charge_mw,
         "discharge_mw": logs.discharge_mw,
         "soc_mwh": logs.soc_mwh,
@@ -86,6 +90,8 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
         "pv_mw",
         "pv_to_contract_mw",
         "bess_to_contract_mw",
+        "delivered_mw",
+        "shortfall_mw",
         "charge_mw",
         "discharge_mw",
         "soc_mwh",
@@ -127,6 +133,11 @@ def run_app():
         )
         cycle_file = st.file_uploader(
             "Cycle model Excel (optional override)", type=["xlsx"], key="inputs_cycle_upload"
+        )
+        wesm_file = st.file_uploader(
+            "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
+            type=["csv"],
+            key="inputs_wesm_upload",
         )
         st.caption(
             "If no files are uploaded, built-in defaults are read from ./data/. "
@@ -324,8 +335,36 @@ def run_app():
         annual_shortfall = [r.shortfall_mwh for r in results]
         # available_pv_mwh represents total PV generation (MWh) for variable OPEX scaling.
         annual_total_generation = [r.available_pv_mwh for r in results]
+        annual_wesm_shortfall_cost_usd: Optional[List[float]] = None
+        annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
         try:
+            wesm_profile_source = wesm_file
+            if wesm_profile_source is None and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+                default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+                if default_wesm_profile.exists():
+                    wesm_profile_source = str(default_wesm_profile)
+
+            if wesm_profile_source is not None and hourly_logs_by_year:
+                wesm_profile_df = read_wesm_profile(
+                    [wesm_profile_source],
+                    forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
+                )
+                hourly_summary_by_year = {
+                    year_index: _build_hourly_summary_df(hourly_logs_by_year[year_index])
+                    for year_index in sorted(hourly_logs_by_year)
+                }
+                (
+                    annual_wesm_shortfall_cost_usd,
+                    annual_wesm_surplus_revenue_usd,
+                ) = aggregate_wesm_profile_to_annual(
+                    hourly_summary_by_year,
+                    wesm_profile_df,
+                    step_hours=cfg.step_hours,
+                    apply_inflation=False,
+                    inflation_rate=normalized_econ_inputs.inflation_rate,
+                )
+
             econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
                 annual_delivered,
                 annual_bess,
@@ -341,6 +380,8 @@ def run_app():
                 price_inputs,
                 annual_pv_delivered_mwh=annual_pv_delivered,
                 annual_shortfall_mwh=annual_shortfall,
+                annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
                 annual_total_generation_mwh=annual_total_generation,
             )
@@ -351,6 +392,8 @@ def run_app():
                 normalized_econ_inputs,
                 price_inputs,
                 annual_shortfall_mwh=annual_shortfall,
+                annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
                 augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
                 annual_total_generation_mwh=annual_total_generation,
             )
