@@ -516,8 +516,11 @@ def aggregate_wesm_profile_to_annual(
     combined = pd.concat(frames, ignore_index=True)
 
     join_key: str | None = None
+    fallback_join_key: str | None = None
     if use_timestamp and "timestamp" in combined.columns:
         join_key = "timestamp"
+        if use_hour_index and "hour_index" in combined.columns:
+            fallback_join_key = "hour_index"
         combined["timestamp"] = pd.to_datetime(combined["timestamp"], errors="coerce")
         profile["timestamp"] = pd.to_datetime(profile["timestamp"], errors="coerce")
     elif use_hour_index and "hour_index" in combined.columns:
@@ -541,6 +544,24 @@ def aggregate_wesm_profile_to_annual(
         how="left",
         validate="many_to_one",
     )
+
+    if merged["wesm_deficit_price_usd_per_mwh"].isna().any() and fallback_join_key:
+        # Fall back to hour_index when timestamps exist but do not align (e.g., reference-year WESM profiles).
+        if profile[fallback_join_key].duplicated().any():
+            raise ValueError("WESM profile has duplicate alignment keys; expected unique hours.")
+        merged = combined.merge(
+            profile[
+                [
+                    fallback_join_key,
+                    "wesm_deficit_price_usd_per_mwh",
+                    "wesm_surplus_price_usd_per_mwh",
+                ]
+            ],
+            on=fallback_join_key,
+            how="left",
+            validate="many_to_one",
+        )
+        join_key = fallback_join_key
 
     if merged["wesm_deficit_price_usd_per_mwh"].isna().any():
         raise ValueError("WESM profile does not cover every hour in the summary.")
