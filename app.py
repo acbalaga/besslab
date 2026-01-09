@@ -470,29 +470,37 @@ def run_app():
         else:
             st.caption("DevEx not included; upfront spend reflects CAPEX only.")
 
+        use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
+        use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
+        wesm_profile_active = use_wesm_shortfall_profile or use_wesm_surplus_profile
         revenue_help = (
             "Revenues apply the blended energy price to all BESS deliveries and excess PV; "
             "contract/PV-specific rates are ignored in this mode."
             if price_inputs.blended_price_usd_per_mwh is not None
             else "Contract revenue from BESS deliveries plus market revenue from excess PV."
         )
-        if (
-            price_inputs.apply_wesm_to_shortfall
-            and price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        ):
-            revenue_help += (
-                " Shortfall MWh are deducted as a WESM deficit cost at "
-                f"${price_inputs.wesm_deficit_price_usd_per_mwh:,.2f}/MWh."
-            )
-            if price_inputs.sell_to_wesm:
-                surplus_sale_rate = (
-                    price_inputs.wesm_surplus_price_usd_per_mwh
-                    if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-                    else price_inputs.wesm_deficit_price_usd_per_mwh
-                )
+        if price_inputs.apply_wesm_to_shortfall:
+            if wesm_profile_active:
+                revenue_help += " Shortfall MWh are deducted using the hourly WESM profile."
+            elif price_inputs.wesm_deficit_price_usd_per_mwh is not None:
                 revenue_help += (
-                    f" PV surplus is credited at ${surplus_sale_rate:,.2f}/MWh while selling to WESM; otherwise surplus is excluded from revenue."
+                    " Shortfall MWh are deducted as a WESM deficit cost at "
+                    f"${price_inputs.wesm_deficit_price_usd_per_mwh:,.2f}/MWh."
                 )
+            if price_inputs.sell_to_wesm:
+                if wesm_profile_active:
+                    revenue_help += (
+                        " PV surplus is credited using the hourly WESM profile; otherwise surplus is excluded from revenue."
+                    )
+                elif price_inputs.wesm_deficit_price_usd_per_mwh is not None:
+                    surplus_sale_rate = (
+                        price_inputs.wesm_surplus_price_usd_per_mwh
+                        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
+                        else price_inputs.wesm_deficit_price_usd_per_mwh
+                    )
+                    revenue_help += (
+                        f" PV surplus is credited at ${surplus_sale_rate:,.2f}/MWh while selling to WESM; otherwise surplus is excluded from revenue."
+                    )
         cash_specs = [
             MetricSpec(
                 label="Discounted revenues (USD million)",
@@ -540,7 +548,19 @@ def run_app():
         wesm_caption = (
             "WESM pricing disabled; contract shortfalls are not monetized in revenues, NPV, or IRR."
         )
-        if (
+        if price_inputs.apply_wesm_to_shortfall and wesm_profile_active:
+            wesm_impact_musd = cash_outputs.discounted_wesm_value_usd / 1_000_000
+            surplus_note = (
+                " PV surplus credited using the hourly WESM profile due to the sell toggle."
+                if price_inputs.sell_to_wesm
+                else " PV surplus excluded from revenue while WESM pricing is active."
+            )
+            wesm_caption = (
+                "WESM shortfall costs derived from the hourly profile."
+                f" Discounted WESM impact on revenues/NPV/IRR: {wesm_impact_musd:,.2f} USD million."
+                + surplus_note
+            )
+        elif (
             price_inputs.apply_wesm_to_shortfall
             and price_inputs.wesm_deficit_price_usd_per_mwh is not None
         ):
