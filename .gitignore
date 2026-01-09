@@ -8,6 +8,9 @@ venv/
 # Streamlit
 .streamlit/secrets.toml
 
+# Node (unused in this repo)
+package-lock.json
+
 # OS
 .DS_Store
 Thumbs.db
