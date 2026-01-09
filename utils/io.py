@@ -197,3 +197,115 @@ def read_cycle_model(path_candidates: List[str]) -> pd.DataFrame:
     raise RuntimeError(
         f"Failed to read cycle model. Looked for: {path_candidates}. Last error: {last_err}"
     )
+
+
+def read_wesm_profile(
+    path_candidates: List[Any],
+    *,
+    forex_rate_php_per_usd: float,
+    timestamp_col: str = "timestamp",
+) -> pd.DataFrame:
+    """Read and validate an hourly WESM price profile.
+
+    Expected schema (hourly resolution):
+    - timestamp or hour_index column for alignment
+    - wesm_deficit_price_usd_per_mwh and/or wesm_surplus_price_usd_per_mwh
+
+    If the profile provides PHP/kWh columns (wesm_deficit_price_php_per_kwh and
+    wesm_surplus_price_php_per_kwh), they are converted to USD/MWh using the
+    provided FX rate (PHP per USD) to keep downstream economics in USD/MWh.
+    """
+
+    if forex_rate_php_per_usd <= 0:
+        raise ValueError("forex_rate_php_per_usd must be greater than zero")
+
+    def _clean_profile(df: pd.DataFrame) -> pd.DataFrame:
+        has_timestamp = timestamp_col in df.columns
+        has_hour_index = "hour_index" in df.columns
+        if not (has_timestamp or has_hour_index):
+            raise ValueError("WESM profile must include a timestamp or hour_index column.")
+
+        if has_timestamp:
+            df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+        if has_hour_index:
+            df["hour_index"] = pd.to_numeric(df["hour_index"], errors="coerce")
+
+        price_columns = {
+            "wesm_deficit_price_usd_per_mwh",
+            "wesm_surplus_price_usd_per_mwh",
+            "wesm_deficit_price_php_per_kwh",
+            "wesm_surplus_price_php_per_kwh",
+        }
+        available_price_cols = price_columns.intersection(df.columns)
+        if not available_price_cols:
+            raise ValueError(
+                "WESM profile must include deficit/surplus price columns in USD/MWh or PHP/kWh."
+            )
+
+        for col in available_price_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        invalid_rows = False
+        if has_timestamp and df[timestamp_col].isna().any():
+            invalid_rows = True
+        if has_hour_index and df["hour_index"].isna().any():
+            invalid_rows = True
+        for col in available_price_cols:
+            if df[col].isna().any():
+                invalid_rows = True
+
+        if invalid_rows:
+            st.error("WESM profile contains invalid timestamps, hour_index values, or prices.")
+            drop_cols = list(available_price_cols)
+            if has_timestamp:
+                drop_cols.append(timestamp_col)
+            if has_hour_index:
+                drop_cols.append("hour_index")
+            df = df.dropna(subset=drop_cols)
+
+        if df.empty:
+            raise ValueError("No valid WESM price rows after cleaning.")
+
+        if "wesm_deficit_price_php_per_kwh" in df.columns:
+            df["wesm_deficit_price_usd_per_mwh"] = (
+                df["wesm_deficit_price_php_per_kwh"] / forex_rate_php_per_usd * 1000.0
+            )
+        if "wesm_surplus_price_php_per_kwh" in df.columns:
+            df["wesm_surplus_price_usd_per_mwh"] = (
+                df["wesm_surplus_price_php_per_kwh"] / forex_rate_php_per_usd * 1000.0
+            )
+
+        if "wesm_deficit_price_usd_per_mwh" not in df.columns:
+            raise ValueError("WESM profile requires wesm_deficit_price_usd_per_mwh values.")
+
+        if has_timestamp:
+            df = (
+                df.groupby(timestamp_col, as_index=False)
+                .mean(numeric_only=True)
+                .sort_values(timestamp_col)
+                .reset_index(drop=True)
+            )
+        if has_hour_index:
+            df = (
+                df.groupby("hour_index", as_index=False)
+                .mean(numeric_only=True)
+                .sort_values("hour_index")
+                .reset_index(drop=True)
+            )
+            if (df["hour_index"] % 1 != 0).any():
+                raise ValueError("hour_index must be integer hours.")
+            df["hour_index"] = df["hour_index"].astype(int)
+
+        return df
+
+    last_err = None
+    for candidate in path_candidates:
+        try:
+            df = pd.read_csv(candidate)
+            return _clean_profile(df)
+        except Exception as e:  # pragma: no cover - errors handled via last_err
+            last_err = e
+    raise RuntimeError(
+        "Failed to read WESM profile. "
+        f"Looked for: {path_candidates}. Last error: {last_err}"
+    )

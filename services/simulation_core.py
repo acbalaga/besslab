@@ -253,6 +253,8 @@ class HourlyLog:
     pv_mw: np.ndarray
     pv_to_contract_mw: np.ndarray
     bess_to_contract_mw: np.ndarray
+    delivered_mw: np.ndarray
+    shortfall_mw: np.ndarray
     charge_mw: np.ndarray
     discharge_mw: np.ndarray
     soc_mwh: np.ndarray
@@ -480,6 +482,8 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     pv_to_contract_mw_log = np.zeros(n_hours)
     bess_to_contract_mw_log = np.zeros(n_hours)
+    delivered_mw_log = np.zeros(n_hours)
+    shortfall_mw_log = np.zeros(n_hours)
     charge_mw_log = np.zeros(n_hours)
     discharge_mw_log = np.zeros(n_hours)
     soc_log = np.zeros(n_hours)
@@ -566,6 +570,8 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
         month_expected[month_index[h]] += target_mw * dt
         delivered_hour = pv_to_contract_mw + dis_mw
+        delivered_mw_log[h] = delivered_hour
+        shortfall_mw_log[h] = max(0.0, target_mw - delivered_hour)
         month_delivered[month_index[h]] += delivered_hour * dt
         month_shortfall[month_index[h]] += max(0.0, target_mw - delivered_hour) * dt
         month_charge[month_index[h]] += ch_mw * dt
@@ -694,6 +700,8 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         pv_mw=pv_mw,
         pv_to_contract_mw=pv_to_contract_mw_log,
         bess_to_contract_mw=bess_to_contract_mw_log,
+        delivered_mw=delivered_mw_log,
+        shortfall_mw=shortfall_mw_log,
         charge_mw=charge_mw_log,
         discharge_mw=discharge_mw_log,
         soc_mwh=soc_log,
