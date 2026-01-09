@@ -109,6 +109,434 @@ class FinancingOutputs:
     equity_irr_pct: float
 
 
+def build_operating_cash_flow_table(
+    annual_delivered_mwh: Sequence[float],
+    annual_bess_mwh: Sequence[float],
+    annual_pv_excess_mwh: Sequence[float],
+    inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+    *,
+    annual_pv_delivered_mwh: Sequence[float] | None = None,
+    annual_shortfall_mwh: Sequence[float] | None = None,
+    annual_wesm_shortfall_cost_usd: Sequence[float] | None = None,
+    annual_wesm_surplus_revenue_usd: Sequence[float] | None = None,
+    augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
+) -> pd.DataFrame:
+    """Build a per-year cash-flow table aligned with ``compute_cash_flows_and_irr``.
+
+    This table is intended for auditing NPV/IRR calculations by showing the
+    cash-flow inputs and discounting factors applied each year.
+    """
+
+    inputs = normalize_economic_inputs(inputs)
+    _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
+    if len(annual_pv_excess_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_pv_excess_mwh must match number of years")
+    for idx, value in enumerate(annual_pv_excess_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_pv_excess_mwh[{idx}]")
+    if annual_pv_delivered_mwh is None:
+        annual_pv_delivered_mwh = [
+            float(delivered) - float(bess)
+            for delivered, bess in zip(annual_delivered_mwh, annual_bess_mwh)
+        ]
+    if len(annual_pv_delivered_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_pv_delivered_mwh must match number of years")
+    for idx, value in enumerate(annual_pv_delivered_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_pv_delivered_mwh[{idx}]")
+    for idx, (delivered, bess, pv_delivered) in enumerate(
+        zip(annual_delivered_mwh, annual_bess_mwh, annual_pv_delivered_mwh), start=1
+    ):
+        delivered_value = float(delivered)
+        split_value = float(bess) + float(pv_delivered)
+        if not math.isclose(delivered_value, split_value, rel_tol=1e-6, abs_tol=1e-6):
+            raise ValueError(
+                "annual_bess_mwh and annual_pv_delivered_mwh must sum to annual_delivered_mwh "
+                f"for year {idx}"
+            )
+    if annual_shortfall_mwh is None:
+        annual_shortfall_mwh = [0.0 for _ in annual_delivered_mwh]
+    if len(annual_shortfall_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_shortfall_mwh must match number of years")
+    for idx, value in enumerate(annual_shortfall_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
+    use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
+    use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
+    _validate_price_inputs(
+        price_inputs,
+        require_wesm_deficit_price=not use_wesm_shortfall_profile,
+        require_wesm_surplus_price=not use_wesm_surplus_profile,
+    )
+
+    if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_shortfall_cost_usd must match number of years")
+    if annual_wesm_shortfall_cost_usd is not None:
+        for idx, value in enumerate(annual_wesm_shortfall_cost_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_shortfall_cost_usd[{idx}]")
+
+    if annual_wesm_surplus_revenue_usd is not None and len(annual_wesm_surplus_revenue_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_surplus_revenue_usd must match number of years")
+    if annual_wesm_surplus_revenue_usd is not None:
+        for idx, value in enumerate(annual_wesm_surplus_revenue_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_surplus_revenue_usd[{idx}]")
+
+    if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("augmentation_costs_usd must match number of years")
+    if augmentation_costs_usd is not None:
+        for idx, value in enumerate(augmentation_costs_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    if annual_total_generation_mwh is not None and len(annual_total_generation_mwh) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_total_generation_mwh must match number of years")
+    if annual_total_generation_mwh is not None:
+        for idx, value in enumerate(annual_total_generation_mwh, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_total_generation_mwh[{idx}]")
+
+    years = len(annual_delivered_mwh)
+    rows: list[dict[str, float | int | None]] = []
+
+    base_capex_usd = inputs.capex_musd * 1_000_000.0
+    devex_usd = inputs.devex_cost_usd if inputs.include_devex_year0 else 0.0
+    initial_spend = -_initial_project_spend(inputs)
+    rows.append(
+        {
+            "Year": 0,
+            "CAPEX USD": base_capex_usd,
+            "DevEx USD": devex_usd,
+            "Net cash flow USD": initial_spend,
+            "Discount factor": 1.0,
+            "Discounted cash flow USD": initial_spend,
+        }
+    )
+
+    if years == 0:
+        return pd.DataFrame(rows)
+
+    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
+    blended_price = price_inputs.blended_price_usd_per_mwh
+    contract_price = price_inputs.contract_price_usd_per_mwh
+    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
+    if blended_price is not None:
+        contract_price = float(blended_price)
+        pv_market_price = float(blended_price)
+    wesm_deficit_price = (
+        float(price_inputs.wesm_deficit_price_usd_per_mwh)
+        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
+        else None
+    )
+    wesm_surplus_price = (
+        float(price_inputs.wesm_surplus_price_usd_per_mwh)
+        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
+        else None
+    )
+
+    for year_idx in range(1, years + 1):
+        firm_mwh = float(annual_delivered_mwh[year_idx - 1])
+        bess_mwh = float(annual_bess_mwh[year_idx - 1])
+        pv_delivered_mwh = float(annual_pv_delivered_mwh[year_idx - 1])
+        pv_excess_mwh = float(annual_pv_excess_mwh[year_idx - 1])
+        shortfall_mwh = float(annual_shortfall_mwh[year_idx - 1])
+        factor = _discount_factor(inputs.discount_rate, year_idx)
+        inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
+
+        annual_opex = 0.0
+        if variable_opex_schedule is not None:
+            if year_idx - 1 >= len(variable_opex_schedule):
+                raise ValueError("variable_opex_schedule_usd must match the number of project years")
+            annual_opex = float(variable_opex_schedule[year_idx - 1])
+        elif inputs.variable_opex_usd_per_mwh is not None:
+            opex_basis_mwh = firm_mwh + pv_excess_mwh
+            if inputs.variable_opex_basis == "delivered":
+                opex_basis_mwh = firm_mwh
+            elif annual_total_generation_mwh is not None:
+                opex_basis_mwh = float(annual_total_generation_mwh[year_idx - 1])
+            annual_opex = opex_basis_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+        else:
+            annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+            annual_opex = annual_fixed_opex * inflation_multiplier
+        augmentation_cost = (
+            float(augmentation_costs_usd[year_idx - 1]) if augmentation_costs_usd is not None else 0.0
+        )
+
+        if blended_price is not None:
+            bess_revenue = firm_mwh * contract_price
+            pv_delivered_revenue = 0.0
+            pv_excess_revenue = pv_excess_mwh * pv_market_price
+        else:
+            bess_revenue = bess_mwh * contract_price
+            pv_delivered_revenue = pv_delivered_mwh * pv_market_price
+            pv_excess_revenue = 0.0
+        wesm_shortfall_cost = 0.0
+        wesm_surplus_revenue = 0.0
+        if price_inputs.apply_wesm_to_shortfall:
+            if use_wesm_shortfall_profile:
+                wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
+            elif wesm_deficit_price is not None:
+                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
+            if not price_inputs.sell_to_wesm:
+                pv_excess_revenue = 0.0
+        if price_inputs.sell_to_wesm:
+            if use_wesm_surplus_profile:
+                wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+                pv_excess_revenue = wesm_surplus_revenue
+            else:
+                surplus_price = (
+                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
+                )
+                if surplus_price is not None:
+                    pv_excess_revenue = pv_excess_mwh * surplus_price
+                    wesm_surplus_revenue = pv_excess_revenue
+
+        if price_inputs.escalate_with_inflation:
+            bess_revenue *= inflation_multiplier
+            pv_delivered_revenue *= inflation_multiplier
+            pv_excess_revenue *= inflation_multiplier
+            if not use_wesm_shortfall_profile:
+                wesm_shortfall_cost *= inflation_multiplier
+            if not use_wesm_surplus_profile:
+                wesm_surplus_revenue *= inflation_multiplier
+
+        total_revenue = bess_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
+        cash_flow = total_revenue - annual_opex - augmentation_cost
+
+        rows.append(
+            {
+                "Year": year_idx,
+                "Firm MWh": firm_mwh,
+                "BESS MWh": bess_mwh,
+                "PV→Contract MWh": pv_delivered_mwh,
+                "PV excess MWh": pv_excess_mwh,
+                "Shortfall MWh": shortfall_mwh,
+                "BESS revenue USD": bess_revenue,
+                "PV contract revenue USD": pv_delivered_revenue,
+                "PV excess revenue USD": pv_excess_revenue,
+                "WESM shortfall cost USD": wesm_shortfall_cost,
+                "WESM surplus revenue USD": wesm_surplus_revenue,
+                "Total revenue USD": total_revenue,
+                "OPEX USD": annual_opex,
+                "Augmentation USD": augmentation_cost,
+                "Net cash flow USD": cash_flow,
+                "Discount factor": factor,
+                "Discounted cash flow USD": cash_flow * factor,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def build_financing_cash_flow_table(
+    annual_delivered_mwh: Sequence[float],
+    annual_bess_mwh: Sequence[float],
+    annual_pv_excess_mwh: Sequence[float],
+    inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+    *,
+    annual_shortfall_mwh: Sequence[float] | None = None,
+    annual_wesm_shortfall_cost_usd: Sequence[float] | None = None,
+    annual_wesm_surplus_revenue_usd: Sequence[float] | None = None,
+    augmentation_costs_usd: Sequence[float] | None = None,
+    annual_total_generation_mwh: Sequence[float] | None = None,
+) -> pd.DataFrame:
+    """Build a financing-aware cash-flow table aligned with ``compute_financing_cash_flows``."""
+
+    inputs = normalize_economic_inputs(inputs)
+    _validate_inputs(annual_delivered_mwh, annual_bess_mwh, inputs)
+    if len(annual_pv_excess_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_pv_excess_mwh must match number of years")
+    for idx, value in enumerate(annual_pv_excess_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_pv_excess_mwh[{idx}]")
+    if annual_shortfall_mwh is None:
+        annual_shortfall_mwh = [0.0 for _ in annual_delivered_mwh]
+    if len(annual_shortfall_mwh) != len(annual_delivered_mwh):
+        raise ValueError("annual_shortfall_mwh must match number of years")
+    for idx, value in enumerate(annual_shortfall_mwh, start=1):
+        _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
+    use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
+    use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
+    _validate_price_inputs(
+        price_inputs,
+        require_wesm_deficit_price=not use_wesm_shortfall_profile,
+        require_wesm_surplus_price=not use_wesm_surplus_profile,
+    )
+
+    if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_shortfall_cost_usd must match number of years")
+    if annual_wesm_shortfall_cost_usd is not None:
+        for idx, value in enumerate(annual_wesm_shortfall_cost_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_shortfall_cost_usd[{idx}]")
+
+    if annual_wesm_surplus_revenue_usd is not None and len(annual_wesm_surplus_revenue_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_wesm_surplus_revenue_usd must match number of years")
+    if annual_wesm_surplus_revenue_usd is not None:
+        for idx, value in enumerate(annual_wesm_surplus_revenue_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_wesm_surplus_revenue_usd[{idx}]")
+
+    if augmentation_costs_usd is not None and len(augmentation_costs_usd) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("augmentation_costs_usd must match number of years")
+    if augmentation_costs_usd is not None:
+        for idx, value in enumerate(augmentation_costs_usd, start=1):
+            _ensure_non_negative_finite(float(value), f"augmentation_costs_usd[{idx}]")
+
+    if annual_total_generation_mwh is not None and len(annual_total_generation_mwh) != len(
+        annual_delivered_mwh
+    ):
+        raise ValueError("annual_total_generation_mwh must match number of years")
+    if annual_total_generation_mwh is not None:
+        for idx, value in enumerate(annual_total_generation_mwh, start=1):
+            _ensure_non_negative_finite(float(value), f"annual_total_generation_mwh[{idx}]")
+
+    years = len(annual_delivered_mwh)
+    rows: list[dict[str, float | int | None]] = []
+
+    total_capex = _initial_project_spend(inputs)
+    debt_principal = total_capex * inputs.debt_ratio
+    equity_contribution = total_capex - debt_principal
+    debt_schedule = (
+        _build_debt_service_schedule(
+            debt_principal, inputs.cost_of_debt, int(inputs.tenor_years or 0), years
+        )
+        if inputs.debt_ratio > 0
+        else [0.0 for _ in range(years)]
+    )
+
+    rows.append(
+        {
+            "Year": 0,
+            "CAPEX USD": total_capex,
+            "Debt principal USD": debt_principal,
+            "Equity contribution USD": equity_contribution,
+            "Project cash flow USD": -total_capex,
+            "Equity cash flow USD": -equity_contribution,
+            "Discount factor (WACC)": 1.0,
+            "Discounted project cash flow USD": -total_capex,
+        }
+    )
+
+    if years == 0:
+        return pd.DataFrame(rows)
+
+    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
+    blended_price = price_inputs.blended_price_usd_per_mwh
+    contract_price = price_inputs.contract_price_usd_per_mwh
+    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
+    if blended_price is not None:
+        contract_price = float(blended_price)
+        pv_market_price = float(blended_price)
+    wesm_deficit_price = (
+        float(price_inputs.wesm_deficit_price_usd_per_mwh)
+        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
+        else None
+    )
+    wesm_surplus_price = (
+        float(price_inputs.wesm_surplus_price_usd_per_mwh)
+        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
+        else None
+    )
+
+    for year_idx in range(1, years + 1):
+        firm_mwh = float(annual_delivered_mwh[year_idx - 1])
+        bess_mwh = float(annual_bess_mwh[year_idx - 1])
+        pv_excess_mwh = float(annual_pv_excess_mwh[year_idx - 1])
+        shortfall_mwh = float(annual_shortfall_mwh[year_idx - 1])
+        inflation_multiplier = (1.0 + inputs.inflation_rate) ** (year_idx - 1)
+
+        annual_opex = 0.0
+        if variable_opex_schedule is not None:
+            if year_idx - 1 >= len(variable_opex_schedule):
+                raise ValueError("variable_opex_schedule_usd must match the number of project years")
+            annual_opex = float(variable_opex_schedule[year_idx - 1])
+        elif inputs.variable_opex_usd_per_mwh is not None:
+            opex_basis_mwh = firm_mwh + pv_excess_mwh
+            if inputs.variable_opex_basis == "delivered":
+                opex_basis_mwh = firm_mwh
+            elif annual_total_generation_mwh is not None:
+                opex_basis_mwh = float(annual_total_generation_mwh[year_idx - 1])
+            annual_opex = opex_basis_mwh * float(inputs.variable_opex_usd_per_mwh) * inflation_multiplier
+        else:
+            annual_fixed_opex = (fixed_opex_from_capex + inputs.fixed_opex_musd) * 1_000_000
+            annual_opex = annual_fixed_opex * inflation_multiplier
+
+        augmentation_cost = (
+            float(augmentation_costs_usd[year_idx - 1]) if augmentation_costs_usd is not None else 0.0
+        )
+
+        bess_revenue = firm_mwh * contract_price if blended_price is not None else bess_mwh * contract_price
+        pv_revenue = pv_excess_mwh * pv_market_price
+        wesm_shortfall_cost = 0.0
+        wesm_surplus_revenue = 0.0
+        if price_inputs.apply_wesm_to_shortfall:
+            if use_wesm_shortfall_profile:
+                wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
+            elif wesm_deficit_price is not None:
+                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
+            pv_revenue = 0.0
+            if price_inputs.sell_to_wesm:
+                if use_wesm_surplus_profile:
+                    wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+                else:
+                    surplus_price = (
+                        wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
+                    )
+                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
+        elif price_inputs.sell_to_wesm:
+            if use_wesm_surplus_profile:
+                wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
+            else:
+                surplus_price = (
+                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
+                )
+                if surplus_price is not None:
+                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
+
+        if price_inputs.escalate_with_inflation:
+            bess_revenue *= inflation_multiplier
+            pv_revenue *= inflation_multiplier
+            if not use_wesm_shortfall_profile:
+                wesm_shortfall_cost *= inflation_multiplier
+            if not use_wesm_surplus_profile:
+                wesm_surplus_revenue *= inflation_multiplier
+
+        total_revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
+        ebitda = total_revenue - annual_opex
+        debt_service = debt_schedule[year_idx - 1] if year_idx - 1 < len(debt_schedule) else 0.0
+        project_cash_flow = ebitda - augmentation_cost
+        equity_cash_flow = project_cash_flow - debt_service
+        discount_factor = _discount_factor(inputs.wacc, year_idx)
+
+        rows.append(
+            {
+                "Year": year_idx,
+                "Total revenue USD": total_revenue,
+                "OPEX USD": annual_opex,
+                "Augmentation USD": augmentation_cost,
+                "EBITDA USD": ebitda,
+                "Debt service USD": debt_service,
+                "Project cash flow USD": project_cash_flow,
+                "Equity cash flow USD": equity_cash_flow,
+                "Discount factor (WACC)": discount_factor,
+                "Discounted project cash flow USD": project_cash_flow * discount_factor,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
 def _discount_factor(discount_rate: float, year_index: int) -> float:
     """Return the discount factor for a given year index (1-indexed)."""
 
