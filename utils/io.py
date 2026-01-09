@@ -301,11 +301,13 @@ def read_wesm_profile(
     last_err = None
     for candidate in path_candidates:
         try:
+            if hasattr(candidate, "seek"):
+                candidate.seek(0)
             df = pd.read_csv(candidate)
             return _clean_profile(df)
         except Exception as e:  # pragma: no cover - errors handled via last_err
             last_err = e
-    raise RuntimeError(
+    raise ValueError(
         "Failed to read WESM profile. "
         f"Looked for: {path_candidates}. Last error: {last_err}"
     )
