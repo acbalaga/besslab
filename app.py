@@ -39,6 +39,8 @@ from utils.economics import (
     FinancingOutputs,
     PriceInputs,
     aggregate_wesm_profile_to_annual,
+    build_financing_cash_flow_table,
+    build_operating_cash_flow_table,
     compute_cash_flows_and_irr,
     compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
