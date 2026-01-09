@@ -38,6 +38,8 @@ from utils.economics import (
     FinancingOutputs,
     PriceInputs,
     aggregate_wesm_profile_to_annual,
+    build_financing_cash_flow_table,
+    build_operating_cash_flow_table,
     compute_cash_flows_and_irr,
     compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
@@ -109,6 +111,80 @@ def _build_hourly_summary_workbook(hourly_logs_by_year: Dict[int, HourlyLog]) ->
             sheet_name = f"Year {year_index}"
             df = _build_hourly_summary_df(hourly_logs_by_year[year_index])
             df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
+
+
+def _build_daily_summary_df(
+    hourly_logs_by_year: Dict[int, HourlyLog],
+    step_hours: float,
+) -> pd.DataFrame:
+    """Aggregate hourly logs into daily MWh summaries for auditing."""
+
+    if step_hours <= 0:
+        raise ValueError("step_hours must be positive")
+
+    daily_frames: list[pd.DataFrame] = []
+    steps_per_day = int(round(24.0 / step_hours))
+    for year_index in sorted(hourly_logs_by_year):
+        hourly_df = _build_hourly_summary_df(hourly_logs_by_year[year_index])
+        if hourly_df.empty:
+            continue
+
+        if "timestamp" in hourly_df.columns:
+            hourly_df["day"] = pd.to_datetime(hourly_df["timestamp"]).dt.date
+        else:
+            hourly_df["day"] = (hourly_df["hour_index"] // steps_per_day) + 1
+
+        energy_df = pd.DataFrame(
+            {
+                "Year": year_index,
+                "Day": hourly_df["day"],
+                "PV MWh": hourly_df["pv_mw"] * step_hours,
+                "PV→Contract MWh": hourly_df["pv_to_contract_mw"] * step_hours,
+                "BESS→Contract MWh": hourly_df["bess_to_contract_mw"] * step_hours,
+                "Delivered MWh": hourly_df["delivered_mw"] * step_hours,
+                "Shortfall MWh": hourly_df["shortfall_mw"] * step_hours,
+                "Charge MWh": hourly_df["charge_mw"] * step_hours,
+                "Discharge MWh": hourly_df["discharge_mw"] * step_hours,
+                "PV surplus MWh": hourly_df["pv_surplus_mw"] * step_hours,
+            }
+        )
+        daily_frames.append(
+            energy_df.groupby(["Year", "Day"], as_index=False)
+            .sum(numeric_only=True)
+        )
+
+    if not daily_frames:
+        return pd.DataFrame()
+
+    return pd.concat(daily_frames, ignore_index=True)
+
+
+def _build_finance_audit_workbook(
+    metrics_summary: pd.DataFrame,
+    yearly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    daily_df: pd.DataFrame,
+    operating_cash_flow_df: pd.DataFrame,
+    financing_cash_flow_df: pd.DataFrame,
+) -> bytes:
+    """Create an Excel workbook with cash-flow audit tables and energy traces."""
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        metrics_summary.to_excel(writer, sheet_name="Metrics summary", index=False)
+        operating_cash_flow_df.to_excel(writer, sheet_name="Operating cash flows", index=False)
+        financing_cash_flow_df.to_excel(writer, sheet_name="Financing cash flows", index=False)
+        yearly_df.to_excel(writer, sheet_name="Yearly energy", index=False)
+        monthly_df.to_excel(writer, sheet_name="Monthly energy", index=False)
+        if daily_df.empty:
+            pd.DataFrame({"Note": ["Daily logs unavailable (hourly logs not generated)."]}).to_excel(
+                writer,
+                sheet_name="Daily energy",
+                index=False,
+            )
+        else:
+            daily_df.to_excel(writer, sheet_name="Daily energy", index=False)
     return output.getvalue()
 
 
@@ -312,6 +388,14 @@ def run_app():
     financing_outputs: Optional[FinancingOutputs] = None
     augmentation_costs_usd: Optional[List[float]] = None
     normalized_econ_inputs: Optional[EconomicInputs] = None
+    annual_delivered: Optional[List[float]] = None
+    annual_bess: Optional[List[float]] = None
+    annual_pv_delivered: Optional[List[float]] = None
+    annual_pv_excess: Optional[List[float]] = None
+    annual_shortfall: Optional[List[float]] = None
+    annual_total_generation: Optional[List[float]] = None
+    annual_wesm_shortfall_cost_usd: Optional[List[float]] = None
+    annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
     if run_economics and econ_inputs and price_inputs:
         normalized_econ_inputs = normalize_economic_inputs(econ_inputs)
@@ -335,8 +419,6 @@ def run_app():
         annual_shortfall = [r.shortfall_mwh for r in results]
         # available_pv_mwh represents total PV generation (MWh) for variable OPEX scaling.
         annual_total_generation = [r.available_pv_mwh for r in results]
-        annual_wesm_shortfall_cost_usd: Optional[List[float]] = None
-        annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
         try:
             wesm_profile_source = wesm_file
@@ -1076,6 +1158,94 @@ def run_app():
         file_name="bess_config.json",
         mime="application/json",
     )
+    if (
+        run_economics
+        and cash_outputs
+        and financing_outputs
+        and normalized_econ_inputs
+        and price_inputs
+        and annual_delivered is not None
+        and annual_bess is not None
+        and annual_pv_delivered is not None
+        and annual_pv_excess is not None
+        and annual_shortfall is not None
+        and annual_total_generation is not None
+    ):
+        daily_df = (
+            _build_daily_summary_df(hourly_logs_by_year, cfg.step_hours)
+            if hourly_logs_by_year
+            else pd.DataFrame()
+        )
+        operating_cash_flow_df = build_operating_cash_flow_table(
+            annual_delivered,
+            annual_bess,
+            annual_pv_excess,
+            normalized_econ_inputs,
+            price_inputs,
+            annual_pv_delivered_mwh=annual_pv_delivered,
+            annual_shortfall_mwh=annual_shortfall,
+            annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+            annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
+            augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+            annual_total_generation_mwh=annual_total_generation,
+        )
+        financing_cash_flow_df = build_financing_cash_flow_table(
+            annual_delivered,
+            annual_bess,
+            annual_pv_excess,
+            normalized_econ_inputs,
+            price_inputs,
+            annual_shortfall_mwh=annual_shortfall,
+            annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+            annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
+            augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+            annual_total_generation_mwh=annual_total_generation,
+        )
+        metrics_summary = pd.DataFrame(
+            [
+                {
+                    "Metric": "Project NPV (USD, WACC)",
+                    "Value": financing_outputs.project_npv_usd,
+                },
+                {
+                    "Metric": "IRR (%)",
+                    "Value": cash_outputs.irr_pct,
+                },
+                {
+                    "Metric": "PIRR (%)",
+                    "Value": financing_outputs.project_irr_pct,
+                },
+                {
+                    "Metric": "EIRR (%)",
+                    "Value": financing_outputs.equity_irr_pct,
+                },
+                {
+                    "Metric": "Discount rate (%)",
+                    "Value": normalized_econ_inputs.discount_rate * 100.0,
+                },
+                {
+                    "Metric": "WACC (%)",
+                    "Value": normalized_econ_inputs.wacc * 100.0,
+                },
+            ]
+        )
+        finance_workbook = _build_finance_audit_workbook(
+            metrics_summary,
+            res_df,
+            monthly_df,
+            daily_df,
+            operating_cash_flow_df,
+            financing_cash_flow_df,
+        )
+        st.download_button(
+            "Download finance audit workbook (Excel)",
+            finance_workbook,
+            file_name="bess_finance_audit.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption(
+            "Workbook includes yearly/monthly/daily energy traces plus operating and financing cash-flow tables."
+        )
     st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
                        file_name='bess_yearly_summary.csv', mime='text/csv')
 
