@@ -612,6 +612,33 @@ class EconomicModuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             aggregate_wesm_profile_to_annual(hourly_summary_by_year, wesm_profile, step_hours=1.0)
 
+    def test_wesm_profile_falls_back_to_hour_index_when_timestamps_mismatch(self) -> None:
+        hourly_summary_by_year = {
+            1: pd.DataFrame(
+                {
+                    "hour_index": list(range(24)),
+                    "timestamp": pd.date_range("2024-01-01", periods=24, freq="h"),
+                    "shortfall_mw": [1.0] * 24,
+                    "pv_surplus_mw": [0.0] * 24,
+                }
+            )
+        }
+        wesm_profile = pd.DataFrame(
+            {
+                "hour_index": list(range(24)),
+                "timestamp": pd.date_range("2023-01-01", periods=24, freq="h"),
+                "wesm_deficit_price_usd_per_mwh": [50.0] * 24,
+            }
+        )
+
+        annual_shortfall_costs, _ = aggregate_wesm_profile_to_annual(
+            hourly_summary_by_year,
+            wesm_profile,
+            step_hours=1.0,
+        )
+
+        self.assertAlmostEqual(annual_shortfall_costs[0], 24.0 * 50.0)
+
     def test_wesm_profile_costs_vary_with_hourly_prices(self) -> None:
         hourly_summary_by_year = {
             1: pd.DataFrame(
