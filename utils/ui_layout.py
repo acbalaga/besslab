@@ -24,10 +24,18 @@ class _NavigationLink:
 
 _NAV_LINKS = (
     _NavigationLink("Landing / Uploads", "pages/00_Landing.py", "Seed shared uploads for the session."),
-    _NavigationLink("Home (Guide)", "pages/00_Home.py"),
-    _NavigationLink("Inputs & Results", "app.py", "Main simulation workspace."),
-    _NavigationLink("BESS sizing sweep", "pages/04_BESS_Sizing_Sweep.py"),
-    _NavigationLink("Multi-scenario batch", "pages/05_Multi_Scenario_Batch.py"),
+    _NavigationLink("Home (Guide)", "pages/00_Home.py", "Workflow walkthrough, tips, and data-format reminders."),
+    _NavigationLink("Inputs & Results", "app.py", "Main simulation workspace and downloads."),
+    _NavigationLink(
+        "BESS sizing sweep",
+        "pages/04_BESS_Sizing_Sweep.py",
+        "Sweep usable energy while holding power constant.",
+    ),
+    _NavigationLink(
+        "Multi-scenario batch",
+        "pages/05_Multi_Scenario_Batch.py",
+        "Run structured variations and compare KPIs in one table.",
+    ),
 )
 
 

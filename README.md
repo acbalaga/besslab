@@ -30,8 +30,16 @@ Open the provided local URL in your browser to launch the app. To remove the ses
 - **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
 - **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser (e.g., `05:30-09:00`).
 - **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and Design-Advisor bounds.
+- **Economics inputs (optional):** Provide CAPEX/OPEX assumptions and energy prices (contracted, PV surplus, or blended), plus an FX rate when working in PHP.
 
 If no files are uploaded, the app uses the sample data in `./data/`.
+
+## Units and conventions
+- **Power:** MW (nameplate and contracted).
+- **Energy:** MWh (BOL, usable, and delivered).
+- **Prices and costs:** USD/MWh unless explicitly labeled as PHP; use the FX rate input to convert PHP ↔ USD.
+- **Efficiencies and SOC:** Fractions (0–1) in calculations; UI sliders display percent where relevant.
+- **Time:** Hourly or sub-hourly inputs supported; timestamped uploads allow leap-year coverage.
 
 ## Using the app
 1. **Upload or reuse defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses bundled sample data. The landing page caches uploads by hash so they can be reused across pages or fresh browser sessions until you clear the cache.
