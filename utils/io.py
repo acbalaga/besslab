@@ -214,16 +214,107 @@ def read_wesm_profile(
     If the profile provides PHP/kWh columns (wesm_deficit_price_php_per_kwh and
     wesm_surplus_price_php_per_kwh), they are converted to USD/MWh using the
     provided FX rate (PHP per USD) to keep downstream economics in USD/MWh.
+    Profiles provided with month/hour averages (e.g., legacy CSVs with month +
+    hr columns) are expanded to an hourly profile for a reference year so that
+    hourly simulation logs can be priced consistently.
     """
 
     if forex_rate_php_per_usd <= 0:
         raise ValueError("forex_rate_php_per_usd must be greater than zero")
 
+    def _normalize_column_name(name: str) -> str:
+        return str(name).strip().replace("\ufeff", "").lower()
+
+    def _find_legacy_php_mwh_column(columns: list[str]) -> str | None:
+        for col in columns:
+            if "central" in col and "php/mwh" in col:
+                return col
+        return None
+
+    def _expand_month_hour_profile(df: pd.DataFrame) -> pd.DataFrame:
+        """Expand a month/hour average profile to an hourly profile.
+
+        Assumes the source provides prices for every month-hour combination and
+        uses a non-leap reference year (2023) to generate hourly timestamps.
+        """
+
+        month_map = {
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        month_labels = df["month"].astype(str).str.strip().str.lower().str[:3]
+        month_num = month_labels.map(month_map)
+        if month_num.isna().any():
+            raise ValueError("WESM profile month values must use standard month names.")
+
+        hour_col = pd.to_numeric(df["hr"], errors="coerce")
+        if hour_col.isna().any():
+            raise ValueError("WESM profile hr values must be numeric.")
+        hour_of_day = hour_col.astype(int) - 1
+        if (hour_of_day < 0).any() or (hour_of_day > 23).any():
+            raise ValueError("WESM profile hr values must be in the 1-24 range.")
+
+        month_hour_prices = df.assign(
+            month_num=month_num.astype(int),
+            hour_of_day=hour_of_day,
+        )[
+            [
+                "month_num",
+                "hour_of_day",
+                "wesm_deficit_price_usd_per_mwh",
+                "wesm_surplus_price_usd_per_mwh",
+            ]
+        ]
+
+        hourly_index = pd.date_range(
+            "2023-01-01 00:00:00",
+            "2023-12-31 23:00:00",
+            freq="h",
+        )
+        hourly_frame = pd.DataFrame(
+            {
+                "timestamp": hourly_index,
+                "month_num": hourly_index.month,
+                "hour_of_day": hourly_index.hour,
+            }
+        )
+        expanded = hourly_frame.merge(
+            month_hour_prices,
+            on=["month_num", "hour_of_day"],
+            how="left",
+            validate="many_to_one",
+        )
+        if expanded["wesm_deficit_price_usd_per_mwh"].isna().any():
+            raise ValueError("Month/hour WESM profile did not cover all hours.")
+        expanded["hour_index"] = range(len(expanded))
+        return expanded[
+            [
+                "timestamp",
+                "hour_index",
+                "wesm_deficit_price_usd_per_mwh",
+                "wesm_surplus_price_usd_per_mwh",
+            ]
+        ]
+
     def _clean_profile(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.rename(columns={col: _normalize_column_name(col) for col in df.columns})
         has_timestamp = timestamp_col in df.columns
         has_hour_index = "hour_index" in df.columns
-        if not (has_timestamp or has_hour_index):
-            raise ValueError("WESM profile must include a timestamp or hour_index column.")
+        has_month_hour = "month" in df.columns and "hr" in df.columns
+        if not (has_timestamp or has_hour_index or has_month_hour):
+            raise ValueError(
+                "WESM profile must include timestamp/hour_index or month/hr columns."
+            )
 
         if has_timestamp:
             df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
@@ -235,8 +326,18 @@ def read_wesm_profile(
             "wesm_surplus_price_usd_per_mwh",
             "wesm_deficit_price_php_per_kwh",
             "wesm_surplus_price_php_per_kwh",
+            "wesm_deficit_price_php_per_mwh",
+            "wesm_surplus_price_php_per_mwh",
         }
         available_price_cols = price_columns.intersection(df.columns)
+        if not available_price_cols:
+            legacy_central = _find_legacy_php_mwh_column(list(df.columns))
+            if legacy_central is not None:
+                # Legacy WESM files provide Central/High/Low PHP/MWh. Use Central for both
+                # deficit and surplus when no explicit split is provided.
+                df["wesm_deficit_price_php_per_mwh"] = df[legacy_central]
+                df["wesm_surplus_price_php_per_mwh"] = df[legacy_central]
+                available_price_cols = price_columns.intersection(df.columns)
         if not available_price_cols:
             raise ValueError(
                 "WESM profile must include deficit/surplus price columns in USD/MWh or PHP/kWh."
@@ -274,9 +375,20 @@ def read_wesm_profile(
             df["wesm_surplus_price_usd_per_mwh"] = (
                 df["wesm_surplus_price_php_per_kwh"] / forex_rate_php_per_usd * 1000.0
             )
+        if "wesm_deficit_price_php_per_mwh" in df.columns:
+            df["wesm_deficit_price_usd_per_mwh"] = (
+                df["wesm_deficit_price_php_per_mwh"] / forex_rate_php_per_usd
+            )
+        if "wesm_surplus_price_php_per_mwh" in df.columns:
+            df["wesm_surplus_price_usd_per_mwh"] = (
+                df["wesm_surplus_price_php_per_mwh"] / forex_rate_php_per_usd
+            )
 
         if "wesm_deficit_price_usd_per_mwh" not in df.columns:
             raise ValueError("WESM profile requires wesm_deficit_price_usd_per_mwh values.")
+
+        if "wesm_surplus_price_usd_per_mwh" not in df.columns:
+            df["wesm_surplus_price_usd_per_mwh"] = df["wesm_deficit_price_usd_per_mwh"]
 
         if has_timestamp:
             df = (
@@ -295,6 +407,9 @@ def read_wesm_profile(
             if (df["hour_index"] % 1 != 0).any():
                 raise ValueError("hour_index must be integer hours.")
             df["hour_index"] = df["hour_index"].astype(int)
+
+        if has_month_hour and not (has_timestamp or has_hour_index):
+            df = _expand_month_hour_profile(df)
 
         return df
 
