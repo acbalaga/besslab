@@ -1,3 +1,4 @@
+import io
 import json
 import math
 from dataclasses import asdict
@@ -56,6 +57,53 @@ from utils.ui_state import (
 
 
 BASE_DIR = get_base_dir()
+
+
+def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
+    """Return a tidy hourly summary with MW/MWh metrics for download."""
+    hour_index = np.arange(len(logs.hod), dtype=int)
+    data = {
+        "hour_index": hour_index,
+        "hod": logs.hod,
+        "pv_mw": logs.pv_mw,
+        "pv_to_contract_mw": logs.pv_to_contract_mw,
+        "bess_to_contract_mw": logs.bess_to_contract_mw,
+        "charge_mw": logs.charge_mw,
+        "discharge_mw": logs.discharge_mw,
+        "soc_mwh": logs.soc_mwh,
+    }
+    if logs.timestamp is not None:
+        data["timestamp"] = pd.to_datetime(logs.timestamp)
+    df = pd.DataFrame(data)
+    df["pv_surplus_mw"] = np.maximum(
+        df["pv_mw"] - df["pv_to_contract_mw"] - df["charge_mw"],
+        0.0,
+    )
+    column_order = [
+        "timestamp",
+        "hour_index",
+        "hod",
+        "pv_mw",
+        "pv_to_contract_mw",
+        "bess_to_contract_mw",
+        "charge_mw",
+        "discharge_mw",
+        "soc_mwh",
+        "pv_surplus_mw",
+    ]
+    existing_columns = [col for col in column_order if col in df.columns]
+    return df[existing_columns]
+
+
+def _build_hourly_summary_workbook(hourly_logs_by_year: Dict[int, HourlyLog]) -> bytes:
+    """Create an Excel workbook with one worksheet per project year."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for year_index in sorted(hourly_logs_by_year):
+            sheet_name = f"Year {year_index}"
+            df = _build_hourly_summary_df(hourly_logs_by_year[year_index])
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    return output.getvalue()
 
 
 def run_app():
@@ -170,6 +218,7 @@ def run_app():
     monthly_results_all = sim_output.monthly_results
     first_year_logs = sim_output.first_year_logs
     final_year_logs = sim_output.final_year_logs
+    hourly_logs_by_year = sim_output.hourly_logs_by_year
     hod_count = sim_output.hod_count
     hod_sum_pv = sim_output.hod_sum_pv
     hod_sum_pv_resource = sim_output.hod_sum_pv_resource
@@ -970,20 +1019,17 @@ def run_app():
     st.download_button("Download monthly summary (CSV)", monthly_df.to_csv(index=False).encode('utf-8'),
                        file_name='bess_monthly_summary.csv', mime='text/csv')
 
+    if hourly_logs_by_year:
+        hourly_workbook = _build_hourly_summary_workbook(hourly_logs_by_year)
+        st.download_button(
+            "Download hourly summary (Excel)",
+            hourly_workbook,
+            file_name="bess_hourly_summary.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
     if final_year_logs is not None:
-        hourly_df = pd.DataFrame({
-            'hour_index': np.arange(len(final_year_logs.hod)),
-            'hod': final_year_logs.hod,
-            'pv_to_contract_mw': final_year_logs.pv_to_contract_mw,
-            'bess_to_contract_mw': final_year_logs.bess_to_contract_mw,
-            'charge_mw': final_year_logs.charge_mw,
-            'discharge_mw': final_year_logs.discharge_mw,
-            'soc_mwh': final_year_logs.soc_mwh,
-            'pv_surplus_mw': np.maximum(
-                final_year_logs.pv_mw - final_year_logs.pv_to_contract_mw - final_year_logs.charge_mw,
-                0.0,
-            ),
-        })
+        hourly_df = _build_hourly_summary_df(final_year_logs)
         st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
                            file_name='final_year_hourly_logs.csv', mime='text/csv')
 

@@ -256,6 +256,7 @@ class HourlyLog:
     charge_mw: np.ndarray
     discharge_mw: np.ndarray
     soc_mwh: np.ndarray
+    timestamp: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -300,6 +301,7 @@ class SimulationOutput:
     augmentation_energy_added_mwh: List[float]
     augmentation_retired_energy_mwh: List[float]
     augmentation_events: int
+    hourly_logs_by_year: Dict[int, HourlyLog] = field(default_factory=dict)
 
 
 def resolve_efficiencies(cfg: SimConfig) -> Tuple[float, float, float]:
@@ -695,6 +697,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         charge_mw=charge_mw_log,
         discharge_mw=discharge_mw_log,
         soc_mwh=soc_log,
+        timestamp=calendar_index.to_numpy(),
     )
     return yr, logs, monthly_results
 
@@ -911,6 +914,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
     dod_key_override = None if dod_override == "Auto (infer)" else int(dod_override.strip("%"))
     first_year_logs: Optional[HourlyLog] = None
     final_year_logs = None
+    hourly_logs_by_year: Dict[int, HourlyLog] = {}
     hod_count = np.zeros(24, dtype=float)
     hod_sum_pv = np.zeros(24, dtype=float)
     hod_sum_pv_resource = np.zeros(24, dtype=float)
@@ -930,6 +934,8 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
             first_year_logs = logs
         if y == cfg.years and need_logs:
             final_year_logs = logs
+        if need_logs:
+            hourly_logs_by_year[y] = logs
         state.cum_cycles = yr.cum_cycles
         results.append(yr)
         monthly_results_all.extend(monthly_results)
@@ -964,6 +970,7 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         augmentation_energy_added_mwh=augmentation_energy_added,
         augmentation_retired_energy_mwh=augmentation_retired_energy,
         augmentation_events=augmentation_events,
+        hourly_logs_by_year=hourly_logs_by_year,
     )
 
 
