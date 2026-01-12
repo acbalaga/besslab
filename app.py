@@ -509,6 +509,11 @@ def run_app():
     })
 
     render_primary_metrics(cfg, kpis)
+    optional_diagnostics = st.toggle(
+        "Optional diagnostics",
+        value=False,
+        help="Show advanced flags, design guidance, and SOC/dispatch diagnostics.",
+    )
 
     if run_economics and econ_outputs and cash_outputs and financing_outputs:
         st.markdown("### Economics summary")
@@ -775,222 +780,223 @@ def run_app():
     )
     st.altair_chart(bar2 + line2, use_container_width=True)
 
-    # ---------- Flags ----------
-    st.subheader("Flags & Guidance")
-    flag_totals = {
-        'firm_shortfall_hours': sum(r.flags['firm_shortfall_hours'] for r in results),
-        'soc_floor_hits': sum(r.flags['soc_floor_hits'] for r in results),
-        'soc_ceiling_hits': sum(r.flags['soc_ceiling_hits'] for r in results),
-    }
-    flag_specs = []
-    for key in ["firm_shortfall_hours", "soc_floor_hits", "soc_ceiling_hits"]:
-        meta = FLAG_DEFINITIONS[key]
-        flag_specs.append(
-            MetricSpec(
-                label=meta["label"],
-                value=f"{flag_totals[key]:,}",
-                caption=f"Meaning: {meta['meaning']}\nFix knobs: {meta['knobs']}",
+    if optional_diagnostics:
+        # ---------- Flags ----------
+        st.subheader("Flags & Guidance")
+        flag_totals = {
+            'firm_shortfall_hours': sum(r.flags['firm_shortfall_hours'] for r in results),
+            'soc_floor_hits': sum(r.flags['soc_floor_hits'] for r in results),
+            'soc_ceiling_hits': sum(r.flags['soc_ceiling_hits'] for r in results),
+        }
+        flag_specs = []
+        for key in ["firm_shortfall_hours", "soc_floor_hits", "soc_ceiling_hits"]:
+            meta = FLAG_DEFINITIONS[key]
+            flag_specs.append(
+                MetricSpec(
+                    label=meta["label"],
+                    value=f"{flag_totals[key]:,}",
+                    caption=f"Meaning: {meta['meaning']}\nFix knobs: {meta['knobs']}",
+                )
             )
-        )
-    render_metrics(st.columns(len(flag_specs)), flag_specs)
+        render_metrics(st.columns(len(flag_specs)), flag_specs)
 
-    insights = build_flag_insights(flag_totals)
-    st.markdown("**What the flags suggest:**")
-    st.markdown("\n".join(f"- {tip}" for tip in insights))
+        insights = build_flag_insights(flag_totals)
+        st.markdown("**What the flags suggest:**")
+        st.markdown("\n".join(f"- {tip}" for tip in insights))
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # ---------- Design Advisor (physics-bounded) ----------
-    st.subheader("Design Advisor (final-year, physics-bounded)")
+        # ---------- Design Advisor (physics-bounded) ----------
+        st.subheader("Design Advisor (final-year, physics-bounded)")
 
-    # --- Bounds / guardrails (editable if you like) ---
-    RTE_RT_MAX = 0.92              # plausible AC-to-AC roundtrip limit
-    SOC_FLOOR_MIN = 0.05           # don't recommend below this
-    SOC_CEILING_MAX = 0.98         # don't recommend above this
-    DELTA_SOC_MAX = 0.90           # ~5-95%
-    EFC_YR_GREEN = 300.0           # vendor guardrail
-    EFC_YR_YELLOW = 400.0
+        # --- Bounds / guardrails (editable if you like) ---
+        RTE_RT_MAX = 0.92              # plausible AC-to-AC roundtrip limit
+        SOC_FLOOR_MIN = 0.05           # don't recommend below this
+        SOC_CEILING_MAX = 0.98         # don't recommend above this
+        DELTA_SOC_MAX = 0.90           # ~5-95%
+        EFC_YR_GREEN = 300.0           # vendor guardrail
+        EFC_YR_YELLOW = 400.0
 
-    # --- Final-year context ---
-    eta_ch_now, eta_dis_now, eta_rt_now = resolve_efficiencies(cfg)
-    eta_ratio = eta_dis_now / max(1e-9, eta_ch_now)
-    delta_soc_now = max(0.0, cfg.soc_ceiling - cfg.soc_floor)
-    delta_soc_cap = min(DELTA_SOC_MAX, SOC_CEILING_MAX - SOC_FLOOR_MIN)
-    soh_final = float(final.soh_total)
+        # --- Final-year context ---
+        eta_ch_now, eta_dis_now, eta_rt_now = resolve_efficiencies(cfg)
+        eta_ratio = eta_dis_now / max(1e-9, eta_ch_now)
+        delta_soc_now = max(0.0, cfg.soc_ceiling - cfg.soc_floor)
+        delta_soc_cap = min(DELTA_SOC_MAX, SOC_CEILING_MAX - SOC_FLOOR_MIN)
+        soh_final = float(final.soh_total)
 
-    target_day = cfg.contracted_mw * dis_hours_per_day                    # MWh/day
-    pv_to_contract_day = final.pv_to_contract_mwh / 365.0                 # MWh/day
-    bess_share_day = max(0.0, target_day - pv_to_contract_day)            # MWh/day BESS must supply
+        target_day = cfg.contracted_mw * dis_hours_per_day                    # MWh/day
+        pv_to_contract_day = final.pv_to_contract_mwh / 365.0                 # MWh/day
+        bess_share_day = max(0.0, target_day - pv_to_contract_day)            # MWh/day BESS must supply
 
-    deliverable_day_now = cfg.initial_usable_mwh * soh_final * delta_soc_now * eta_dis_now
-    shortfall_day_now = max(0.0, target_day - deliverable_day_now)
+        deliverable_day_now = cfg.initial_usable_mwh * soh_final * delta_soc_now * eta_dis_now
+        shortfall_day_now = max(0.0, target_day - deliverable_day_now)
 
-    colA, colB, colC, colD = st.columns(4)
-    colA.metric("Deliverable/day now (final yr)", f"{deliverable_day_now:,.1f} MWh")
-    colB.metric("Shortfall/day (final yr)", f"{shortfall_day_now:,.1f} MWh")
-    colC.metric("Target/day", f"{target_day:,.1f} MWh")
-    colD.metric("EOY power avail (final)", f"{final.eoy_power_mw:,.2f} MW",
-                help="Availability-adjusted final-year power capability.")
+        colA, colB, colC, colD = st.columns(4)
+        colA.metric("Deliverable/day now (final yr)", f"{deliverable_day_now:,.1f} MWh")
+        colB.metric("Shortfall/day (final yr)", f"{shortfall_day_now:,.1f} MWh")
+        colC.metric("Target/day", f"{target_day:,.1f} MWh")
+        colD.metric("EOY power avail (final)", f"{final.eoy_power_mw:,.2f} MW",
+                    help="Availability-adjusted final-year power capability.")
 
-    # Quick severity read: give a nudge before diving into options
-    gap_ratio = shortfall_day_now / target_day if target_day else 0.0
-    if shortfall_day_now <= 0.05:  # effectively on target
-        st.success("Final-year deliverable meets the target within rounding noise.")
-    elif gap_ratio <= 0.10:
-        st.info("Minor gap: adjust one knob below to clear a small shortfall.")
-    else:
-        st.warning("Material gap: use the action ladder below to close the deficit.")
-
-    # --- 1) Power vs Energy limiter ---
-    if final.eoy_power_mw + 1e-9 < cfg.contracted_mw:
-        st.error(
-            f"Power-limited: final-year available power {final.eoy_power_mw:.2f} MW "
-            f"is below contract {cfg.contracted_mw:.2f} MW."
-        )
-        need = cfg.contracted_mw - final.eoy_power_mw
-        st.markdown(
-            f"- **Option D (Power)**: Increase power (final-year, avail-adjusted) by **{need:.2f} MW**, "
-            f"or reduce contract MW / shift windows."
-        )
-    else:
-        # --- Energy-limited path ---
-        st.caption("Energy-limited in final year (power is sufficient).")
-
-        # --- 2) Sequential bounded solve: ΔSOC → RTE → Energy ---
-        # a) try to meet target with ΔSOC first (bounded)
-        req_delta_soc_at_current = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * eta_dis_now)
-        delta_soc_adopt = min(delta_soc_cap, max(delta_soc_now, req_delta_soc_at_current))
-
-        # b) then RTE (bounded)
-        req_eta_dis_at_soc = min(0.9999, max(0.0, target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)))
-        req_rte_rt_at_soc = min(0.9999, max(0.0, (req_eta_dis_at_soc ** 2) / max(1e-9, eta_ratio)))
-        rte_rt_adopt = min(RTE_RT_MAX, max(eta_rt_now, req_rte_rt_at_soc))
-        eta_dis_adopt = min(0.9999, math.sqrt(rte_rt_adopt * eta_ratio))
-
-        # c) finally BOL energy to close any remaining gap
-        ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_adopt)
-        ebol_delta = max(0.0, ebol_req - cfg.initial_usable_mwh)
-
-        # Helper to render SOC variant text (raise ceiling vs lower floor)
-        def soc_variant_text(delta_soc_goal: float) -> str:
-            # choice A: keep floor, raise ceiling
-            ceil_needed = min(SOC_CEILING_MAX, cfg.soc_floor + delta_soc_goal)
-            # choice B: keep ceiling, lower floor
-            floor_needed = max(SOC_FLOOR_MIN, cfg.soc_ceiling - delta_soc_goal)
-            return (f"(e.g., keep floor at {cfg.soc_floor*100:.0f}% → raise ceiling to **{ceil_needed*100:.0f}%**, "
-                    f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
-
-        # How far each knob alone would push deliverable/day
-        deliverable_soc_only = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_now
-        deliverable_soc_rte = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_adopt
-        deliverable_full = ebol_req * soh_final * delta_soc_adopt * eta_dis_adopt
-
-        # --- 3) PV charge sufficiency check under the adopted RTE ---
-        pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
-        charged_day_now = final.charge_mwh / 365.0                     # MWh/day currently charged
-        charge_deficit_day = max(0.0, pv_charge_req_day - charged_day_now)
-        extra_charge_hours_day = charge_deficit_day / max(1e-9, final.eoy_power_mw)
-
-        # --- 4) Implied cycles guardrail under the proposed ΔSOC/Ebol ---
-        def dod_from_delta_soc(ds: float) -> int:
-            return 100 if ds >= 0.90 else (80 if ds >= 0.80 else (40 if ds >= 0.40 else (20 if ds >= 0.20 else 10)))
-        dod_key_prop = dod_from_delta_soc(delta_soc_adopt)
-        dod_frac_map = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}
-        dod_frac_prop = dod_frac_map[dod_key_prop]
-        efc_year_prop = (bess_share_day * 365.0) / max(1e-9, ebol_req * dod_frac_prop)
-
-        # --- 5) Print bounded options ---
-        opts = []
-
-        # OPTION A — ΔSOC only (bounded to cap); if still short, explain why it's insufficient alone
-        if delta_soc_now + 1e-9 < delta_soc_cap:
-            need_soc = max(0.0, delta_soc_adopt - delta_soc_now) * 100.0
-            # re-compute Ebol needed if we keep RTE at current (ΔSOC only)
-            ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_now)
-            short_if_only_soc = max(0.0, ebol_req_soc_only - cfg.initial_usable_mwh)
-            if short_if_only_soc <= 1e-6:
-                opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)}")
-            else:
-                opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)} "
-                            f"→ still short on energy by **{short_if_only_soc:,.1f} MWh** (at current RTE).")
+        # Quick severity read: give a nudge before diving into options
+        gap_ratio = shortfall_day_now / target_day if target_day else 0.0
+        if shortfall_day_now <= 0.05:  # effectively on target
+            st.success("Final-year deliverable meets the target within rounding noise.")
+        elif gap_ratio <= 0.10:
+            st.info("Minor gap: adjust one knob below to clear a small shortfall.")
         else:
-            opts.append(f"- **Option A (ΔSOC)**: Already at cap (**{delta_soc_now*100:,.1f}%**).")
+            st.warning("Material gap: use the action ladder below to close the deficit.")
 
-        # OPTION B — ΔSOC (adopted) + RTE (bounded)
-        if rte_rt_adopt > eta_rt_now + 1e-9:
-            opts.append(f"- **Option B (ΔSOC + RTE)**: Keep ΔSOC at **{delta_soc_adopt*100:,.1f}%** and improve roundtrip RTE to "
-                        f"**{rte_rt_adopt*100:,.1f}%** (cap {RTE_RT_MAX*100:.0f}%).")
-        else:
-            opts.append(f"- **Option B (ΔSOC + RTE)**: RTE already at limit for this option (current {eta_rt_now*100:.1f}%, cap {RTE_RT_MAX*100:.0f}%).")
-
-        # OPTION C — Energy/contract levers when ΔSOC + RTE still fall short
-        if ebol_delta > 1e-6:
-            contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
-            opts.append(
-                f"- **Option C (Energy/contract)**: Need ~+{ebol_delta:,.1f} MWh usable (to {ebol_req:,.1f} MWh) to hit the full target. "
-                f"If adding that at BOL is impractical, consider **staged Threshold/SOH augmentation** or **right-size the contract to ~{contract_with_current_energy:,.2f} MW** under the proposed ΔSOC/RTE."
-            )
-        else:
-            opts.append(f"- **Option C (Energy/contract)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
-
-        st.markdown("**Bounded recommendations:**")
-        st.markdown("\n".join(opts))
-
-        # --- 5b) Action ladder (fastest wins first) ---
-        action_ladder: List[str] = []
-        if delta_soc_adopt > delta_soc_now + 1e-9:
-            action_ladder.append(
-                f"**Widen ΔSOC** to **{delta_soc_adopt*100:,.1f}%** → delivers ~{deliverable_soc_only:,.1f} MWh/day."
-            )
-        if rte_rt_adopt > eta_rt_now + 1e-9:
-            action_ladder.append(
-                f"**Improve roundtrip RTE** to **{rte_rt_adopt*100:,.1f}%** → delivers ~{deliverable_soc_rte:,.1f} MWh/day."
-            )
-        if ebol_delta > 1e-6:
-            contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
-            action_ladder.append(
-                f"**Close remaining energy gap**: either plan staged augmentation (~+{ebol_delta:,.1f} MWh usable over life) or resize contract toward **{contract_with_current_energy:,.2f} MW** so ΔSOC/RTE improvements can carry the final year."
-            )
-        if charge_deficit_day > 1e-3:
-            action_ladder.append(
-                f"**Widen charge window** by **+{extra_charge_hours_day:,.2f} h/day** or create shoulder headroom to absorb PV."
-            )
-        if not action_ladder:
-            action_ladder.append("All knobs already at bounds for the target—consider reducing the contract or shifting delivery windows.")
-
-        st.markdown("**Action ladder (work down the list):**")
-        st.markdown("\n".join(f"- {idx}) {item}" for idx, item in enumerate(action_ladder, start=1)))
-
-        # --- 6) PV charge sufficiency + charge-hours hint ---
-        st.caption(
-            f"PV charge required/day for BESS share ≈ **{pv_charge_req_day:,.1f} MWh** "
-            f"(BESS share {bess_share_day:,.1f} ÷ RTE {rte_rt_adopt:.2f}). "
-            f"Currently charging **{charged_day_now:,.1f} MWh/day**."
-        )
-        if charge_deficit_day > 1e-3:
-            st.warning(
-                f"PV charge **insufficient** by **{charge_deficit_day:,.1f} MWh/day** in final year. "
-                f"At {final.eoy_power_mw:.1f} MW charge power, this needs **+{extra_charge_hours_day:,.2f} h/day** "
-                f"of charge window or equivalent **shoulder discharge** to create headroom while PV is up."
-            )
-        else:
-            st.success("PV charge looks sufficient at the proposed settings.")
-
-        # --- 7) Implied EFC guardrail
-        if efc_year_prop > EFC_YR_YELLOW:
+        # --- 1) Power vs Energy limiter ---
+        if final.eoy_power_mw + 1e-9 < cfg.contracted_mw:
             st.error(
-                f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}%): exceeds typical guardrails. "
-                "Prefer **augmentation** (Threshold/SOH) or reduce ΔSOC."
+                f"Power-limited: final-year available power {final.eoy_power_mw:.2f} MW "
+                f"is below contract {cfg.contracted_mw:.2f} MW."
             )
-        elif efc_year_prop > EFC_YR_GREEN:
-            st.warning(
-                f"Implied cycles ≈ **{efc_year_prop:,.0f} EFC/yr** at proposed settings; check warranty guardrails "
-                f"(soft limit {EFC_YR_GREEN:.0f}, hard {EFC_YR_YELLOW:.0f})."
+            need = cfg.contracted_mw - final.eoy_power_mw
+            st.markdown(
+                f"- **Option D (Power)**: Increase power (final-year, avail-adjusted) by **{need:.2f} MW**, "
+                f"or reduce contract MW / shift windows."
             )
         else:
+            # --- Energy-limited path ---
+            st.caption("Energy-limited in final year (power is sufficient).")
+
+            # --- 2) Sequential bounded solve: ΔSOC → RTE → Energy ---
+            # a) try to meet target with ΔSOC first (bounded)
+            req_delta_soc_at_current = target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * eta_dis_now)
+            delta_soc_adopt = min(delta_soc_cap, max(delta_soc_now, req_delta_soc_at_current))
+
+            # b) then RTE (bounded)
+            req_eta_dis_at_soc = min(0.9999, max(0.0, target_day / max(1e-9, cfg.initial_usable_mwh * soh_final * delta_soc_adopt)))
+            req_rte_rt_at_soc = min(0.9999, max(0.0, (req_eta_dis_at_soc ** 2) / max(1e-9, eta_ratio)))
+            rte_rt_adopt = min(RTE_RT_MAX, max(eta_rt_now, req_rte_rt_at_soc))
+            eta_dis_adopt = min(0.9999, math.sqrt(rte_rt_adopt * eta_ratio))
+
+            # c) finally BOL energy to close any remaining gap
+            ebol_req = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_adopt)
+            ebol_delta = max(0.0, ebol_req - cfg.initial_usable_mwh)
+
+            # Helper to render SOC variant text (raise ceiling vs lower floor)
+            def soc_variant_text(delta_soc_goal: float) -> str:
+                # choice A: keep floor, raise ceiling
+                ceil_needed = min(SOC_CEILING_MAX, cfg.soc_floor + delta_soc_goal)
+                # choice B: keep ceiling, lower floor
+                floor_needed = max(SOC_FLOOR_MIN, cfg.soc_ceiling - delta_soc_goal)
+                return (f"(e.g., keep floor at {cfg.soc_floor*100:.0f}% → raise ceiling to **{ceil_needed*100:.0f}%**, "
+                        f"or keep ceiling at {cfg.soc_ceiling*100:.0f}% → lower floor to **{floor_needed*100:.0f}%**).")
+
+            # How far each knob alone would push deliverable/day
+            deliverable_soc_only = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_now
+            deliverable_soc_rte = cfg.initial_usable_mwh * soh_final * delta_soc_adopt * eta_dis_adopt
+            deliverable_full = ebol_req * soh_final * delta_soc_adopt * eta_dis_adopt
+
+            # --- 3) PV charge sufficiency check under the adopted RTE ---
+            pv_charge_req_day = bess_share_day / max(1e-9, rte_rt_adopt)   # MWh/day needed from PV to charge
+            charged_day_now = final.charge_mwh / 365.0                     # MWh/day currently charged
+            charge_deficit_day = max(0.0, pv_charge_req_day - charged_day_now)
+            extra_charge_hours_day = charge_deficit_day / max(1e-9, final.eoy_power_mw)
+
+            # --- 4) Implied cycles guardrail under the proposed ΔSOC/Ebol ---
+            def dod_from_delta_soc(ds: float) -> int:
+                return 100 if ds >= 0.90 else (80 if ds >= 0.80 else (40 if ds >= 0.40 else (20 if ds >= 0.20 else 10)))
+            dod_key_prop = dod_from_delta_soc(delta_soc_adopt)
+            dod_frac_map = {10:0.10,20:0.20,40:0.40,80:0.80,100:1.00}
+            dod_frac_prop = dod_frac_map[dod_key_prop]
+            efc_year_prop = (bess_share_day * 365.0) / max(1e-9, ebol_req * dod_frac_prop)
+
+            # --- 5) Print bounded options ---
+            opts = []
+
+            # OPTION A — ΔSOC only (bounded to cap); if still short, explain why it's insufficient alone
+            if delta_soc_now + 1e-9 < delta_soc_cap:
+                need_soc = max(0.0, delta_soc_adopt - delta_soc_now) * 100.0
+                # re-compute Ebol needed if we keep RTE at current (ΔSOC only)
+                ebol_req_soc_only = target_day / max(1e-9, soh_final * delta_soc_adopt * eta_dis_now)
+                short_if_only_soc = max(0.0, ebol_req_soc_only - cfg.initial_usable_mwh)
+                if short_if_only_soc <= 1e-6:
+                    opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)}")
+                else:
+                    opts.append(f"- **Option A (ΔSOC)**: Widen ΔSOC to **{delta_soc_adopt*100:,.1f}%** {soc_variant_text(delta_soc_adopt)} "
+                                f"→ still short on energy by **{short_if_only_soc:,.1f} MWh** (at current RTE).")
+            else:
+                opts.append(f"- **Option A (ΔSOC)**: Already at cap (**{delta_soc_now*100:,.1f}%**).")
+
+            # OPTION B — ΔSOC (adopted) + RTE (bounded)
+            if rte_rt_adopt > eta_rt_now + 1e-9:
+                opts.append(f"- **Option B (ΔSOC + RTE)**: Keep ΔSOC at **{delta_soc_adopt*100:,.1f}%** and improve roundtrip RTE to "
+                            f"**{rte_rt_adopt*100:,.1f}%** (cap {RTE_RT_MAX*100:.0f}%).")
+            else:
+                opts.append(f"- **Option B (ΔSOC + RTE)**: RTE already at limit for this option (current {eta_rt_now*100:.1f}%, cap {RTE_RT_MAX*100:.0f}%).")
+
+            # OPTION C — Energy/contract levers when ΔSOC + RTE still fall short
+            if ebol_delta > 1e-6:
+                contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
+                opts.append(
+                    f"- **Option C (Energy/contract)**: Need ~+{ebol_delta:,.1f} MWh usable (to {ebol_req:,.1f} MWh) to hit the full target. "
+                    f"If adding that at BOL is impractical, consider **staged Threshold/SOH augmentation** or **right-size the contract to ~{contract_with_current_energy:,.2f} MW** under the proposed ΔSOC/RTE."
+                )
+            else:
+                opts.append(f"- **Option C (Energy/contract)**: BOL usable is sufficient under the adopted ΔSOC/RTE.")
+
+            st.markdown("**Bounded recommendations:**")
+            st.markdown("\n".join(opts))
+
+            # --- 5b) Action ladder (fastest wins first) ---
+            action_ladder: List[str] = []
+            if delta_soc_adopt > delta_soc_now + 1e-9:
+                action_ladder.append(
+                    f"**Widen ΔSOC** to **{delta_soc_adopt*100:,.1f}%** → delivers ~{deliverable_soc_only:,.1f} MWh/day."
+                )
+            if rte_rt_adopt > eta_rt_now + 1e-9:
+                action_ladder.append(
+                    f"**Improve roundtrip RTE** to **{rte_rt_adopt*100:,.1f}%** → delivers ~{deliverable_soc_rte:,.1f} MWh/day."
+                )
+            if ebol_delta > 1e-6:
+                contract_with_current_energy = deliverable_soc_rte / max(1e-9, dis_hours_per_day)
+                action_ladder.append(
+                    f"**Close remaining energy gap**: either plan staged augmentation (~+{ebol_delta:,.1f} MWh usable over life) or resize contract toward **{contract_with_current_energy:,.2f} MW** so ΔSOC/RTE improvements can carry the final year."
+                )
+            if charge_deficit_day > 1e-3:
+                action_ladder.append(
+                    f"**Widen charge window** by **+{extra_charge_hours_day:,.2f} h/day** or create shoulder headroom to absorb PV."
+                )
+            if not action_ladder:
+                action_ladder.append("All knobs already at bounds for the target—consider reducing the contract or shifting delivery windows.")
+
+            st.markdown("**Action ladder (work down the list):**")
+            st.markdown("\n".join(f"- {idx}) {item}" for idx, item in enumerate(action_ladder, start=1)))
+
+            # --- 6) PV charge sufficiency + charge-hours hint ---
             st.caption(
-                f"Implied cycles ≈ {efc_year_prop:,.0f} EFC/yr at the proposed ΔSOC bucket ({dod_key_prop}%)."
+                f"PV charge required/day for BESS share ≈ **{pv_charge_req_day:,.1f} MWh** "
+                f"(BESS share {bess_share_day:,.1f} ÷ RTE {rte_rt_adopt:.2f}). "
+                f"Currently charging **{charged_day_now:,.1f} MWh/day**."
             )
+            if charge_deficit_day > 1e-3:
+                st.warning(
+                    f"PV charge **insufficient** by **{charge_deficit_day:,.1f} MWh/day** in final year. "
+                    f"At {final.eoy_power_mw:.1f} MW charge power, this needs **+{extra_charge_hours_day:,.2f} h/day** "
+                    f"of charge window or equivalent **shoulder discharge** to create headroom while PV is up."
+                )
+            else:
+                st.success("PV charge looks sufficient at the proposed settings.")
+
+            # --- 7) Implied EFC guardrail
+            if efc_year_prop > EFC_YR_YELLOW:
+                st.error(
+                    f"Implied **EqCycles/yr ≈ {efc_year_prop:,.0f}** (ΔSOC bucket {dod_key_prop}%): exceeds typical guardrails. "
+                    "Prefer **augmentation** (Threshold/SOH) or reduce ΔSOC."
+                )
+            elif efc_year_prop > EFC_YR_GREEN:
+                st.warning(
+                    f"Implied cycles ≈ **{efc_year_prop:,.0f} EFC/yr** at proposed settings; check warranty guardrails "
+                    f"(soft limit {EFC_YR_GREEN:.0f}, hard {EFC_YR_YELLOW:.0f})."
+                )
+            else:
+                st.caption(
+                    f"Implied cycles ≈ {efc_year_prop:,.0f} EFC/yr at the proposed ΔSOC bucket ({dod_key_prop}%)."
+                )
 
     st.markdown("---")
 
@@ -1024,129 +1030,130 @@ def run_app():
     else:
         st.info("Average daily profiles unavailable — simulation logs not generated.")
 
-    st.markdown("### SOC & dispatch diagnostics")
-    diag_logs: Dict[str, HourlyLog] = {}
-    if first_year_logs is not None:
-        diag_logs["Year 1 (initial)"] = first_year_logs
-    if final_year_logs is not None:
-        diag_logs[f"Year {cfg.years} (final)"] = final_year_logs
+    if optional_diagnostics:
+        st.markdown("### SOC & dispatch diagnostics")
+        diag_logs: Dict[str, HourlyLog] = {}
+        if first_year_logs is not None:
+            diag_logs["Year 1 (initial)"] = first_year_logs
+        if final_year_logs is not None:
+            diag_logs[f"Year {cfg.years} (final)"] = final_year_logs
 
-    if diag_logs:
-        diag_default = list(diag_logs.keys()).index(f"Year {cfg.years} (final)") if final_year_logs is not None else 0
-        selected_label = st.radio(
-            "Select which year to visualize",
-            options=list(diag_logs.keys()),
-            index=diag_default,
-            help="Toggle between the first-year baseline and final-year (with degradation/augmentation) logs.",
-        )
-        selected_logs = diag_logs[selected_label]
+        if diag_logs:
+            diag_default = list(diag_logs.keys()).index(f"Year {cfg.years} (final)") if final_year_logs is not None else 0
+            selected_label = st.radio(
+                "Select which year to visualize",
+                options=list(diag_logs.keys()),
+                index=diag_default,
+                help="Toggle between the first-year baseline and final-year (with degradation/augmentation) logs.",
+            )
+            selected_logs = diag_logs[selected_label]
 
-        heatmap_bin_hours = st.select_slider(
-            "Heatmap resolution",
-            options=[1, 2, 3],
-            value=1,
-            format_func=lambda h: f"{h}-hour bands",
-            help="Downsample the heatmap horizontally to shrink the data payload if rendering feels sluggish.",
-        )
+            heatmap_bin_hours = st.select_slider(
+                "Heatmap resolution",
+                options=[1, 2, 3],
+                value=1,
+                format_func=lambda h: f"{h}-hour bands",
+                help="Downsample the heatmap horizontally to shrink the data payload if rendering feels sluggish.",
+            )
 
-        st.caption(
-            "Heatmap: dark troughs near the SOC floor overnight hint at reliability risk; saturated midday bands near 100% "
-            "indicate PV clipping/curtailment. Use the resolution control if the view feels heavy."
-        )
-        heatmap_pivot = prepare_soc_heatmap_data(selected_logs, cfg.initial_usable_mwh)
-        heatmap_source = (
-            heatmap_pivot.reset_index()
-            .melt(id_vars="day_of_year", var_name="hour", value_name="soc_frac")
-            .dropna(subset=["soc_frac"])
-        )
-        heatmap_source["hour_bin"] = (heatmap_source["hour"].astype(int) // heatmap_bin_hours) * heatmap_bin_hours
-        if heatmap_bin_hours > 1:
+            st.caption(
+                "Heatmap: dark troughs near the SOC floor overnight hint at reliability risk; saturated midday bands near 100% "
+                "indicate PV clipping/curtailment. Use the resolution control if the view feels heavy."
+            )
+            heatmap_pivot = prepare_soc_heatmap_data(selected_logs, cfg.initial_usable_mwh)
             heatmap_source = (
-                heatmap_source
-                .groupby(["day_of_year", "hour_bin"], as_index=False)["soc_frac"]
-                .mean()
-                .rename(columns={"hour_bin": "hour"})
+                heatmap_pivot.reset_index()
+                .melt(id_vars="day_of_year", var_name="hour", value_name="soc_frac")
+                .dropna(subset=["soc_frac"])
             )
-        heatmap_source["hour_label"] = heatmap_source["hour"].astype(int).apply(
-            lambda h: (
-                f"{h:02d}:00–{(h + heatmap_bin_hours) % 24:02d}:00"
-                if heatmap_bin_hours > 1
-                else f"{h:02d}:00"
+            heatmap_source["hour_bin"] = (heatmap_source["hour"].astype(int) // heatmap_bin_hours) * heatmap_bin_hours
+            if heatmap_bin_hours > 1:
+                heatmap_source = (
+                    heatmap_source
+                    .groupby(["day_of_year", "hour_bin"], as_index=False)["soc_frac"]
+                    .mean()
+                    .rename(columns={"hour_bin": "hour"})
+                )
+            heatmap_source["hour_label"] = heatmap_source["hour"].astype(int).apply(
+                lambda h: (
+                    f"{h:02d}:00–{(h + heatmap_bin_hours) % 24:02d}:00"
+                    if heatmap_bin_hours > 1
+                    else f"{h:02d}:00"
+                )
             )
-        )
-        heatmap_source["soc_pct"] = heatmap_source["soc_frac"] * 100.0
-        heatmap_source["diagnostic_tip"] = (
-            "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/curtailment headroom."
-        )
-        if heatmap_source.empty:
-            st.info("SOC heatmap unavailable — simulation logs were empty for this scenario.")
-        else:
-            axis_x = alt.Axis(values=list(range(0, 24, max(heatmap_bin_hours, 3))))
-            heatmap_chart = (
-                alt.Chart(heatmap_source)
-                .mark_rect()
+            heatmap_source["soc_pct"] = heatmap_source["soc_frac"] * 100.0
+            heatmap_source["diagnostic_tip"] = (
+                "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/curtailment headroom."
+            )
+            if heatmap_source.empty:
+                st.info("SOC heatmap unavailable — simulation logs were empty for this scenario.")
+            else:
+                axis_x = alt.Axis(values=list(range(0, 24, max(heatmap_bin_hours, 3))))
+                heatmap_chart = (
+                    alt.Chart(heatmap_source)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X("hour:O", title="Hour of day", axis=axis_x),
+                        y=alt.Y("day_of_year:O", title="Day of year"),
+                        color=alt.Color(
+                            "soc_pct:Q",
+                            title="SOC (%) of initial usable energy",
+                            scale=alt.Scale(scheme="turbo", domain=[0, 100]),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("day_of_year:O", title="Day"),
+                            alt.Tooltip("hour_label:N", title="Hour"),
+                            alt.Tooltip("soc_pct:Q", title="SOC (%)", format=".1f"),
+                            alt.Tooltip("diagnostic_tip:N", title="Reading tip"),
+                        ],
+                    )
+                    .properties(height=320)
+                )
+                st.altair_chart(heatmap_chart, use_container_width=True)
+
+            envelope_df = prepare_charge_discharge_envelope(selected_logs)
+            st.caption(
+                "Charge/discharge envelope shows the median and 5–95% range by hour; widening charge bands or deep discharge "
+                "tails highlight operational stress that may erode reliability."
+            )
+            axis_x = alt.Axis(values=list(range(0, 24, 2)))
+            envelope_chart = alt.layer(
+                alt.Chart(envelope_df)
+                .mark_area(opacity=0.25, color="#caa6ff")
                 .encode(
                     x=alt.X("hour:O", title="Hour of day", axis=axis_x),
-                    y=alt.Y("day_of_year:O", title="Day of year"),
-                    color=alt.Color(
-                        "soc_pct:Q",
-                        title="SOC (%) of initial usable energy",
-                        scale=alt.Scale(scheme="turbo", domain=[0, 100]),
-                    ),
+                    y=alt.Y("charge_low:Q", title="MW"),
+                    y2="charge_high:Q",
                     tooltip=[
-                        alt.Tooltip("day_of_year:O", title="Day"),
-                        alt.Tooltip("hour_label:N", title="Hour"),
-                        alt.Tooltip("soc_pct:Q", title="SOC (%)", format=".1f"),
-                        alt.Tooltip("diagnostic_tip:N", title="Reading tip"),
+                        alt.Tooltip("hour:O", title="Hour"),
+                        alt.Tooltip("charge_p05:Q", title="Charge p05 (MW)", format=".2f"),
+                        alt.Tooltip("charge_p50:Q", title="Charge median (MW)", format=".2f"),
+                        alt.Tooltip("charge_p95:Q", title="Charge p95 (MW)", format=".2f"),
                     ],
-                )
-                .properties(height=320)
-            )
-            st.altair_chart(heatmap_chart, use_container_width=True)
-
-        envelope_df = prepare_charge_discharge_envelope(selected_logs)
-        st.caption(
-            "Charge/discharge envelope shows the median and 5–95% range by hour; widening charge bands or deep discharge "
-            "tails highlight operational stress that may erode reliability."
-        )
-        axis_x = alt.Axis(values=list(range(0, 24, 2)))
-        envelope_chart = alt.layer(
-            alt.Chart(envelope_df)
-            .mark_area(opacity=0.25, color="#caa6ff")
-            .encode(
-                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
-                y=alt.Y("charge_low:Q", title="MW"),
-                y2="charge_high:Q",
-                tooltip=[
-                    alt.Tooltip("hour:O", title="Hour"),
-                    alt.Tooltip("charge_p05:Q", title="Charge p05 (MW)", format=".2f"),
-                    alt.Tooltip("charge_p50:Q", title="Charge median (MW)", format=".2f"),
-                    alt.Tooltip("charge_p95:Q", title="Charge p95 (MW)", format=".2f"),
-                ],
-            ),
-            alt.Chart(envelope_df)
-            .mark_area(opacity=0.25, color="#7fd18b")
-            .encode(
-                x=alt.X("hour:O", title="Hour of day", axis=axis_x),
-                y=alt.Y("discharge_low:Q", title="MW"),
-                y2="discharge_high:Q",
-                tooltip=[
-                    alt.Tooltip("hour:O", title="Hour"),
-                    alt.Tooltip("discharge_p05:Q", title="Discharge p05 (MW)", format=".2f"),
-                    alt.Tooltip("discharge_p50:Q", title="Discharge median (MW)", format=".2f"),
-                    alt.Tooltip("discharge_p95:Q", title="Discharge p95 (MW)", format=".2f"),
-                ],
-            ),
-            alt.Chart(envelope_df)
-            .mark_line(color="#7d5ba6", strokeWidth=2)
-            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("charge_median_neg:Q", title="MW")),
-            alt.Chart(envelope_df)
-            .mark_line(color="#2e7b53", strokeWidth=2)
-            .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("discharge_p50:Q", title="MW")),
-        ).properties(height=300)
-        st.altair_chart(envelope_chart, use_container_width=True)
-    else:
-        st.info("SOC heatmap and charge/discharge envelope are hidden because simulation logs are unavailable.")
+                ),
+                alt.Chart(envelope_df)
+                .mark_area(opacity=0.25, color="#7fd18b")
+                .encode(
+                    x=alt.X("hour:O", title="Hour of day", axis=axis_x),
+                    y=alt.Y("discharge_low:Q", title="MW"),
+                    y2="discharge_high:Q",
+                    tooltip=[
+                        alt.Tooltip("hour:O", title="Hour"),
+                        alt.Tooltip("discharge_p05:Q", title="Discharge p05 (MW)", format=".2f"),
+                        alt.Tooltip("discharge_p50:Q", title="Discharge median (MW)", format=".2f"),
+                        alt.Tooltip("discharge_p95:Q", title="Discharge p95 (MW)", format=".2f"),
+                    ],
+                ),
+                alt.Chart(envelope_df)
+                .mark_line(color="#7d5ba6", strokeWidth=2)
+                .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("charge_median_neg:Q", title="MW")),
+                alt.Chart(envelope_df)
+                .mark_line(color="#2e7b53", strokeWidth=2)
+                .encode(x=alt.X("hour:O", axis=axis_x), y=alt.Y("discharge_p50:Q", title="MW")),
+            ).properties(height=300)
+            st.altair_chart(envelope_chart, use_container_width=True)
+        else:
+            st.info("SOC heatmap and charge/discharge envelope are hidden because simulation logs are unavailable.")
 
     st.markdown("---")
 
