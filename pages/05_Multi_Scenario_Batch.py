@@ -560,8 +560,7 @@ with st.expander("Economics (optional)", expanded=False):
             "Apply WESM pricing to contract shortfalls",
             value=bool(econ_price_default.apply_wesm_to_shortfall) if econ_price_default else False,
             help=(
-                "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC); "
-                "enter a PHP/kWh rate to override."
+                "Uses the uploaded (or bundled) hourly WESM profile to price contract shortfalls."
             ),
         )
         wesm_deficit_price_php_per_kwh = st.number_input(
@@ -586,7 +585,7 @@ with st.expander("Economics (optional)", expanded=False):
             value=bool(econ_price_default.sell_to_wesm) if econ_price_default else False,
             help=(
                 "When enabled, PV surplus (excess MWh) is credited at a WESM sale price; otherwise surplus "
-                "is excluded from revenue. This does not change the deficit price applied to shortfalls."
+                "is excluded from revenue. Pricing comes from the hourly WESM profile."
             ),
             disabled=not wesm_pricing_enabled,
         )
@@ -628,6 +627,10 @@ with st.expander("Economics (optional)", expanded=False):
         wesm_deficit_price_usd_per_mwh = wesm_deficit_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
         wesm_surplus_price_usd_per_mwh = (
             wesm_surplus_price_php_per_kwh / forex_rate_php_per_usd * 1000.0 if sell_to_wesm else None
+        )
+        st.caption(
+            "WESM pricing uses the hourly profile (upload or bundled default) for both "
+            "shortfall costs and surplus revenue."
         )
         st.caption(
             "WESM deficit pricing active for contract shortfalls: "
