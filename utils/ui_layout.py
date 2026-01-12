@@ -27,6 +27,11 @@ _NAV_LINKS = (
     _NavigationLink("Home (Guide)", "pages/00_Home.py", "Workflow walkthrough, tips, and data-format reminders."),
     _NavigationLink("Inputs & Results", "app.py", "Main simulation workspace and downloads."),
     _NavigationLink(
+        "Sensitivity & stress test",
+        "pages/06_Sensitivity_Stress_Test.py",
+        "Capture sensitivity ranges and view a tornado chart for key KPIs.",
+    ),
+    _NavigationLink(
         "BESS sizing sweep",
         "pages/04_BESS_Sizing_Sweep.py",
         "Sweep usable energy while holding power constant.",

@@ -50,6 +50,7 @@ from utils.economics import (
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
     bootstrap_session_state,
+    cache_latest_economics_payload,
     build_inputs_fingerprint,
     get_base_dir,
     get_simulation_results,
@@ -399,6 +400,13 @@ def run_app():
     annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
     if run_economics and econ_inputs and price_inputs:
+        cache_latest_economics_payload(
+            {
+                "economic_inputs": econ_inputs,
+                "price_inputs": price_inputs,
+                "wesm_profile_source": wesm_file,
+            }
+        )
         normalized_econ_inputs = normalize_economic_inputs(econ_inputs)
         augmentation_costs_usd = estimate_augmentation_costs_by_year(
             sim_output.augmentation_energy_added_mwh,
