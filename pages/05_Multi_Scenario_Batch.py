@@ -5,17 +5,19 @@ from dataclasses import replace
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import streamlit as st
 
 from app import BASE_DIR
-from services.simulation_core import SimConfig, Window, parse_windows, simulate_project, summarize_simulation
-from utils import enforce_rate_limit, parse_numeric_series
+from services.simulation_core import HourlyLog, SimConfig, Window, parse_windows, simulate_project, summarize_simulation
+from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
 from utils.economics import (
     DEFAULT_FOREX_RATE_PHP_PER_USD,
     DEVEX_COST_PHP,
     EconomicInputs,
     PriceInputs,
+    aggregate_wesm_profile_to_annual,
     compute_cash_flows_and_irr,
     compute_financing_cash_flows,
     compute_lcoe_lcos_with_augmentation_fallback,
@@ -41,6 +43,32 @@ render_layout = init_page_layout(
 )
 
 bootstrap_session_state()
+
+
+def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
+    """Build an hourly summary table for WESM profile aggregation."""
+
+    hour_index = np.arange(len(logs.hod), dtype=int)
+    data: Dict[str, Any] = {
+        "hour_index": hour_index,
+        "hod": logs.hod,
+        "pv_mw": logs.pv_mw,
+        "pv_to_contract_mw": logs.pv_to_contract_mw,
+        "bess_to_contract_mw": logs.bess_to_contract_mw,
+        "delivered_mw": logs.delivered_mw,
+        "shortfall_mw": logs.shortfall_mw,
+        "charge_mw": logs.charge_mw,
+        "discharge_mw": logs.discharge_mw,
+        "soc_mwh": logs.soc_mwh,
+    }
+    if logs.timestamp is not None:
+        data["timestamp"] = pd.to_datetime(logs.timestamp)
+    df = pd.DataFrame(data)
+    df["pv_surplus_mw"] = np.maximum(
+        df["pv_mw"] - df["pv_to_contract_mw"] - df["charge_mw"],
+        0.0,
+    )
+    return df
 
 def _format_hhmm(hour_value: float) -> str:
     """Return HH:MM text for a fractional hour."""
@@ -613,6 +641,16 @@ with st.expander("Economics (optional)", expanded=False):
                 f"(≈${wesm_surplus_price_usd_per_mwh:,.2f}/MWh)."
             )
 
+    wesm_file = st.file_uploader(
+        "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
+        type=["csv"],
+        key="multi_scenario_wesm_upload",
+    )
+    if wesm_pricing_enabled:
+        st.caption(
+            "If no WESM file is uploaded, the default profile in ./data/ is used when available."
+        )
+
     variable_schedule_default = (
         econ_inputs_default.variable_opex_schedule_usd if econ_inputs_default else None
     )
@@ -762,6 +800,7 @@ cache_latest_economics_payload(
     {
         "economic_inputs": economic_inputs,
         "price_inputs": price_inputs,
+        "wesm_profile_source": wesm_file,
     }
 )
 
@@ -1040,6 +1079,41 @@ def _run_batch() -> pd.DataFrame | None:
     status_placeholder.dataframe(pd.DataFrame(status_rows), hide_index=True, use_container_width=True)
     results: List[Dict[str, Any]] = []
 
+    wesm_profile_df: Optional[pd.DataFrame] = None
+    base_econ_inputs: Optional[EconomicInputs] = None
+    base_price_inputs: Optional[PriceInputs] = None
+    wesm_profile_source: Optional[Any] = None
+    if isinstance(econ_payload, dict):
+        base_econ_inputs = econ_payload.get("economic_inputs")
+        base_price_inputs = econ_payload.get("price_inputs")
+        wesm_profile_source = econ_payload.get("wesm_profile_source")
+        if base_econ_inputs and base_price_inputs:
+            wesm_enabled = base_price_inputs.apply_wesm_to_shortfall or base_price_inputs.sell_to_wesm
+            if not wesm_enabled:
+                wesm_profile_source = None
+            if base_econ_inputs.capex_usd_per_kwh is not None and base_econ_inputs.bess_bol_kwh is None:
+                base_econ_inputs = replace(
+                    base_econ_inputs,
+                    bess_bol_kwh=cached_cfg.initial_usable_mwh * 1000.0,
+                )
+            normalized_base_inputs = normalize_economic_inputs(base_econ_inputs)
+            default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+            if (
+                wesm_profile_source is None
+                and wesm_enabled
+                and default_wesm_profile.exists()
+            ):
+                wesm_profile_source = str(default_wesm_profile)
+            if wesm_profile_source is not None and wesm_enabled:
+                try:
+                    wesm_profile_df = read_wesm_profile(
+                        [wesm_profile_source],
+                        forex_rate_php_per_usd=normalized_base_inputs.forex_rate_php_per_usd,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"WESM profile could not be read; falling back to static pricing. ({exc})")
+                    wesm_profile_df = None
+
     for idx, (_, row_series) in enumerate(table_df.reset_index(drop=True).iterrows(), start=1):
         label = str(row_series.get("label") or f"Scenario {idx}")
         try:
@@ -1054,8 +1128,9 @@ def _run_batch() -> pd.DataFrame | None:
         progress.progress((idx - 1) / total_scenarios, text=f"Running {label}...")
         try:
             with st.spinner(f"Running {label} simulation..."):
+                need_logs = bool(wesm_profile_df is not None)
                 sim_output = simulate_project(
-                    cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override=dod_override, need_logs=False
+                    cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override=dod_override, need_logs=need_logs
                 )
         except ValueError as exc:  # noqa: BLE001
             status_rows[idx - 1]["Status"] = f"❌ {exc}"
@@ -1104,6 +1179,23 @@ def _run_batch() -> pd.DataFrame | None:
                 annual_pv_excess = [r.pv_curtailed_mwh for r in sim_output.results]
                 annual_shortfall = [r.shortfall_mwh for r in sim_output.results]
                 annual_total_generation = [r.available_pv_mwh for r in sim_output.results]
+                annual_wesm_shortfall_cost_usd: Optional[List[float]] = None
+                annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
+                if wesm_profile_df is not None and sim_output.hourly_logs_by_year:
+                    hourly_summary_by_year = {
+                        year_index: _build_hourly_summary_df(logs)
+                        for year_index, logs in sim_output.hourly_logs_by_year.items()
+                    }
+                    (
+                        annual_wesm_shortfall_cost_usd,
+                        annual_wesm_surplus_revenue_usd,
+                    ) = aggregate_wesm_profile_to_annual(
+                        hourly_summary_by_year,
+                        wesm_profile_df,
+                        step_hours=cfg.step_hours,
+                        apply_inflation=False,
+                        inflation_rate=normalized_econ_inputs.inflation_rate,
+                    )
                 econ_outputs = compute_lcoe_lcos_with_augmentation_fallback(
                     annual_delivered_mwh=annual_delivered,
                     annual_bess_mwh=annual_bess,
@@ -1119,6 +1211,8 @@ def _run_batch() -> pd.DataFrame | None:
                     price_inputs,
                     annual_pv_delivered_mwh=annual_pv_delivered,
                     annual_shortfall_mwh=annual_shortfall,
+                    annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                    annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
                     augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
                     annual_total_generation_mwh=annual_total_generation,
                 )
@@ -1129,6 +1223,8 @@ def _run_batch() -> pd.DataFrame | None:
                     normalized_econ_inputs,
                     price_inputs,
                     annual_shortfall_mwh=annual_shortfall,
+                    annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                    annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
                     augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
                     annual_total_generation_mwh=annual_total_generation,
                 )
