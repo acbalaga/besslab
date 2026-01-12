@@ -60,6 +60,9 @@ def test_build_pdf_summary_returns_bytes():
         bess_generation_mwh=15.0,
         pv_generation_mwh=80.0,
         bess_losses_mwh=5.0,
+        final_year_logs=None,
+        augmentation_energy_added_mwh=None,
+        augmentation_retired_energy_mwh=None,
     )
 
     assert isinstance(pdf_bytes, (bytes, bytearray))

@@ -1286,12 +1286,31 @@ def run_app():
 
     pdf_bytes = None
     try:
-        pdf_bytes = build_pdf_summary(cfg, results, kpis.compliance, kpis.bess_share_of_firm, kpis.charge_discharge_ratio,
-                                      kpis.pv_capture_ratio, kpis.discharge_capacity_factor,
-                                      discharge_windows_text, charge_windows_text,
-                                      hod_count, hod_sum_pv_resource, hod_sum_pv, hod_sum_bess, hod_sum_charge,
-                                      kpis.total_shortfall_mwh, kpis.pv_excess_mwh, kpis.total_project_generation_mwh,
-                                      kpis.bess_generation_mwh, kpis.pv_generation_mwh, kpis.bess_losses_mwh)
+        pdf_bytes = build_pdf_summary(
+            cfg,
+            results,
+            kpis.compliance,
+            kpis.bess_share_of_firm,
+            kpis.charge_discharge_ratio,
+            kpis.pv_capture_ratio,
+            kpis.discharge_capacity_factor,
+            discharge_windows_text,
+            charge_windows_text,
+            hod_count,
+            hod_sum_pv_resource,
+            hod_sum_pv,
+            hod_sum_bess,
+            hod_sum_charge,
+            kpis.total_shortfall_mwh,
+            kpis.pv_excess_mwh,
+            kpis.total_project_generation_mwh,
+            kpis.bess_generation_mwh,
+            kpis.pv_generation_mwh,
+            kpis.bess_losses_mwh,
+            final_year_logs,
+            sim_output.augmentation_energy_added_mwh,
+            augmentation_retired,
+        )
     except Exception as exc:  # noqa: BLE001
         st.warning(f"PDF snapshot unavailable: {exc}")
 
