@@ -1,5 +1,6 @@
-from typing import Optional, Tuple
+import json
 import math
+from typing import Any, Dict, Optional, Tuple
 
 import altair as alt
 import pandas as pd
@@ -21,6 +22,121 @@ render_layout = init_page_layout(
     description="Sweep usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.",
     base_dir=BASE_DIR,
 )
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_energy_range(value: Any, default: Tuple[float, float]) -> Tuple[float, float]:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        low = _coerce_float(value[0], default[0])
+        high = _coerce_float(value[1], default[1])
+        return (low, high) if low <= high else (high, low)
+    return default
+
+
+def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize JSON payload values to the expected sweep input schema."""
+
+    normalized = defaults.copy()
+    normalized["energy_range"] = _normalize_energy_range(
+        payload.get("energy_range"),
+        defaults["energy_range"],
+    )
+    normalized["energy_steps"] = _coerce_int(payload.get("energy_steps"), defaults["energy_steps"])
+    normalized["fixed_power"] = _coerce_float(payload.get("fixed_power"), defaults["fixed_power"])
+    normalized["wacc_pct"] = _coerce_float(payload.get("wacc_pct"), defaults["wacc_pct"])
+    normalized["inflation_pct"] = _coerce_float(payload.get("inflation_pct"), defaults["inflation_pct"])
+    normalized["capex_musd"] = _coerce_float(payload.get("capex_musd"), defaults["capex_musd"])
+    normalized["fixed_opex_pct"] = _coerce_float(payload.get("fixed_opex_pct"), defaults["fixed_opex_pct"])
+    normalized["fixed_opex_musd"] = _coerce_float(
+        payload.get("fixed_opex_musd"),
+        defaults["fixed_opex_musd"],
+    )
+    normalized["include_devex_year0"] = _coerce_bool(
+        payload.get("include_devex_year0"),
+        defaults["include_devex_year0"],
+    )
+    normalized["ranking_choice"] = payload.get("ranking_choice", defaults["ranking_choice"])
+    normalized["min_soh"] = _coerce_float(payload.get("min_soh"), defaults["min_soh"])
+    normalized["use_blended_price"] = _coerce_bool(
+        payload.get("use_blended_price"),
+        defaults["use_blended_price"],
+    )
+    normalized["contract_price_php_per_kwh"] = _coerce_float(
+        payload.get("contract_price_php_per_kwh"),
+        defaults["contract_price_php_per_kwh"],
+    )
+    normalized["pv_market_price_php_per_kwh"] = _coerce_float(
+        payload.get("pv_market_price_php_per_kwh"),
+        defaults["pv_market_price_php_per_kwh"],
+    )
+    normalized["blended_price_php_per_kwh"] = _coerce_float(
+        payload.get("blended_price_php_per_kwh"),
+        defaults["blended_price_php_per_kwh"],
+    )
+    normalized["escalate_prices"] = _coerce_bool(
+        payload.get("escalate_prices"),
+        defaults["escalate_prices"],
+    )
+    normalized["wesm_pricing_enabled"] = _coerce_bool(
+        payload.get("wesm_pricing_enabled"),
+        defaults["wesm_pricing_enabled"],
+    )
+    normalized["wesm_deficit_price_php_per_kwh"] = _coerce_float(
+        payload.get("wesm_deficit_price_php_per_kwh"),
+        defaults["wesm_deficit_price_php_per_kwh"],
+    )
+    normalized["sell_to_wesm"] = _coerce_bool(
+        payload.get("sell_to_wesm"),
+        defaults["sell_to_wesm"],
+    )
+    normalized["wesm_surplus_price_php_per_kwh"] = _coerce_float(
+        payload.get("wesm_surplus_price_php_per_kwh"),
+        defaults["wesm_surplus_price_php_per_kwh"],
+    )
+    normalized["variable_opex_php_per_kwh"] = _coerce_float(
+        payload.get("variable_opex_php_per_kwh"),
+        defaults["variable_opex_php_per_kwh"],
+    )
+    normalized["variable_schedule_choice"] = payload.get(
+        "variable_schedule_choice",
+        defaults["variable_schedule_choice"],
+    )
+    normalized["periodic_variable_opex_usd"] = _coerce_float(
+        payload.get("periodic_variable_opex_usd"),
+        defaults["periodic_variable_opex_usd"],
+    )
+    normalized["periodic_variable_opex_interval_years"] = _coerce_int(
+        payload.get("periodic_variable_opex_interval_years"),
+        defaults["periodic_variable_opex_interval_years"],
+    )
+    schedule_payload = payload.get("variable_opex_schedule_usd")
+    if isinstance(schedule_payload, (list, tuple)):
+        normalized["variable_opex_schedule_usd"] = [
+            _coerce_float(item, 0.0) for item in schedule_payload
+        ]
+    return normalized
 
 
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
@@ -89,15 +205,90 @@ if cfg is None:
 
 st.session_state.setdefault("bess_size_sweep_results", None)
 
+default_energy = max(10.0, cfg.initial_usable_mwh)
+default_energy_range = (
+    max(10.0, default_energy * 0.5),
+    min(500.0, default_energy * 1.5),
+)
+default_inputs: Dict[str, Any] = {
+    "energy_range": default_energy_range,
+    "energy_steps": 5,
+    "fixed_power": float(cfg.initial_power_mw),
+    "wacc_pct": 8.0,
+    "inflation_pct": 3.0,
+    "capex_musd": 40.0,
+    "fixed_opex_pct": 2.0,
+    "fixed_opex_musd": 0.0,
+    "include_devex_year0": False,
+    "ranking_choice": "compliance_pct",
+    "min_soh": 0.6,
+    "use_blended_price": False,
+    "contract_price_php_per_kwh": default_contract_php_per_kwh,
+    "pv_market_price_php_per_kwh": default_pv_php_per_kwh,
+    "blended_price_php_per_kwh": default_contract_php_per_kwh,
+    "escalate_prices": False,
+    "wesm_pricing_enabled": False,
+    "wesm_deficit_price_php_per_kwh": default_wesm_php_per_kwh,
+    "sell_to_wesm": False,
+    "wesm_surplus_price_php_per_kwh": default_wesm_surplus_php_per_kwh,
+    "variable_opex_php_per_kwh": 0.0,
+    "variable_schedule_choice": "None",
+    "periodic_variable_opex_usd": 0.0,
+    "periodic_variable_opex_interval_years": 5,
+    "variable_opex_schedule_usd": [],
+}
+stored_inputs = st.session_state.get("bess_sweep_inputs", {})
+if isinstance(stored_inputs, dict):
+    default_inputs = _normalize_sweep_inputs(stored_inputs, default_inputs)
+
+with st.expander("Load/save sweep inputs (JSON)", expanded=False):
+    st.caption(
+        "Upload or paste JSON to restore sweep inputs. Use the download button to save "
+        "the current inputs for reuse."
+    )
+    uploaded_inputs = st.file_uploader(
+        "Upload sweep inputs JSON",
+        type=["json"],
+        accept_multiple_files=False,
+        key="bess_sweep_inputs_upload",
+    )
+    pasted_inputs = st.text_area(
+        "Or paste sweep inputs JSON",
+        placeholder='{"energy_range": [25, 75], "fixed_power": 50}',
+        height=120,
+        key="bess_sweep_inputs_paste",
+    )
+    if st.button("Apply JSON inputs", use_container_width=True):
+        payload_text = ""
+        if uploaded_inputs is not None:
+            payload_text = uploaded_inputs.read().decode("utf-8")
+        elif pasted_inputs.strip():
+            payload_text = pasted_inputs
+        if payload_text:
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError as exc:
+                st.error(f"Invalid JSON: {exc}")
+            else:
+                if isinstance(payload, dict):
+                    st.session_state["bess_sweep_inputs"] = _normalize_sweep_inputs(
+                        payload, default_inputs
+                    )
+                    st.success("Sweep inputs loaded. Re-rendering with the new values.")
+                    st.rerun()
+                else:
+                    st.error("Expected a JSON object with sweep input fields.")
+        else:
+            st.info("Provide JSON content to load.", icon="ℹ️")
+
 with st.container():
     size_col1, size_col2, size_col3, price_col = st.columns(4)
     with size_col1:
-        default_energy = max(10.0, cfg.initial_usable_mwh)
         energy_range = st.slider(
             "Usable energy range (MWh)",
             min_value=10.0,
             max_value=500.0,
-            value=(max(10.0, default_energy * 0.5), min(500.0, default_energy * 1.5)),
+            value=default_inputs["energy_range"],
             step=5.0,
             help="Lower and upper bounds for the usable MWh grid.",
         )
@@ -105,14 +296,14 @@ with st.container():
             "Energy points",
             min_value=1,
             max_value=15,
-            value=5,
+            value=int(default_inputs["energy_steps"]),
             help="Number of evenly spaced usable-energy values between the bounds.",
         )
         fixed_power = st.number_input(
             "Fixed discharge power (MW)",
             min_value=0.1,
             max_value=300.0,
-            value=float(cfg.initial_power_mw),
+            value=float(default_inputs["fixed_power"]),
             step=0.1,
             help="Power rating held constant while sweeping usable energy.",
         )
@@ -122,7 +313,7 @@ with st.container():
             "WACC (%)",
             min_value=0.0,
             max_value=30.0,
-            value=8.0,
+            value=float(default_inputs["wacc_pct"]),
             step=0.1,
             help="Weighted-average cost of capital (nominal).",
         )
@@ -130,7 +321,7 @@ with st.container():
             "Inflation rate (%)",
             min_value=0.0,
             max_value=20.0,
-            value=3.0,
+            value=float(default_inputs["inflation_pct"]),
             step=0.1,
             help="Inflation assumption used to derive the real discount rate.",
         )
@@ -138,7 +329,7 @@ with st.container():
         capex_musd = st.number_input(
             "Total CAPEX (USD million)",
             min_value=0.0,
-            value=40.0,
+            value=float(default_inputs["capex_musd"]),
             step=0.1,
             help="All-in CAPEX for the project. Expressed in USD millions for compact entry.",
         )
@@ -146,20 +337,20 @@ with st.container():
             "Fixed OPEX (% of CAPEX per year)",
             min_value=0.0,
             max_value=20.0,
-            value=2.0,
+            value=float(default_inputs["fixed_opex_pct"]),
             step=0.1,
             help="Annual fixed OPEX expressed as % of CAPEX.",
         ) / 100.0
         fixed_opex_musd = st.number_input(
             "Additional fixed OPEX (USD million/yr)",
             min_value=0.0,
-            value=0.0,
+            value=float(default_inputs["fixed_opex_musd"]),
             step=0.1,
             help="Extra fixed OPEX not tied to CAPEX percentage.",
         )
         include_devex_year0 = st.checkbox(
             "Include ₱100M DevEx at year 0",
-            value=False,
+            value=bool(default_inputs["include_devex_year0"]),
             help=(
                 "Adds a fixed ₱100 million development expenditure upfront (≈"
                 f"${devex_cost_usd / 1_000_000:,.2f}M using PHP {forex_rate_php_per_usd:,.0f}/USD). "
@@ -189,12 +380,34 @@ with st.container():
                 "npv_usd": "Net NPV (USD, higher is better)",
             }.get(x, x),
             help="Column used to pick the top feasible design.",
+            index=[
+                "compliance_pct",
+                "total_shortfall_mwh",
+                "total_project_generation_mwh",
+                "bess_generation_mwh",
+                "lcoe_usd_per_mwh",
+                "npv_costs_usd",
+                "npv_usd",
+            ].index(
+                default_inputs["ranking_choice"]
+                if default_inputs["ranking_choice"]
+                in [
+                    "compliance_pct",
+                    "total_shortfall_mwh",
+                    "total_project_generation_mwh",
+                    "bess_generation_mwh",
+                    "lcoe_usd_per_mwh",
+                    "npv_costs_usd",
+                    "npv_usd",
+                ]
+                else "compliance_pct"
+            ),
         )
         min_soh = st.number_input(
             "Minimum SOH for feasibility",
             min_value=0.2,
             max_value=1.0,
-            value=0.6,
+            value=float(default_inputs["min_soh"]),
             step=0.05,
             help="Candidates falling below this total SOH are flagged as infeasible.",
         )
@@ -205,7 +418,7 @@ with st.container():
     with price_col:
         use_blended_price = st.checkbox(
             "Use blended energy price",
-            value=False,
+            value=bool(default_inputs["use_blended_price"]),
             help=(
                 "Apply a single price to all delivered firm energy and excess PV. "
                 "Contract/PV-specific inputs are ignored while enabled."
@@ -214,7 +427,7 @@ with st.container():
         contract_price_php_per_kwh = st.number_input(
             "Contract price (PHP/kWh from BESS)",
             min_value=0.0,
-            value=default_contract_php_per_kwh,
+            value=float(default_inputs["contract_price_php_per_kwh"]),
             step=0.05,
             help="Price converted to USD/MWh internally using PHP 58/USD.",
             disabled=use_blended_price,
@@ -222,7 +435,7 @@ with st.container():
         pv_market_price_php_per_kwh = st.number_input(
             "PV market price (PHP/kWh for excess PV)",
             min_value=0.0,
-            value=default_pv_php_per_kwh,
+            value=float(default_inputs["pv_market_price_php_per_kwh"]),
             step=0.05,
             help="Price converted to USD/MWh internally using PHP 58/USD.",
             disabled=use_blended_price,
@@ -230,18 +443,18 @@ with st.container():
         blended_price_php_per_kwh = st.number_input(
             "Blended energy price (PHP/kWh)",
             min_value=0.0,
-            value=default_contract_php_per_kwh,
+            value=float(default_inputs["blended_price_php_per_kwh"]),
             step=0.05,
             help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
             disabled=not use_blended_price,
         )
         escalate_prices = st.checkbox(
             "Escalate prices with inflation",
-            value=False,
+            value=bool(default_inputs["escalate_prices"]),
         )
         wesm_pricing_enabled = st.checkbox(
             "Apply WESM pricing to contract shortfalls",
-            value=False,
+            value=bool(default_inputs["wesm_pricing_enabled"]),
             help=(
                 "Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC);"
                 " enter a PHP/kWh rate to override."
@@ -250,7 +463,7 @@ with st.container():
         wesm_deficit_price_php_per_kwh = st.number_input(
             "WESM deficit price for contract shortfalls (PHP/kWh)",
             min_value=0.0,
-            value=default_wesm_php_per_kwh,
+            value=float(default_inputs["wesm_deficit_price_php_per_kwh"]),
             step=0.05,
             help=(
                 "Applied to contract shortfall MWh (annual_shortfall_mwh) as a purchase cost."
@@ -261,7 +474,7 @@ with st.container():
         )
         sell_to_wesm = st.checkbox(
             "Sell PV surplus to WESM",
-            value=False,
+            value=bool(default_inputs["sell_to_wesm"]),
             help=(
                 "When enabled, PV surplus (excess MWh) is credited at a WESM sale price; otherwise surplus "
                 "is excluded from revenue. This does not change the deficit price applied to shortfalls."
@@ -271,7 +484,7 @@ with st.container():
         wesm_surplus_price_php_per_kwh = st.number_input(
             "WESM sale price for PV surplus (PHP/kWh)",
             min_value=0.0,
-            value=default_wesm_surplus_php_per_kwh,
+            value=float(default_inputs["wesm_surplus_price_php_per_kwh"]),
             step=0.05,
             help=(
                 "Used only when selling PV surplus. Defaults to PHP 3.29/kWh based on the 2025 weighted"
@@ -327,7 +540,7 @@ with st.container():
         variable_opex_php_per_kwh = st.number_input(
             "Variable OPEX (PHP/kWh)",
             min_value=0.0,
-            value=0.0,
+            value=float(default_inputs["variable_opex_php_per_kwh"]),
             step=0.05,
             help=(
                 "Optional per-kWh operating expense applied to annual firm energy. "
@@ -349,6 +562,11 @@ with st.container():
                 "Custom or periodic schedules override per-kWh and fixed OPEX assumptions. "
                 "Per-kWh costs override fixed percentages and adders."
             ),
+            index=["None", "Periodic", "Custom"].index(
+                default_inputs["variable_schedule_choice"]
+                if default_inputs["variable_schedule_choice"] in ["None", "Periodic", "Custom"]
+                else "None"
+            ),
         )
         variable_opex_schedule_usd: Optional[Tuple[float, ...]] = None
         periodic_variable_opex_usd: Optional[float] = None
@@ -357,21 +575,25 @@ with st.container():
             periodic_variable_opex_usd = st.number_input(
                 "Variable expense when periodic (USD)",
                 min_value=0.0,
-                value=0.0,
+                value=float(default_inputs["periodic_variable_opex_usd"]),
                 step=10_000.0,
                 help="Amount applied on the selected cadence (year 1, then every N years).",
             )
             periodic_variable_opex_interval_years = st.number_input(
                 "Cadence (years)",
                 min_value=1,
-                value=5,
+                value=int(default_inputs["periodic_variable_opex_interval_years"]),
                 step=1,
             )
             if periodic_variable_opex_usd <= 0:
                 periodic_variable_opex_usd = None
         elif variable_schedule_choice == "Custom":
+            default_custom_text = "\n".join(
+                str(val) for val in default_inputs.get("variable_opex_schedule_usd", [])
+            )
             custom_variable_text = st.text_area(
                 "Custom variable expenses (USD/year)",
+                value=default_custom_text,
                 placeholder="e.g., 250000, 275000, 300000",
                 help="Comma or newline separated values applied per project year.",
             )
@@ -389,6 +611,51 @@ with st.container():
                     st.stop()
 
     submitted = st.button("Run BESS energy sweep", use_container_width=True)
+
+    st.session_state["bess_sweep_inputs"] = {
+        "energy_range": energy_range,
+        "energy_steps": int(energy_steps),
+        "fixed_power": float(fixed_power),
+        "wacc_pct": float(wacc_pct),
+        "inflation_pct": float(inflation_pct),
+        "capex_musd": float(capex_musd),
+        "fixed_opex_pct": float(fixed_opex_pct * 100.0),
+        "fixed_opex_musd": float(fixed_opex_musd),
+        "include_devex_year0": bool(include_devex_year0),
+        "ranking_choice": ranking_choice,
+        "min_soh": float(min_soh),
+        "use_blended_price": bool(use_blended_price),
+        "contract_price_php_per_kwh": float(contract_price_php_per_kwh),
+        "pv_market_price_php_per_kwh": float(pv_market_price_php_per_kwh),
+        "blended_price_php_per_kwh": float(blended_price_php_per_kwh),
+        "escalate_prices": bool(escalate_prices),
+        "wesm_pricing_enabled": bool(wesm_pricing_enabled),
+        "wesm_deficit_price_php_per_kwh": float(wesm_deficit_price_php_per_kwh),
+        "sell_to_wesm": bool(sell_to_wesm),
+        "wesm_surplus_price_php_per_kwh": float(wesm_surplus_price_php_per_kwh),
+        "variable_opex_php_per_kwh": float(variable_opex_php_per_kwh),
+        "variable_schedule_choice": variable_schedule_choice,
+        "periodic_variable_opex_usd": float(
+            periodic_variable_opex_usd
+            if periodic_variable_opex_usd is not None
+            else default_inputs["periodic_variable_opex_usd"]
+        ),
+        "periodic_variable_opex_interval_years": int(
+            periodic_variable_opex_interval_years
+            if periodic_variable_opex_interval_years is not None
+            else default_inputs["periodic_variable_opex_interval_years"]
+        ),
+        "variable_opex_schedule_usd": list(variable_opex_schedule_usd or ()),
+    }
+
+    inputs_json = json.dumps(st.session_state["bess_sweep_inputs"], indent=2).encode("utf-8")
+    st.download_button(
+        "Download sweep inputs (JSON)",
+        data=inputs_json,
+        file_name="bess_sizing_sweep_inputs.json",
+        mime="application/json",
+        use_container_width=True,
+    )
 
 if submitted:
     enforce_rate_limit()
