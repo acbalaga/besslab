@@ -109,14 +109,6 @@ def _default_lever_table() -> pd.DataFrame:
                 "Notes": "Requires economics/contract logic; not simulated for energy KPIs.",
             },
             {
-                "Lever": "POI limit",
-                "Low change": -5.0,
-                "High change": 5.0,
-                "Low impact (pp)": 0.0,
-                "High impact (pp)": 0.0,
-                "Notes": "Proxy via initial power MW for grid interconnect limit.",
-            },
-            {
                 "Lever": "Dispatch window changes",
                 "Low change": -1.0,
                 "High change": 1.0,
@@ -133,12 +125,12 @@ def _default_lever_table() -> pd.DataFrame:
                 "Notes": "Availability impacts on achievable delivery and energy.",
             },
             {
-                "Lever": "BESS Size Capacity (MW)",
+                "Lever": "Power rating (MW)",
                 "Low change": -5.0,
                 "High change": 5.0,
                 "Low impact (pp)": 0.0,
                 "High impact (pp)": 0.0,
-                "Notes": "Power rating in MW; keep units explicit in assumptions.",
+                "Notes": "Maps to initial_power_mw (covers POI or inverter limit assumptions).",
             },
             {
                 "Lever": "BESS Size Energy Capacity (MWh)",
@@ -467,11 +459,6 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
             delta_unit="pp",
             apply_delta=_unsupported_lever,
         ),
-        "POI limit": SensitivityLever(
-            label="POI limit",
-            delta_unit="MW",
-            apply_delta=_apply_power_delta,
-        ),
         "Dispatch window changes": SensitivityLever(
             label="Dispatch window changes",
             delta_unit="hours",
@@ -482,8 +469,8 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
             delta_unit="pp",
             apply_delta=_apply_availability_delta,
         ),
-        "BESS Size Capacity (MW)": SensitivityLever(
-            label="BESS Size Capacity (MW)",
+        "Power rating (MW)": SensitivityLever(
+            label="Power rating (MW)",
             delta_unit="MW",
             apply_delta=_apply_power_delta,
         ),
