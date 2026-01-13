@@ -5,12 +5,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
 from services.simulation_core import HourlyLog, SimConfig, Window, simulate_project, summarize_simulation
 from utils import read_wesm_profile
+from frontend.ui.sensitivity_tornado import build_tornado_chart, prepare_tornado_data
 from utils.economics import (
     EconomicInputs,
     PriceInputs,
@@ -308,64 +308,6 @@ def _collect_impact_tables(metrics: List[MetricDefinition]) -> Dict[str, List[Di
     return tables
 
 
-def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
-    scenario_label_map = {
-        "Low impact (pp)": "Low impact",
-        "High impact (pp)": "High impact",
-    }
-    numeric_table = table.copy()
-    numeric_table["Low impact (pp)"] = pd.to_numeric(
-        numeric_table["Low impact (pp)"], errors="coerce"
-    ).fillna(0.0)
-    numeric_table["High impact (pp)"] = pd.to_numeric(
-        numeric_table["High impact (pp)"], errors="coerce"
-    ).fillna(0.0)
-    numeric_table["sort_key"] = numeric_table[["Low impact (pp)", "High impact (pp)"]].abs().max(axis=1)
-    melted = numeric_table.melt(
-        id_vars=["Lever", "Notes", "sort_key"],
-        value_vars=["Low impact (pp)", "High impact (pp)"],
-        var_name="Scenario",
-        value_name="Impact (pp)",
-    )
-    melted["Scenario"] = melted["Scenario"].map(scenario_label_map).fillna(melted["Scenario"])
-    return melted.sort_values("sort_key", ascending=True)
-
-
-def _build_tornado_chart(source: pd.DataFrame) -> alt.Chart:
-    if source.empty:
-        return alt.Chart(pd.DataFrame({"Impact (pp)": [], "Lever": []})).mark_bar()
-
-    impact_domain = (
-        float(source["Impact (pp)"].min()),
-        float(source["Impact (pp)"].max()),
-    )
-    extent = max(abs(impact_domain[0]), abs(impact_domain[1]), 1.0)
-    zero_line = alt.Chart(pd.DataFrame({"zero": [0]})).mark_rule(color="#6b6b6b").encode(x="zero:Q")
-
-    bars = (
-        alt.Chart(source)
-        .mark_bar()
-        .encode(
-            x=alt.X(
-                "Impact (pp):Q",
-                title="Impact (percentage points)",
-                scale=alt.Scale(domain=[-extent, extent]),
-            ),
-            y=alt.Y("Lever:N", sort=None, title="Sensitivity lever"),
-            color=alt.Color(
-                "Scenario:N",
-                scale=alt.Scale(range=["#d95f02", "#1b9e77"]),
-                title="Scenario",
-            ),
-            tooltip=[
-                alt.Tooltip("Lever:N"),
-                alt.Tooltip("Scenario:N"),
-                alt.Tooltip("Impact (pp):Q", format=".2f"),
-                alt.Tooltip("Notes:N"),
-            ],
-        )
-    )
-    return (bars + zero_line).properties(height=420)
 
 
 def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
@@ -904,14 +846,14 @@ if baseline_value is None:
 else:
     st.metric("Baseline", f"{baseline_value:,.2f}%")
 
-chart_source = _prepare_tornado_data(edited_table)
+chart_source = prepare_tornado_data(edited_table)
 if chart_source["Impact (pp)"].abs().sum() == 0:
     st.info(
         "All impacts are currently zero. Enter low/high changes and run sensitivity to populate the chart.",
         icon="ℹ️",
     )
 
-st.altair_chart(_build_tornado_chart(chart_source), use_container_width=True)
+st.altair_chart(build_tornado_chart(chart_source), use_container_width=True)
 
 st.markdown("### Notes & export")
 st.caption(
