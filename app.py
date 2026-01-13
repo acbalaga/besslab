@@ -147,18 +147,48 @@ def _coerce_bool(value: Any, default: bool) -> bool:
     return default
 
 
-def _coerce_float(value: Any, default: Optional[float]) -> Optional[float]:
+def _coerce_float(value: Any, default: float) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return default
 
 
-def _coerce_int(value: Any, default: Optional[int]) -> Optional[int]:
+def _coerce_int(value: Any, default: int) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_choice(value: Any, options: List[Any], default: Any) -> Any:
+    """Return a valid choice for selectboxes/radios or fall back to default."""
+
+    return value if value in options else default
+
+
+def _coerce_year_choice(value: Any, options: List[int], fallback: int) -> int:
+    """Return a valid project-life option or fall back to the closest default."""
+
+    if value in options:
+        return int(value)
+    if fallback in options:
+        return int(fallback)
+    return options[0]
 
 
 def _format_hhmm(hour_value: float) -> str:
@@ -181,8 +211,8 @@ def _coerce_windows(payload: Any, fallback: List[Window]) -> List[Window]:
             if isinstance(item, Window):
                 windows.append(item)
             elif isinstance(item, dict):
-                start = _coerce_float(item.get("start"), None)
-                end = _coerce_float(item.get("end"), None)
+                start = _coerce_optional_float(item.get("start"))
+                end = _coerce_optional_float(item.get("end"))
                 if start is not None and end is not None:
                     windows.append(Window(start=start, end=end))
         if windows:
@@ -197,10 +227,10 @@ def _coerce_manual_schedule(payload: Any) -> List[Dict[str, Any]]:
     for item in payload:
         if not isinstance(item, dict):
             continue
-        year = _coerce_int(item.get("year") or item.get("Year"), None)
+        year = _coerce_optional_int(item.get("year") or item.get("Year"))
         basis = item.get("basis") or item.get("Basis")
         amount = item.get("value") if "value" in item else item.get("Amount")
-        amount_value = _coerce_float(amount, None)
+        amount_value = _coerce_optional_float(amount)
         if year is None or basis is None or amount_value is None:
             continue
         rows.append({"Year": year, "Basis": str(basis), "Amount": amount_value})
@@ -254,7 +284,12 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     price_payload = payload.get("price_inputs")
     price_payload = price_payload if isinstance(price_payload, dict) else {}
 
-    years = _coerce_int(config_payload.get("years"), fallback_cfg.years) or fallback_cfg.years
+    year_options = list(range(10, 36, 5))
+    years = _coerce_year_choice(
+        _coerce_int(config_payload.get("years"), fallback_cfg.years),
+        year_options,
+        fallback_cfg.years,
+    )
     discharge_windows = _coerce_windows(config_payload.get("discharge_windows"), fallback_cfg.discharge_windows)
     discharge_windows_text = config_payload.get("discharge_windows_text") or payload.get("discharge_windows_text")
     if not discharge_windows_text:
@@ -303,12 +338,14 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         fallback_cfg.rte_roundtrip,
     )
     st.session_state[INPUTS_FORM_KEYS["run_economics"]] = run_economics
-    st.session_state[INPUTS_FORM_KEYS["augmentation_mode"]] = config_payload.get(
-        "augmentation",
+    st.session_state[INPUTS_FORM_KEYS["augmentation_mode"]] = _coerce_choice(
+        config_payload.get("augmentation"),
+        ["None", "Threshold", "Periodic", "Manual"],
         fallback_cfg.augmentation,
     )
-    st.session_state[INPUTS_FORM_KEYS["aug_trigger_type"]] = config_payload.get(
-        "aug_trigger_type",
+    st.session_state[INPUTS_FORM_KEYS["aug_trigger_type"]] = _coerce_choice(
+        config_payload.get("aug_trigger_type"),
+        ["Capability", "SOH"],
         fallback_cfg.aug_trigger_type,
     )
     st.session_state[INPUTS_FORM_KEYS["aug_threshold_margin_pct"]] = _coerce_float(
@@ -335,8 +372,9 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         config_payload.get("aug_periodic_add_frac_of_bol"),
         fallback_cfg.aug_periodic_add_frac_of_bol,
     ) * 100.0
-    st.session_state[INPUTS_FORM_KEYS["aug_size_mode"]] = config_payload.get(
-        "aug_add_mode",
+    st.session_state[INPUTS_FORM_KEYS["aug_size_mode"]] = _coerce_choice(
+        config_payload.get("aug_add_mode"),
+        ["Percent", "Fixed"],
         fallback_cfg.aug_add_mode,
     )
     st.session_state[INPUTS_FORM_KEYS["aug_fixed_energy_mwh"]] = _coerce_float(
@@ -351,8 +389,9 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         config_payload.get("aug_retire_soh_pct"),
         fallback_cfg.aug_retire_soh_pct,
     ) * 100.0
-    st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_mode"]] = config_payload.get(
-        "aug_retire_replacement_mode",
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_mode"]] = _coerce_choice(
+        config_payload.get("aug_retire_replacement_mode"),
+        ["None", "Percent", "Fixed"],
         fallback_cfg.aug_retire_replacement_mode,
     )
     st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_pct"]] = _coerce_float(
@@ -389,8 +428,10 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         config_payload.get("calendar_fade_rate"),
         fallback_cfg.calendar_fade_rate,
     ) * 100.0
-    st.session_state[INPUTS_FORM_KEYS["dod_override"]] = payload.get(
-        "dod_override",
+    dod_options = ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"]
+    st.session_state[INPUTS_FORM_KEYS["dod_override"]] = _coerce_choice(
+        payload.get("dod_override"),
+        dod_options,
         st.session_state.get(INPUTS_FORM_KEYS["dod_override"], "Auto (infer)"),
     )
 
@@ -413,7 +454,11 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     capex_mode = "Total CAPEX (USD)"
     if econ_payload.get("capex_usd_per_kwh") is not None:
         capex_mode = "USD/kWh (BOL)"
-    st.session_state[INPUTS_FORM_KEYS["capex_mode"]] = capex_mode
+    st.session_state[INPUTS_FORM_KEYS["capex_mode"]] = _coerce_choice(
+        econ_payload.get("capex_mode"),
+        ["USD/kWh (BOL)", "Total CAPEX (USD)"],
+        capex_mode,
+    )
     st.session_state[INPUTS_FORM_KEYS["capex_usd_per_kwh"]] = _coerce_float(
         econ_payload.get("capex_usd_per_kwh"),
         0.0,
@@ -426,7 +471,11 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     opex_mode = "% of CAPEX per year"
     if econ_payload.get("opex_php_per_kwh") is not None:
         opex_mode = "PHP/kWh on total generation"
-    st.session_state[INPUTS_FORM_KEYS["opex_mode"]] = opex_mode
+    st.session_state[INPUTS_FORM_KEYS["opex_mode"]] = _coerce_choice(
+        econ_payload.get("opex_mode"),
+        ["% of CAPEX per year", "PHP/kWh on total generation"],
+        opex_mode,
+    )
     st.session_state[INPUTS_FORM_KEYS["fixed_opex_pct"]] = _coerce_float(
         econ_payload.get("fixed_opex_pct_of_capex"),
         2.0,
@@ -496,7 +545,11 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         custom_variable_text = "\n".join(str(val) for val in variable_schedule)
     elif periodic_variable_opex_usd is not None:
         variable_schedule_choice = "Periodic"
-    st.session_state[INPUTS_FORM_KEYS["variable_schedule_choice"]] = variable_schedule_choice
+    st.session_state[INPUTS_FORM_KEYS["variable_schedule_choice"]] = _coerce_choice(
+        econ_payload.get("variable_schedule_choice"),
+        ["None", "Periodic", "Custom"],
+        variable_schedule_choice,
+    )
     st.session_state[INPUTS_FORM_KEYS["periodic_variable_opex_usd"]] = _coerce_float(
         periodic_variable_opex_usd,
         0.0,

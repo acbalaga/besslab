@@ -184,7 +184,7 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 def _baseline_inputs(
     metrics: List[MetricDefinition],
     baseline_values: Dict[str, Optional[float]],
-    default_overrides: Optional[Dict[str, Optional[float]]] = None,
+    default_overrides: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Optional[float]]:
     st.markdown("#### Baseline values")
     st.caption(
@@ -196,8 +196,7 @@ def _baseline_inputs(
     cols = st.columns(2)
     for idx, metric in enumerate(metrics):
         default_value = default_overrides.get(metric.key, baseline_values.get(metric.key))
-        value_text = f"{default_value:.2f}" if default_value is not None else ""
-        input_text = cols[idx % 2].text_input(
+        input_value = cols[idx % 2].number_input(
             metric.label,
             value=value_text,
             help=metric.description,
@@ -271,25 +270,15 @@ def _normalize_baseline_inputs(
     payload: Dict[str, Any],
     metrics: List[MetricDefinition],
     defaults: Dict[str, Optional[float]],
-) -> Dict[str, Optional[float]]:
-    normalized: Dict[str, Optional[float]] = {}
+) -> Dict[str, float]:
+    normalized: Dict[str, float] = {}
     for metric in metrics:
         raw_value = payload.get(metric.key, defaults.get(metric.key))
-        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
-            normalized[metric.key] = None
-            continue
         try:
-            normalized[metric.key] = float(raw_value)
+            normalized[metric.key] = float(raw_value) if raw_value is not None else 0.0
         except (TypeError, ValueError):
-            normalized[metric.key] = None
+            normalized[metric.key] = float(defaults.get(metric.key) or 0.0)
     return normalized
-
-
-def _missing_baseline_metrics(
-    baseline_inputs: Dict[str, Optional[float]],
-    metrics: List[MetricDefinition],
-) -> List[MetricDefinition]:
-    return [metric for metric in metrics if baseline_inputs.get(metric.key) is None]
 
 
 def _normalize_impact_table(table: pd.DataFrame, default_df: pd.DataFrame) -> pd.DataFrame:
@@ -757,18 +746,12 @@ st.caption(
     "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch window duration."
 )
 
-baseline_defaults = _baseline_defaults_from_simulation(
-    metrics,
-    baseline_values,
-    st.session_state.get("sensitivity_baseline_inputs"),
-)
 baseline_inputs = _baseline_inputs(
     metrics,
     baseline_values,
-    default_overrides=baseline_defaults,
+    default_overrides=st.session_state.get("sensitivity_baseline_inputs"),
 )
 st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
-missing_baselines = _missing_baseline_metrics(baseline_inputs, metrics)
 
 metric_lookup = {metric.label: metric for metric in metrics}
 metric_labels = list(metric_lookup.keys())
@@ -947,14 +930,6 @@ export_json = json.dumps(
     },
     indent=2,
 ).encode("utf-8")
-export_disabled = bool(missing_baselines)
-
-if export_disabled:
-    missing_labels = ", ".join(metric.label for metric in missing_baselines)
-    st.warning(
-        "Baseline values are required before export. Missing: "
-        f"{missing_labels}. Enter the baseline (especially PIRR) to continue."
-    )
 
 st.download_button(
     "Download sensitivity table (CSV)",
@@ -971,6 +946,13 @@ st.download_button(
     mime="application/json",
     use_container_width=True,
     disabled=export_disabled,
+)
+st.download_button(
+    "Download sensitivity inputs (JSON)",
+    data=export_json,
+    file_name="sensitivity_inputs.json",
+    mime="application/json",
+    use_container_width=True,
 )
 
 st.caption(
