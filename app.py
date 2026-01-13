@@ -1,8 +1,8 @@
 import io
 import json
 import math
-from dataclasses import asdict
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import altair as alt
 import numpy as np
@@ -34,6 +34,14 @@ from frontend.ui.forms import (
 from frontend.ui.metrics import KPIResults, compute_kpis, render_primary_metrics
 from frontend.ui.rendering import MetricSpec, render_formatted_dataframe, render_metrics
 from frontend.ui.pdf import build_pdf_summary
+from frontend.ui.sensitivity_tornado import (
+    apply_capex_delta,
+    apply_opex_delta,
+    apply_tariff_delta,
+    build_simple_lever_table,
+    build_tornado_chart,
+    prepare_tornado_data,
+)
 from utils import (
     FLAG_DEFINITIONS,
     build_flag_insights,
@@ -604,6 +612,307 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
     return df[existing_columns]
 
 
+@dataclass(frozen=True)
+class TornadoLever:
+    label: str
+    delta_unit: str
+    category: str
+    apply_config: Optional[Callable[[SimConfig, float], SimConfig]] = None
+    apply_econ: Optional[Callable[[EconomicInputs, float], EconomicInputs]] = None
+    apply_price: Optional[Callable[[PriceInputs, float], PriceInputs]] = None
+
+
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(min(value, maximum), minimum)
+
+
+def _window_duration(window: Window) -> float:
+    if window.end >= window.start:
+        return window.end - window.start
+    return (24.0 - window.start) + window.end
+
+
+def _adjust_window_duration(windows: List[Window], delta_hours: float) -> List[Window]:
+    adjusted: List[Window] = []
+    for window in windows:
+        duration = _window_duration(window)
+        new_duration = _clamp(duration + delta_hours, 0.25, 24.0)
+        new_end = (window.start + new_duration) % 24.0
+        adjusted.append(Window(start=window.start, end=new_end))
+    return adjusted
+
+
+def _clone_config(cfg: SimConfig) -> SimConfig:
+    return SimConfig(**cfg.__dict__)
+
+
+def _apply_rte_delta(cfg: SimConfig, delta_pp: float) -> SimConfig:
+    updated = _clone_config(cfg)
+    updated.rte_roundtrip = _clamp(updated.rte_roundtrip + delta_pp / 100.0, 0.5, 0.99)
+    return updated
+
+
+def _apply_availability_delta(cfg: SimConfig, delta_pp: float) -> SimConfig:
+    updated = _clone_config(cfg)
+    updated.bess_availability = _clamp(updated.bess_availability + delta_pp / 100.0, 0.0, 1.0)
+    return updated
+
+
+def _apply_power_delta(cfg: SimConfig, delta_mw: float) -> SimConfig:
+    updated = _clone_config(cfg)
+    updated.initial_power_mw = max(updated.initial_power_mw + delta_mw, 0.1)
+    return updated
+
+
+def _apply_energy_delta(cfg: SimConfig, delta_mwh: float) -> SimConfig:
+    updated = _clone_config(cfg)
+    updated.initial_usable_mwh = max(updated.initial_usable_mwh + delta_mwh, 0.1)
+    return updated
+
+
+def _apply_window_delta(cfg: SimConfig, delta_hours: float) -> SimConfig:
+    updated = _clone_config(cfg)
+    updated.discharge_windows = _adjust_window_duration(updated.discharge_windows, delta_hours)
+    return updated
+
+
+def _simple_tornado_levers() -> Dict[str, TornadoLever]:
+    return {
+        "Availability": TornadoLever(
+            label="Availability",
+            delta_unit="pp",
+            category="operational",
+            apply_config=_apply_availability_delta,
+        ),
+        "RTE": TornadoLever(
+            label="RTE",
+            delta_unit="pp",
+            category="operational",
+            apply_config=_apply_rte_delta,
+        ),
+        "BESS size (MWh)": TornadoLever(
+            label="BESS size (MWh)",
+            delta_unit="MWh",
+            category="operational",
+            apply_config=_apply_energy_delta,
+        ),
+        "BESS capacity (MW)": TornadoLever(
+            label="BESS capacity (MW)",
+            delta_unit="MW",
+            category="operational",
+            apply_config=_apply_power_delta,
+        ),
+        "Dispatch window": TornadoLever(
+            label="Dispatch window",
+            delta_unit="hours",
+            category="operational",
+            apply_config=_apply_window_delta,
+        ),
+        "CAPEX": TornadoLever(
+            label="CAPEX",
+            delta_unit="%",
+            category="financial",
+            apply_econ=apply_capex_delta,
+        ),
+        "OPEX": TornadoLever(
+            label="OPEX",
+            delta_unit="%",
+            category="financial",
+            apply_econ=apply_opex_delta,
+        ),
+        "Tariff": TornadoLever(
+            label="Tariff",
+            delta_unit="%",
+            category="financial",
+            apply_price=apply_tariff_delta,
+        ),
+    }
+
+
+def _extract_annual_series(sim_output) -> Dict[str, List[float]]:
+    results = sim_output.results
+    annual_delivered = [r.delivered_firm_mwh for r in results]
+    annual_bess = [r.bess_to_contract_mwh for r in results]
+    annual_pv_excess = [r.pv_curtailed_mwh for r in results]
+    annual_shortfall = [r.shortfall_mwh for r in results]
+    annual_total_generation = [r.available_pv_mwh for r in results]
+    annual_pv_delivered = [
+        float(delivered) - float(bess) for delivered, bess in zip(annual_delivered, annual_bess)
+    ]
+    return {
+        "annual_delivered": annual_delivered,
+        "annual_bess": annual_bess,
+        "annual_pv_excess": annual_pv_excess,
+        "annual_shortfall": annual_shortfall,
+        "annual_total_generation": annual_total_generation,
+        "annual_pv_delivered": annual_pv_delivered,
+    }
+
+
+def _compute_wesm_costs(
+    sim_output,
+    normalized_econ_inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+    wesm_profile_source: Optional[str],
+) -> Tuple[Optional[List[float]], Optional[List[float]]]:
+    if not (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+        return None, None
+    if wesm_profile_source is None or not sim_output.hourly_logs_by_year:
+        return None, None
+
+    wesm_profile_df = read_wesm_profile(
+        [wesm_profile_source],
+        forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
+    )
+    hourly_summary_by_year = {
+        year_index: _build_hourly_summary_df(logs)
+        for year_index, logs in sim_output.hourly_logs_by_year.items()
+    }
+    return aggregate_wesm_profile_to_annual(
+        hourly_summary_by_year,
+        wesm_profile_df,
+        step_hours=sim_output.cfg.step_hours,
+        apply_inflation=False,
+        inflation_rate=normalized_econ_inputs.inflation_rate,
+    )
+
+
+def _compute_pirr(
+    sim_output,
+    econ_inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+    wesm_profile_source: Optional[str],
+) -> float:
+    if econ_inputs.capex_usd_per_kwh is not None and econ_inputs.bess_bol_kwh is None:
+        econ_inputs = econ_inputs.__class__(
+            **{
+                **econ_inputs.__dict__,
+                "bess_bol_kwh": sim_output.cfg.initial_usable_mwh * 1000.0,
+            }
+        )
+    normalized_inputs = normalize_economic_inputs(econ_inputs)
+    series = _extract_annual_series(sim_output)
+    annual_wesm_shortfall_cost_usd, annual_wesm_surplus_revenue_usd = _compute_wesm_costs(
+        sim_output,
+        normalized_inputs,
+        price_inputs,
+        wesm_profile_source,
+    )
+    augmentation_costs_usd = estimate_augmentation_costs_by_year(
+        sim_output.augmentation_energy_added_mwh,
+        sim_output.cfg.initial_usable_mwh,
+        normalized_inputs.capex_musd,
+    )
+    financing_outputs = compute_financing_cash_flows(
+        series["annual_delivered"],
+        series["annual_bess"],
+        series["annual_pv_excess"],
+        normalized_inputs,
+        price_inputs,
+        annual_shortfall_mwh=series["annual_shortfall"],
+        annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+        annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
+        augmentation_costs_usd=augmentation_costs_usd if any(augmentation_costs_usd) else None,
+        annual_total_generation_mwh=series["annual_total_generation"],
+    )
+    return financing_outputs.project_irr_pct
+
+
+def _compute_operational_metric(sim_output, metric_key: str) -> Optional[float]:
+    summary = summarize_simulation(sim_output)
+    expected_total = sum(r.expected_firm_mwh for r in sim_output.results)
+    if metric_key == "compliance_pct":
+        return summary.compliance
+    if metric_key == "surplus_pct":
+        return (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
+    return None
+
+
+def _run_simple_tornado(
+    base_cfg: SimConfig,
+    pv_df: pd.DataFrame,
+    cycle_df: pd.DataFrame,
+    metric_key: str,
+    lever_table: pd.DataFrame,
+    baseline_sim_output,
+    dod_override: str,
+    econ_inputs: Optional[EconomicInputs],
+    price_inputs: Optional[PriceInputs],
+    wesm_profile_source: Optional[str],
+) -> Tuple[pd.DataFrame, List[str]]:
+    updated_table = lever_table.copy()
+    warnings: List[str] = []
+    levers = _simple_tornado_levers()
+
+    if metric_key == "pirr_pct" and (econ_inputs is None or price_inputs is None):
+        return updated_table, ["PIRR sensitivity requires economics inputs. Run the model with economics first."]
+
+    baseline_value = (
+        _compute_pirr(baseline_sim_output, econ_inputs, price_inputs, wesm_profile_source)
+        if metric_key == "pirr_pct" and econ_inputs is not None and price_inputs is not None
+        else _compute_operational_metric(baseline_sim_output, metric_key)
+    )
+
+    if baseline_value is None:
+        warnings.append("Baseline metric could not be computed; impacts will remain blank.")
+
+    need_logs = bool(
+        metric_key == "pirr_pct"
+        and price_inputs is not None
+        and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
+        and wesm_profile_source
+    )
+
+    for idx, row in updated_table.iterrows():
+        lever_label = str(row.get("Lever"))
+        lever = levers.get(lever_label)
+        if lever is None:
+            continue
+
+        if metric_key in {"compliance_pct", "surplus_pct"} and lever.category == "financial":
+            # Finance-only levers do not affect operational metrics; they only shift PIRR.
+            updated_table.at[idx, "Low impact (pp)"] = None
+            updated_table.at[idx, "High impact (pp)"] = None
+            continue
+
+        low_delta = float(row.get("Low change", 0.0) or 0.0)
+        high_delta = float(row.get("High change", 0.0) or 0.0)
+
+        for column, delta in (("Low impact (pp)", low_delta), ("High impact (pp)", high_delta)):
+            adjusted_cfg = base_cfg
+            adjusted_econ = econ_inputs
+            adjusted_price = price_inputs
+
+            if lever.apply_config is not None:
+                adjusted_cfg = lever.apply_config(base_cfg, delta)
+            if lever.apply_econ is not None and adjusted_econ is not None:
+                adjusted_econ = lever.apply_econ(adjusted_econ, delta)
+            if lever.apply_price is not None and adjusted_price is not None:
+                adjusted_price = lever.apply_price(adjusted_price, delta)
+
+            sim_output = baseline_sim_output
+            if lever.apply_config is not None:
+                sim_output = simulate_project(
+                    adjusted_cfg,
+                    pv_df=pv_df,
+                    cycle_df=cycle_df,
+                    dod_override=dod_override,
+                    need_logs=need_logs,
+                )
+
+            metric_value = (
+                _compute_pirr(sim_output, adjusted_econ, adjusted_price, wesm_profile_source)
+                if metric_key == "pirr_pct" and adjusted_econ is not None and adjusted_price is not None
+                else _compute_operational_metric(sim_output, metric_key)
+            )
+            if metric_value is None or baseline_value is None:
+                updated_table.at[idx, column] = None
+            else:
+                updated_table.at[idx, column] = metric_value - baseline_value
+
+    return updated_table, sorted(set(warnings))
+
+
 def _build_hourly_summary_workbook(hourly_logs_by_year: Dict[int, HourlyLog]) -> bytes:
     """Create an Excel workbook with one worksheet per project year."""
     output = io.BytesIO()
@@ -1079,6 +1388,105 @@ def run_app():
     })
 
     render_primary_metrics(cfg, kpis)
+    with st.expander("Sensitivity tornado (optional)", expanded=False):
+        metric_options = {
+            "% Compliance": "compliance_pct",
+            "% Surplus": "surplus_pct",
+            "% PIRR": "pirr_pct",
+        }
+        selected_metric_label = st.selectbox(
+            "Metric",
+            list(metric_options.keys()),
+            key="simple_tornado_metric_select",
+        )
+        metric_key = metric_options[selected_metric_label]
+
+        default_table = build_simple_lever_table()
+        if "simple_tornado_table" not in st.session_state or not isinstance(
+            st.session_state.get("simple_tornado_table"), pd.DataFrame
+        ):
+            st.session_state["simple_tornado_table"] = default_table.copy()
+        lever_table = st.session_state["simple_tornado_table"]
+        edited_table = st.data_editor(
+            lever_table,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Lever": st.column_config.TextColumn("Lever", disabled=True),
+                "Low change": st.column_config.NumberColumn("Low change", step=0.1, format="%.2f"),
+                "High change": st.column_config.NumberColumn("High change", step=0.1, format="%.2f"),
+                "Low impact (pp)": st.column_config.NumberColumn(
+                    "Low impact (pp)",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "High impact (pp)": st.column_config.NumberColumn(
+                    "High impact (pp)",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "Notes": st.column_config.TextColumn("Notes", disabled=True),
+            },
+        )
+        st.session_state["simple_tornado_table"] = edited_table
+        run_tornado = st.button("Run tornado", use_container_width=True)
+        st.caption(
+            "CAPEX/OPEX/Tariff only shift PIRR because the finance model adjusts cash flows, "
+            "while compliance/surplus are derived from operational energy outputs."
+        )
+
+        if run_tornado:
+            baseline_sim_output = sim_output
+            wesm_profile_source: Optional[str] = None
+            if price_inputs and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+                wesm_profile_source = wesm_file
+                if wesm_profile_source is None:
+                    default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+                    if default_wesm_profile.exists():
+                        wesm_profile_source = str(default_wesm_profile)
+
+            need_logs = bool(
+                metric_key == "pirr_pct"
+                and price_inputs is not None
+                and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
+                and wesm_profile_source
+            )
+            if need_logs and not baseline_sim_output.hourly_logs_by_year:
+                baseline_sim_output = simulate_project(
+                    cfg,
+                    pv_df=pv_df,
+                    cycle_df=cycle_df,
+                    dod_override=dod_override,
+                    need_logs=True,
+                )
+
+            updated_table, warnings = _run_simple_tornado(
+                base_cfg=cfg,
+                pv_df=pv_df,
+                cycle_df=cycle_df,
+                metric_key=metric_key,
+                lever_table=edited_table,
+                baseline_sim_output=baseline_sim_output,
+                dod_override=dod_override,
+                econ_inputs=econ_inputs,
+                price_inputs=price_inputs,
+                wesm_profile_source=wesm_profile_source,
+            )
+            st.session_state["simple_tornado_table"] = updated_table
+
+            if warnings:
+                st.warning("\n".join(f"• {warning}" for warning in warnings))
+            else:
+                st.success("Tornado impacts updated.")
+
+        chart_source = prepare_tornado_data(st.session_state["simple_tornado_table"])
+        if chart_source["Impact (pp)"].abs().sum() == 0:
+            st.info(
+                "All impacts are currently zero. Enter low/high changes and run tornado to populate the chart.",
+                icon="ℹ️",
+            )
+        st.altair_chart(build_tornado_chart(chart_source), use_container_width=True)
     optional_diagnostics = st.toggle(
         "Optional diagnostics",
         value=False,
