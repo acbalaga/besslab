@@ -109,12 +109,12 @@ def _default_lever_table() -> pd.DataFrame:
                 "Notes": "Requires economics/contract logic; not simulated for energy KPIs.",
             },
             {
-                "Lever": "Dispatch window changes",
+                "Lever": "Dispatch window duration (hours)",
                 "Low change": -1.0,
                 "High change": 1.0,
                 "Low impact (pp)": 0.0,
                 "High impact (pp)": 0.0,
-                "Notes": "Shift discharge/charge windows to test schedule risk.",
+                "Notes": "Adjusts duration of discharge windows; start times remain fixed.",
             },
             {
                 "Lever": "Availability (e.g., 97% vs 93%)",
@@ -459,8 +459,8 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
             delta_unit="pp",
             apply_delta=_unsupported_lever,
         ),
-        "Dispatch window changes": SensitivityLever(
-            label="Dispatch window changes",
+        "Dispatch window duration (hours)": SensitivityLever(
+            label="Dispatch window duration (hours)",
             delta_unit="hours",
             apply_delta=_apply_window_delta,
         ),
@@ -728,7 +728,7 @@ st.caption(
     "Impacts are reported in percentage points relative to the baseline."
 )
 st.caption(
-    "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch windows."
+    "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch window duration."
 )
 
 baseline_inputs = _baseline_inputs(
