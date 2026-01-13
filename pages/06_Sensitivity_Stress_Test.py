@@ -167,13 +167,8 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 
     summary = summarize_simulation(cached.sim_output)
     expected_total = sum(r.expected_firm_mwh for r in cached.sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in cached.sim_output.results)
     deficit_pct = (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
-    surplus_pct = (
-        summary.pv_excess_mwh / pv_total_generation * 100.0
-        if pv_total_generation > 0
-        else None
-    )
+    surplus_pct = (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     final_soh_pct = cached.sim_output.results[-1].soh_total * 100.0
     baseline.update(
         {
@@ -532,13 +527,12 @@ def _merge_supported_edits(full_table: pd.DataFrame, supported_table: pd.DataFra
 def _compute_metric_value(metric_key: str, sim_output) -> Optional[float]:
     summary = summarize_simulation(sim_output)
     expected_total = sum(r.expected_firm_mwh for r in sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in sim_output.results)
     if metric_key == "compliance_pct":
         return summary.compliance
     if metric_key == "deficit_pct":
         return (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "surplus_pct":
-        return (summary.pv_excess_mwh / pv_total_generation * 100.0) if pv_total_generation > 0 else None
+        return (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "soh_pct":
         return sim_output.results[-1].soh_total * 100.0
     return None
@@ -975,5 +969,5 @@ st.download_button(
 )
 
 st.caption(
-    "Surplus % uses PV curtailment ÷ total PV generation. Deficit % uses total shortfall ÷ total expected firm energy."
+    "Surplus % uses PV curtailment ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
 )
