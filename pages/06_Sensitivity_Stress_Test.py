@@ -197,7 +197,7 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 def _baseline_inputs(
     metrics: List[MetricDefinition],
     baseline_values: Dict[str, Optional[float]],
-    default_overrides: Optional[Dict[str, float]] = None,
+    default_overrides: Optional[Dict[str, Optional[float]]] = None,
 ) -> Dict[str, Optional[float]]:
     st.markdown("#### Baseline values")
     st.caption(
@@ -209,14 +209,30 @@ def _baseline_inputs(
     cols = st.columns(2)
     for idx, metric in enumerate(metrics):
         default_value = default_overrides.get(metric.key, baseline_values.get(metric.key))
-        input_value = cols[idx % 2].number_input(
+        value_text = f"{default_value:.2f}" if default_value is not None else ""
+        input_text = cols[idx % 2].text_input(
             metric.label,
-            value=float(default_value) if default_value is not None else 0.0,
-            step=0.1,
+            value=value_text,
             help=metric.description,
+            placeholder="Missing",
         )
-        baseline_inputs[metric.key] = input_value
+        parsed_value, error_message = _parse_optional_float(input_text)
+        if error_message:
+            cols[idx % 2].caption(f":red[{error_message}]")
+        elif parsed_value is None:
+            cols[idx % 2].caption(":orange[Missing baseline]")
+        baseline_inputs[metric.key] = parsed_value
     return baseline_inputs
+
+
+def _parse_optional_float(raw_value: str) -> Tuple[Optional[float], Optional[str]]:
+    cleaned = raw_value.strip()
+    if not cleaned:
+        return None, None
+    try:
+        return float(cleaned), None
+    except ValueError:
+        return None, "Enter a numeric value or leave blank."
 
 
 def _get_metric_state_key(metric_key: str) -> str:
@@ -241,15 +257,25 @@ def _normalize_baseline_inputs(
     payload: Dict[str, Any],
     metrics: List[MetricDefinition],
     defaults: Dict[str, Optional[float]],
-) -> Dict[str, float]:
-    normalized: Dict[str, float] = {}
+) -> Dict[str, Optional[float]]:
+    normalized: Dict[str, Optional[float]] = {}
     for metric in metrics:
         raw_value = payload.get(metric.key, defaults.get(metric.key))
+        if raw_value is None or (isinstance(raw_value, str) and not raw_value.strip()):
+            normalized[metric.key] = None
+            continue
         try:
-            normalized[metric.key] = float(raw_value) if raw_value is not None else 0.0
+            normalized[metric.key] = float(raw_value)
         except (TypeError, ValueError):
-            normalized[metric.key] = float(defaults.get(metric.key) or 0.0)
+            normalized[metric.key] = None
     return normalized
+
+
+def _missing_baseline_metrics(
+    baseline_inputs: Dict[str, Optional[float]],
+    metrics: List[MetricDefinition],
+) -> List[MetricDefinition]:
+    return [metric for metric in metrics if baseline_inputs.get(metric.key) is None]
 
 
 def _normalize_impact_table(table: pd.DataFrame, default_df: pd.DataFrame) -> pd.DataFrame:
@@ -724,6 +750,7 @@ baseline_inputs = _baseline_inputs(
     default_overrides=st.session_state.get("sensitivity_baseline_inputs"),
 )
 st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
+missing_baselines = _missing_baseline_metrics(baseline_inputs, metrics)
 
 metric_lookup = {metric.label: metric for metric in metrics}
 metric_labels = list(metric_lookup.keys())
@@ -818,52 +845,60 @@ if not unsupported_table.empty:
 _save_impact_table(selected_metric.key, edited_table)
 
 if run_sensitivity:
-    cached_results = get_simulation_results()
-    econ_payload = get_latest_economics_payload() or {}
-    econ_inputs = econ_payload.get("economic_inputs")
-    price_inputs = econ_payload.get("price_inputs")
-    wesm_profile_source = econ_payload.get("wesm_profile_source")
-
-    cached_cfg, cached_dod_override = get_cached_simulation_config()
-    base_cfg = cached_cfg or SimConfig()
-    dod_override = cached_dod_override or "Auto (infer)"
-
-    baseline_output = cached_results.sim_output if cached_results else simulate_project(
-        base_cfg,
-        pv_df=pv_df,
-        cycle_df=cycle_df,
-        dod_override=dod_override,
-        need_logs=bool(
-            selected_metric.key == "pirr_pct"
-            and price_inputs is not None
-            and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
-            and wesm_profile_source
-        ),
-    )
-
-    updated_table, warnings = _run_sensitivity(
-        base_cfg=base_cfg,
-        pv_df=pv_df,
-        cycle_df=cycle_df,
-        metric_key=selected_metric.key,
-        lever_table=edited_table,
-        baseline_sim_output=baseline_output,
-        dod_override=dod_override,
-        econ_inputs=econ_inputs,
-        price_inputs=price_inputs,
-        wesm_profile_source=wesm_profile_source,
-    )
-    _save_impact_table(selected_metric.key, updated_table)
-    edited_table = updated_table
-
-    if warnings:
-        st.warning("\n".join(f"• {warning}" for warning in warnings))
+    if baseline_inputs.get(selected_metric.key) is None:
+        st.warning(
+            f"Baseline is required for {selected_metric.label}. "
+            "Enter a baseline value (especially PIRR) before running sensitivity."
+        )
     else:
-        st.success("Sensitivity impacts updated.")
+        cached_results = get_simulation_results()
+        econ_payload = get_latest_economics_payload() or {}
+        econ_inputs = econ_payload.get("economic_inputs")
+        price_inputs = econ_payload.get("price_inputs")
+        wesm_profile_source = econ_payload.get("wesm_profile_source")
+
+        cached_cfg, cached_dod_override = get_cached_simulation_config()
+        base_cfg = cached_cfg or SimConfig()
+        dod_override = cached_dod_override or "Auto (infer)"
+
+        baseline_output = cached_results.sim_output if cached_results else simulate_project(
+            base_cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            dod_override=dod_override,
+            need_logs=bool(
+                selected_metric.key == "pirr_pct"
+                and price_inputs is not None
+                and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
+                and wesm_profile_source
+            ),
+        )
+
+        updated_table, warnings = _run_sensitivity(
+            base_cfg=base_cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            metric_key=selected_metric.key,
+            lever_table=edited_table,
+            baseline_sim_output=baseline_output,
+            dod_override=dod_override,
+            econ_inputs=econ_inputs,
+            price_inputs=price_inputs,
+            wesm_profile_source=wesm_profile_source,
+        )
+        _save_impact_table(selected_metric.key, updated_table)
+        edited_table = updated_table
+
+        if warnings:
+            st.warning("\n".join(f"• {warning}" for warning in warnings))
+        else:
+            st.success("Sensitivity impacts updated.")
 
 st.markdown("### Tornado chart")
 baseline_value = baseline_inputs.get(selected_metric.key)
-if baseline_value is not None:
+if baseline_value is None:
+    st.metric("Baseline", "Missing")
+else:
     st.metric("Baseline", f"{baseline_value:,.2f}%")
 
 chart_source = _prepare_tornado_data(edited_table)
@@ -894,6 +929,14 @@ export_json = json.dumps(
     },
     indent=2,
 ).encode("utf-8")
+export_disabled = bool(missing_baselines)
+
+if export_disabled:
+    missing_labels = ", ".join(metric.label for metric in missing_baselines)
+    st.warning(
+        "Baseline values are required before export. Missing: "
+        f"{missing_labels}. Enter the baseline (especially PIRR) to continue."
+    )
 
 st.download_button(
     "Download sensitivity table (CSV)",
@@ -901,6 +944,7 @@ st.download_button(
     file_name="sensitivity_inputs.csv",
     mime="text/csv",
     use_container_width=True,
+    disabled=export_disabled,
 )
 st.download_button(
     "Download sensitivity inputs (JSON)",
@@ -908,6 +952,7 @@ st.download_button(
     file_name="sensitivity_inputs.json",
     mime="application/json",
     use_container_width=True,
+    disabled=export_disabled,
 )
 
 st.caption(
