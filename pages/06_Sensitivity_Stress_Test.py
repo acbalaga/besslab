@@ -109,20 +109,12 @@ def _default_lever_table() -> pd.DataFrame:
                 "Notes": "Requires economics/contract logic; not simulated for energy KPIs.",
             },
             {
-                "Lever": "POI limit",
-                "Low change": -5.0,
-                "High change": 5.0,
-                "Low impact (pp)": 0.0,
-                "High impact (pp)": 0.0,
-                "Notes": "Proxy via initial power MW for grid interconnect limit.",
-            },
-            {
-                "Lever": "Dispatch window changes",
+                "Lever": "Dispatch window duration (hours)",
                 "Low change": -1.0,
                 "High change": 1.0,
                 "Low impact (pp)": 0.0,
                 "High impact (pp)": 0.0,
-                "Notes": "Shift discharge/charge windows to test schedule risk.",
+                "Notes": "Adjusts duration of discharge windows; start times remain fixed.",
             },
             {
                 "Lever": "Availability (e.g., 97% vs 93%)",
@@ -133,12 +125,12 @@ def _default_lever_table() -> pd.DataFrame:
                 "Notes": "Availability impacts on achievable delivery and energy.",
             },
             {
-                "Lever": "BESS Size Capacity (MW)",
+                "Lever": "Power rating (MW)",
                 "Low change": -5.0,
                 "High change": 5.0,
                 "Low impact (pp)": 0.0,
                 "High impact (pp)": 0.0,
-                "Notes": "Power rating in MW; keep units explicit in assumptions.",
+                "Notes": "Maps to initial_power_mw (covers POI or inverter limit assumptions).",
             },
             {
                 "Lever": "BESS Size Energy Capacity (MWh)",
@@ -175,13 +167,8 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 
     summary = summarize_simulation(cached.sim_output)
     expected_total = sum(r.expected_firm_mwh for r in cached.sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in cached.sim_output.results)
     deficit_pct = (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
-    surplus_pct = (
-        summary.pv_excess_mwh / pv_total_generation * 100.0
-        if pv_total_generation > 0
-        else None
-    )
+    surplus_pct = (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     final_soh_pct = cached.sim_output.results[-1].soh_total * 100.0
     baseline.update(
         {
@@ -211,12 +198,54 @@ def _baseline_inputs(
         default_value = default_overrides.get(metric.key, baseline_values.get(metric.key))
         input_value = cols[idx % 2].number_input(
             metric.label,
-            value=float(default_value) if default_value is not None else 0.0,
-            step=0.1,
+            value=value_text,
             help=metric.description,
+            placeholder="Missing",
         )
-        baseline_inputs[metric.key] = input_value
+        parsed_value, error_message = _parse_optional_float(input_text)
+        if error_message:
+            cols[idx % 2].caption(f":red[{error_message}]")
+        elif parsed_value is None:
+            cols[idx % 2].caption(":orange[Missing baseline]")
+        baseline_inputs[metric.key] = parsed_value
     return baseline_inputs
+
+
+def _baseline_inputs_ready_for_refresh(
+    baseline_inputs: Dict[str, Optional[float]],
+    metrics: List[MetricDefinition],
+) -> bool:
+    """Return True when existing inputs appear to be placeholders (all zero/None)."""
+
+    for metric in metrics:
+        value = baseline_inputs.get(metric.key)
+        if value not in (None, 0.0):
+            return False
+    return True
+
+
+def _baseline_defaults_from_simulation(
+    metrics: List[MetricDefinition],
+    baseline_values: Dict[str, Optional[float]],
+    current_inputs: Optional[Dict[str, Optional[float]]],
+) -> Dict[str, Optional[float]]:
+    """Seed baseline defaults from simulation once real results are available."""
+
+    current_inputs = current_inputs or {}
+    has_baseline = any(baseline_values.get(metric.key) is not None for metric in metrics)
+    if has_baseline and _baseline_inputs_ready_for_refresh(current_inputs, metrics):
+        return {metric.key: baseline_values.get(metric.key) for metric in metrics}
+    return current_inputs
+
+
+def _parse_optional_float(raw_value: str) -> Tuple[Optional[float], Optional[str]]:
+    cleaned = raw_value.strip()
+    if not cleaned:
+        return None, None
+    try:
+        return float(cleaned), None
+    except ValueError:
+        return None, "Enter a numeric value or leave blank."
 
 
 def _get_metric_state_key(metric_key: str) -> str:
@@ -278,6 +307,10 @@ def _collect_impact_tables(metrics: List[MetricDefinition]) -> Dict[str, List[Di
 
 
 def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
+    scenario_label_map = {
+        "Low impact (pp)": "Low impact",
+        "High impact (pp)": "High impact",
+    }
     numeric_table = table.copy()
     numeric_table["Low impact (pp)"] = pd.to_numeric(
         numeric_table["Low impact (pp)"], errors="coerce"
@@ -292,6 +325,7 @@ def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
         var_name="Scenario",
         value_name="Impact (pp)",
     )
+    melted["Scenario"] = melted["Scenario"].map(scenario_label_map).fillna(melted["Scenario"])
     return melted.sort_values("sort_key", ascending=True)
 
 
@@ -441,13 +475,8 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
             delta_unit="pp",
             apply_delta=_unsupported_lever,
         ),
-        "POI limit": SensitivityLever(
-            label="POI limit",
-            delta_unit="MW",
-            apply_delta=_apply_power_delta,
-        ),
-        "Dispatch window changes": SensitivityLever(
-            label="Dispatch window changes",
+        "Dispatch window duration (hours)": SensitivityLever(
+            label="Dispatch window duration (hours)",
             delta_unit="hours",
             apply_delta=_apply_window_delta,
         ),
@@ -456,8 +485,8 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
             delta_unit="pp",
             apply_delta=_apply_availability_delta,
         ),
-        "BESS Size Capacity (MW)": SensitivityLever(
-            label="BESS Size Capacity (MW)",
+        "Power rating (MW)": SensitivityLever(
+            label="Power rating (MW)",
             delta_unit="MW",
             apply_delta=_apply_power_delta,
         ),
@@ -469,16 +498,35 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
     }
 
 
+def _is_supported_lever(lever_label: str, levers: Dict[str, SensitivityLever]) -> bool:
+    lever = levers.get(lever_label)
+    return lever is not None and lever.apply_delta is not _unsupported_lever
+
+
+def _split_lever_table(lever_table: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    levers = _sensitivity_levers()
+    supported_mask = lever_table["Lever"].map(lambda label: _is_supported_lever(str(label), levers))
+    supported = lever_table[supported_mask].reset_index(drop=True)
+    unsupported = lever_table[~supported_mask].reset_index(drop=True)
+    return supported, unsupported
+
+
+def _merge_supported_edits(full_table: pd.DataFrame, supported_table: pd.DataFrame) -> pd.DataFrame:
+    updated_table = full_table.set_index("Lever")
+    supported_updates = supported_table.set_index("Lever")
+    updated_table.update(supported_updates)
+    return updated_table.reset_index()
+
+
 def _compute_metric_value(metric_key: str, sim_output) -> Optional[float]:
     summary = summarize_simulation(sim_output)
     expected_total = sum(r.expected_firm_mwh for r in sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in sim_output.results)
     if metric_key == "compliance_pct":
         return summary.compliance
     if metric_key == "deficit_pct":
         return (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "surplus_pct":
-        return (summary.pv_excess_mwh / pv_total_generation * 100.0) if pv_total_generation > 0 else None
+        return (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "soh_pct":
         return sim_output.results[-1].soh_total * 100.0
     return None
@@ -557,6 +605,7 @@ def _run_sensitivity(
     updated_table = lever_table.copy()
     warnings: List[str] = []
     levers = _sensitivity_levers()
+    supported_mask = updated_table["Lever"].map(lambda label: _is_supported_lever(str(label), levers))
 
     def _metric_from_output(sim_output) -> Optional[float]:
         if metric_key == "pirr_pct":
@@ -574,14 +623,11 @@ def _run_sensitivity(
     if baseline_value is None:
         warnings.append("Baseline metric could not be computed; impacts will remain blank.")
 
-    for idx, row in updated_table.iterrows():
+    for idx, row in updated_table[supported_mask].iterrows():
         lever_label = str(row.get("Lever"))
         lever = levers.get(lever_label)
         if lever is None:
             warnings.append(f"Unknown lever '{lever_label}' skipped.")
-            continue
-        if lever.apply_delta is _unsupported_lever:
-            warnings.append(f"{lever_label} is not yet mapped to simulation inputs.")
             continue
 
         low_delta = float(row.get("Low change", 0.0) or 0.0)
@@ -697,7 +743,7 @@ st.caption(
     "Impacts are reported in percentage points relative to the baseline."
 )
 st.caption(
-    "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch windows."
+    "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch window duration."
 )
 
 baseline_inputs = _baseline_inputs(
@@ -722,93 +768,138 @@ selected_metric_label = st.selectbox(
 selected_metric = metric_lookup[selected_metric_label]
 
 impact_table = _load_impact_table(selected_metric.key, _default_lever_table())
+supported_table, unsupported_table = _split_lever_table(impact_table)
 
 with st.form("sensitivity_table_form", clear_on_submit=False):
-    edited_table = st.data_editor(
-        impact_table,
+    if supported_table.empty:
+        st.info("No simulated levers are available for sensitivity runs.", icon="ℹ️")
+        edited_supported_table = supported_table
+    else:
+        edited_supported_table = st.data_editor(
+            supported_table,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Lever": st.column_config.TextColumn("Lever", disabled=True),
+                "Low change": st.column_config.NumberColumn(
+                    "Low change",
+                    help="Magnitude of the downside change (see units in notes).",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "High change": st.column_config.NumberColumn(
+                    "High change",
+                    help="Magnitude of the upside change (see units in notes).",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "Low impact (pp)": st.column_config.NumberColumn(
+                    "Low impact (pp)",
+                    help="Computed change in the selected metric after running sensitivity.",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "High impact (pp)": st.column_config.NumberColumn(
+                    "High impact (pp)",
+                    help="Computed change in the selected metric after running sensitivity.",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "Notes": st.column_config.TextColumn("Notes", disabled=True),
+            },
+        )
+    run_sensitivity = st.form_submit_button("Run Sensitivity", use_container_width=True)
+
+edited_table = _merge_supported_edits(impact_table, edited_supported_table)
+
+if not unsupported_table.empty:
+    st.markdown("#### Not simulated (economic-only)")
+    st.caption("These levers are tracked for documentation but are not simulated in the model.")
+    unsupported_display = unsupported_table.copy()
+    unsupported_display.insert(1, "Status", "Not simulated (economic-only)")
+    st.data_editor(
+        unsupported_display,
         num_rows="fixed",
         use_container_width=True,
         hide_index=True,
+        disabled=True,
         column_config={
             "Lever": st.column_config.TextColumn("Lever", disabled=True),
-            "Low change": st.column_config.NumberColumn(
-                "Low change",
-                help="Magnitude of the downside change (see units in notes).",
-                step=0.1,
-                format="%.2f",
-            ),
-            "High change": st.column_config.NumberColumn(
-                "High change",
-                help="Magnitude of the upside change (see units in notes).",
-                step=0.1,
-                format="%.2f",
-            ),
+            "Status": st.column_config.TextColumn("Status", disabled=True),
+            "Low change": st.column_config.NumberColumn("Low change", format="%.2f", disabled=True),
+            "High change": st.column_config.NumberColumn("High change", format="%.2f", disabled=True),
             "Low impact (pp)": st.column_config.NumberColumn(
                 "Low impact (pp)",
-                help="Computed change in the selected metric after running sensitivity.",
-                step=0.1,
                 format="%.2f",
+                disabled=True,
             ),
             "High impact (pp)": st.column_config.NumberColumn(
                 "High impact (pp)",
-                help="Computed change in the selected metric after running sensitivity.",
-                step=0.1,
                 format="%.2f",
+                disabled=True,
             ),
             "Notes": st.column_config.TextColumn("Notes", disabled=True),
         },
     )
-    run_sensitivity = st.form_submit_button("Run Sensitivity", use_container_width=True)
 
 _save_impact_table(selected_metric.key, edited_table)
 
 if run_sensitivity:
-    cached_results = get_simulation_results()
-    econ_payload = get_latest_economics_payload() or {}
-    econ_inputs = econ_payload.get("economic_inputs")
-    price_inputs = econ_payload.get("price_inputs")
-    wesm_profile_source = econ_payload.get("wesm_profile_source")
-
-    cached_cfg, cached_dod_override = get_cached_simulation_config()
-    base_cfg = cached_cfg or SimConfig()
-    dod_override = cached_dod_override or "Auto (infer)"
-
-    baseline_output = cached_results.sim_output if cached_results else simulate_project(
-        base_cfg,
-        pv_df=pv_df,
-        cycle_df=cycle_df,
-        dod_override=dod_override,
-        need_logs=bool(
-            selected_metric.key == "pirr_pct"
-            and price_inputs is not None
-            and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
-            and wesm_profile_source
-        ),
-    )
-
-    updated_table, warnings = _run_sensitivity(
-        base_cfg=base_cfg,
-        pv_df=pv_df,
-        cycle_df=cycle_df,
-        metric_key=selected_metric.key,
-        lever_table=edited_table,
-        baseline_sim_output=baseline_output,
-        dod_override=dod_override,
-        econ_inputs=econ_inputs,
-        price_inputs=price_inputs,
-        wesm_profile_source=wesm_profile_source,
-    )
-    _save_impact_table(selected_metric.key, updated_table)
-    edited_table = updated_table
-
-    if warnings:
-        st.warning("\n".join(f"• {warning}" for warning in warnings))
+    if baseline_inputs.get(selected_metric.key) is None:
+        st.warning(
+            f"Baseline is required for {selected_metric.label}. "
+            "Enter a baseline value (especially PIRR) before running sensitivity."
+        )
     else:
-        st.success("Sensitivity impacts updated.")
+        cached_results = get_simulation_results()
+        econ_payload = get_latest_economics_payload() or {}
+        econ_inputs = econ_payload.get("economic_inputs")
+        price_inputs = econ_payload.get("price_inputs")
+        wesm_profile_source = econ_payload.get("wesm_profile_source")
+
+        cached_cfg, cached_dod_override = get_cached_simulation_config()
+        base_cfg = cached_cfg or SimConfig()
+        dod_override = cached_dod_override or "Auto (infer)"
+
+        baseline_output = cached_results.sim_output if cached_results else simulate_project(
+            base_cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            dod_override=dod_override,
+            need_logs=bool(
+                selected_metric.key == "pirr_pct"
+                and price_inputs is not None
+                and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm)
+                and wesm_profile_source
+            ),
+        )
+
+        updated_table, warnings = _run_sensitivity(
+            base_cfg=base_cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            metric_key=selected_metric.key,
+            lever_table=edited_table,
+            baseline_sim_output=baseline_output,
+            dod_override=dod_override,
+            econ_inputs=econ_inputs,
+            price_inputs=price_inputs,
+            wesm_profile_source=wesm_profile_source,
+        )
+        _save_impact_table(selected_metric.key, updated_table)
+        edited_table = updated_table
+
+        if warnings:
+            st.warning("\n".join(f"• {warning}" for warning in warnings))
+        else:
+            st.success("Sensitivity impacts updated.")
 
 st.markdown("### Tornado chart")
 baseline_value = baseline_inputs.get(selected_metric.key)
-if baseline_value is not None:
+if baseline_value is None:
+    st.metric("Baseline", "Missing")
+else:
     st.metric("Baseline", f"{baseline_value:,.2f}%")
 
 chart_source = _prepare_tornado_data(edited_table)
@@ -846,6 +937,15 @@ st.download_button(
     file_name="sensitivity_inputs.csv",
     mime="text/csv",
     use_container_width=True,
+    disabled=export_disabled,
+)
+st.download_button(
+    "Download sensitivity inputs (JSON)",
+    data=export_json,
+    file_name="sensitivity_inputs.json",
+    mime="application/json",
+    use_container_width=True,
+    disabled=export_disabled,
 )
 st.download_button(
     "Download sensitivity inputs (JSON)",
@@ -856,5 +956,5 @@ st.download_button(
 )
 
 st.caption(
-    "Surplus % uses PV curtailment ÷ total PV generation. Deficit % uses total shortfall ÷ total expected firm energy."
+    "Surplus % uses PV curtailment ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
 )
