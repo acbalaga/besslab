@@ -167,13 +167,8 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 
     summary = summarize_simulation(cached.sim_output)
     expected_total = sum(r.expected_firm_mwh for r in cached.sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in cached.sim_output.results)
     deficit_pct = (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
-    surplus_pct = (
-        summary.pv_excess_mwh / pv_total_generation * 100.0
-        if pv_total_generation > 0
-        else None
-    )
+    surplus_pct = (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     final_soh_pct = cached.sim_output.results[-1].soh_total * 100.0
     baseline.update(
         {
@@ -215,6 +210,33 @@ def _baseline_inputs(
             cols[idx % 2].caption(":orange[Missing baseline]")
         baseline_inputs[metric.key] = parsed_value
     return baseline_inputs
+
+
+def _baseline_inputs_ready_for_refresh(
+    baseline_inputs: Dict[str, Optional[float]],
+    metrics: List[MetricDefinition],
+) -> bool:
+    """Return True when existing inputs appear to be placeholders (all zero/None)."""
+
+    for metric in metrics:
+        value = baseline_inputs.get(metric.key)
+        if value not in (None, 0.0):
+            return False
+    return True
+
+
+def _baseline_defaults_from_simulation(
+    metrics: List[MetricDefinition],
+    baseline_values: Dict[str, Optional[float]],
+    current_inputs: Optional[Dict[str, Optional[float]]],
+) -> Dict[str, Optional[float]]:
+    """Seed baseline defaults from simulation once real results are available."""
+
+    current_inputs = current_inputs or {}
+    has_baseline = any(baseline_values.get(metric.key) is not None for metric in metrics)
+    if has_baseline and _baseline_inputs_ready_for_refresh(current_inputs, metrics):
+        return {metric.key: baseline_values.get(metric.key) for metric in metrics}
+    return current_inputs
 
 
 def _parse_optional_float(raw_value: str) -> Tuple[Optional[float], Optional[str]]:
@@ -505,13 +527,12 @@ def _merge_supported_edits(full_table: pd.DataFrame, supported_table: pd.DataFra
 def _compute_metric_value(metric_key: str, sim_output) -> Optional[float]:
     summary = summarize_simulation(sim_output)
     expected_total = sum(r.expected_firm_mwh for r in sim_output.results)
-    pv_total_generation = sum(r.available_pv_mwh for r in sim_output.results)
     if metric_key == "compliance_pct":
         return summary.compliance
     if metric_key == "deficit_pct":
         return (summary.total_shortfall_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "surplus_pct":
-        return (summary.pv_excess_mwh / pv_total_generation * 100.0) if pv_total_generation > 0 else None
+        return (summary.pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else None
     if metric_key == "soh_pct":
         return sim_output.results[-1].soh_total * 100.0
     return None
@@ -731,10 +752,15 @@ st.caption(
     "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch window duration."
 )
 
+baseline_defaults = _baseline_defaults_from_simulation(
+    metrics,
+    baseline_values,
+    st.session_state.get("sensitivity_baseline_inputs"),
+)
 baseline_inputs = _baseline_inputs(
     metrics,
     baseline_values,
-    default_overrides=st.session_state.get("sensitivity_baseline_inputs"),
+    default_overrides=baseline_defaults,
 )
 st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
 missing_baselines = _missing_baseline_metrics(baseline_inputs, metrics)
@@ -943,5 +969,5 @@ st.download_button(
 )
 
 st.caption(
-    "Surplus % uses PV curtailment ÷ total PV generation. Deficit % uses total shortfall ÷ total expected firm energy."
+    "Surplus % uses PV curtailment ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
 )
