@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import altair as alt
 import pandas as pd
@@ -196,6 +197,7 @@ def _baseline_from_simulation() -> Dict[str, Optional[float]]:
 def _baseline_inputs(
     metrics: List[MetricDefinition],
     baseline_values: Dict[str, Optional[float]],
+    default_overrides: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Optional[float]]:
     st.markdown("#### Baseline values")
     st.caption(
@@ -203,9 +205,10 @@ def _baseline_inputs(
         "(especially PIRR) before exporting the sensitivity table."
     )
     baseline_inputs: Dict[str, Optional[float]] = {}
+    default_overrides = default_overrides or {}
     cols = st.columns(2)
     for idx, metric in enumerate(metrics):
-        default_value = baseline_values.get(metric.key)
+        default_value = default_overrides.get(metric.key, baseline_values.get(metric.key))
         input_value = cols[idx % 2].number_input(
             metric.label,
             value=float(default_value) if default_value is not None else 0.0,
@@ -232,6 +235,46 @@ def _load_impact_table(metric_key: str, default_df: pd.DataFrame) -> pd.DataFram
 
 def _save_impact_table(metric_key: str, table: pd.DataFrame) -> None:
     st.session_state[_get_metric_state_key(metric_key)] = table
+
+
+def _normalize_baseline_inputs(
+    payload: Dict[str, Any],
+    metrics: List[MetricDefinition],
+    defaults: Dict[str, Optional[float]],
+) -> Dict[str, float]:
+    normalized: Dict[str, float] = {}
+    for metric in metrics:
+        raw_value = payload.get(metric.key, defaults.get(metric.key))
+        try:
+            normalized[metric.key] = float(raw_value) if raw_value is not None else 0.0
+        except (TypeError, ValueError):
+            normalized[metric.key] = float(defaults.get(metric.key) or 0.0)
+    return normalized
+
+
+def _normalize_impact_table(table: pd.DataFrame, default_df: pd.DataFrame) -> pd.DataFrame:
+    """Align imported tables to the fixed lever schema used by the UI."""
+
+    if "Lever" not in table.columns:
+        return default_df.copy()
+    merged = default_df[["Lever"]].merge(table, on="Lever", how="left")
+    for column in default_df.columns:
+        if column not in merged.columns:
+            merged[column] = default_df[column]
+    merged = merged[default_df.columns]
+    for column in ["Low change", "High change", "Low impact (pp)", "High impact (pp)"]:
+        merged[column] = pd.to_numeric(merged[column], errors="coerce").fillna(default_df[column])
+    merged["Notes"] = merged["Notes"].fillna(default_df["Notes"])
+    return merged
+
+
+def _collect_impact_tables(metrics: List[MetricDefinition]) -> Dict[str, List[Dict[str, Any]]]:
+    tables: Dict[str, List[Dict[str, Any]]] = {}
+    for metric in metrics:
+        table = st.session_state.get(_get_metric_state_key(metric.key))
+        if isinstance(table, pd.DataFrame):
+            tables[metric.key] = table.to_dict(orient="records")
+    return tables
 
 
 def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
@@ -587,6 +630,67 @@ pv_df, cycle_df = render_layout()
 metrics = _metric_definitions()
 baseline_values = _baseline_from_simulation()
 
+with st.expander("Load/save sensitivity inputs (JSON)", expanded=False):
+    st.caption(
+        "Use JSON to persist baseline values and the lever table across sessions. "
+        "Example keys: selected_metric_label, baseline_inputs, impact_tables."
+    )
+    uploaded_inputs = st.file_uploader(
+        "Upload sensitivity inputs JSON",
+        type=["json"],
+        accept_multiple_files=False,
+        key="sensitivity_inputs_upload",
+    )
+    pasted_inputs = st.text_area(
+        "Or paste sensitivity inputs JSON",
+        placeholder='{"baseline_inputs": {"compliance_pct": 98.5}}',
+        height=120,
+        key="sensitivity_inputs_paste",
+    )
+    if st.button("Apply JSON inputs", use_container_width=True):
+        payload_text = ""
+        if uploaded_inputs is not None:
+            payload_text = uploaded_inputs.read().decode("utf-8")
+        elif pasted_inputs.strip():
+            payload_text = pasted_inputs
+        if payload_text:
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError as exc:
+                st.error(f"Invalid JSON: {exc}")
+            else:
+                if isinstance(payload, dict):
+                    baseline_defaults = {metric.key: baseline_values.get(metric.key) for metric in metrics}
+                    baseline_inputs = _normalize_baseline_inputs(
+                        payload.get("baseline_inputs", {}),
+                        metrics,
+                        baseline_defaults,
+                    )
+                    st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
+                    impact_tables = payload.get("impact_tables", {})
+                    if isinstance(impact_tables, dict):
+                        default_df = _default_lever_table()
+                        for metric in metrics:
+                            records = impact_tables.get(metric.key)
+                            if isinstance(records, list):
+                                table_df = pd.DataFrame(records)
+                                st.session_state[_get_metric_state_key(metric.key)] = _normalize_impact_table(
+                                    table_df,
+                                    default_df,
+                                )
+                    selected_metric_label = payload.get("selected_metric_label")
+                    if (
+                        isinstance(selected_metric_label, str)
+                        and selected_metric_label in [metric.label for metric in metrics]
+                    ):
+                        st.session_state["sensitivity_metric_select"] = selected_metric_label
+                    st.success("Sensitivity inputs loaded. Re-rendering with the new values.")
+                    st.rerun()
+                else:
+                    st.error("Expected a JSON object with sensitivity inputs.")
+        else:
+            st.info("Provide JSON content to load.", icon="ℹ️")
+
 st.markdown("### Sensitivity levers")
 st.caption(
     "Enter low/high changes for each lever, then click Run Sensitivity to compute impacts. "
@@ -596,10 +700,25 @@ st.caption(
     "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch windows."
 )
 
-baseline_inputs = _baseline_inputs(metrics, baseline_values)
+baseline_inputs = _baseline_inputs(
+    metrics,
+    baseline_values,
+    default_overrides=st.session_state.get("sensitivity_baseline_inputs"),
+)
+st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
 
 metric_lookup = {metric.label: metric for metric in metrics}
-selected_metric_label = st.selectbox("Select metric", list(metric_lookup.keys()))
+metric_labels = list(metric_lookup.keys())
+selected_metric_label = st.selectbox(
+    "Select metric",
+    metric_labels,
+    index=metric_labels.index(
+        st.session_state.get("sensitivity_metric_select")
+    )
+    if st.session_state.get("sensitivity_metric_select") in metric_labels
+    else 0,
+    key="sensitivity_metric_select",
+)
 selected_metric = metric_lookup[selected_metric_label]
 
 impact_table = _load_impact_table(selected_metric.key, _default_lever_table())
@@ -711,12 +830,28 @@ export_df = edited_table.copy()
 export_df["Metric"] = selected_metric.label
 export_df["Baseline (%)"] = baseline_value
 export_csv = export_df.to_csv(index=False).encode("utf-8")
+export_json = json.dumps(
+    {
+        "schema_version": 1,
+        "selected_metric_label": selected_metric.label,
+        "baseline_inputs": baseline_inputs,
+        "impact_tables": _collect_impact_tables(metrics),
+    },
+    indent=2,
+).encode("utf-8")
 
 st.download_button(
     "Download sensitivity table (CSV)",
     data=export_csv,
     file_name="sensitivity_inputs.csv",
     mime="text/csv",
+    use_container_width=True,
+)
+st.download_button(
+    "Download sensitivity inputs (JSON)",
+    data=export_json,
+    file_name="sensitivity_inputs.json",
+    mime="application/json",
     use_container_width=True,
 )
 

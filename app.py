@@ -10,7 +10,15 @@ import pandas as pd
 import streamlit as st
 
 import utils.economics as economics
-from services.simulation_core import HourlyLog, SimConfig, YearResult, resolve_efficiencies, simulate_project, summarize_simulation
+from services.simulation_core import (
+    HourlyLog,
+    SimConfig,
+    Window,
+    YearResult,
+    resolve_efficiencies,
+    simulate_project,
+    summarize_simulation,
+)
 from frontend.ui.charts import (
     AvgProfileBundle,
     build_avg_profile_bundle,
@@ -56,6 +64,7 @@ from utils.ui_state import (
     get_simulation_results,
     load_shared_data,
     save_last_run_inputs_fingerprint,
+    save_manual_aug_schedule_rows,
     save_simulation_config,
     save_simulation_results,
     save_simulation_snapshot,
@@ -63,6 +72,493 @@ from utils.ui_state import (
 
 
 BASE_DIR = get_base_dir()
+
+INPUTS_JSON_SCHEMA_VERSION = 1
+INPUTS_FORM_KEYS = {
+    "years": "inputs_years",
+    "pv_deg_pct": "inputs_pv_deg_pct",
+    "pv_avail": "inputs_pv_avail",
+    "bess_avail": "inputs_bess_avail",
+    "use_split_rte": "inputs_use_split_rte",
+    "charge_eff": "inputs_charge_eff",
+    "discharge_eff": "inputs_discharge_eff",
+    "rte": "inputs_rte",
+    "run_economics": "inputs_run_economics",
+    "augmentation_mode": "augmentation_strategy_mode",
+    "aug_trigger_type": "inputs_aug_trigger_type",
+    "aug_threshold_margin_pct": "inputs_aug_threshold_margin_pct",
+    "aug_topup_margin_pct": "inputs_aug_topup_margin_pct",
+    "aug_soh_trigger_pct": "inputs_aug_soh_trigger_pct",
+    "aug_soh_add_pct": "inputs_aug_soh_add_pct",
+    "aug_periodic_every_years": "inputs_aug_periodic_every_years",
+    "aug_periodic_add_pct": "inputs_aug_periodic_add_pct",
+    "aug_size_mode": "inputs_aug_size_mode",
+    "aug_fixed_energy_mwh": "inputs_aug_fixed_energy_mwh",
+    "aug_retire_enabled": "inputs_aug_retire_enabled",
+    "aug_retire_soh_pct": "inputs_aug_retire_soh_pct",
+    "aug_retire_replace_mode": "inputs_aug_retire_replace_mode",
+    "aug_retire_replace_pct": "inputs_aug_retire_replace_pct",
+    "aug_retire_replace_fixed_mwh": "inputs_aug_retire_replace_fixed_mwh",
+    "initial_power_mw": "inputs_initial_power_mw",
+    "initial_usable_mwh": "inputs_initial_usable_mwh",
+    "soc_floor_pct": "inputs_soc_floor_pct",
+    "soc_ceiling_pct": "inputs_soc_ceiling_pct",
+    "contracted_mw": "inputs_contracted_mw",
+    "discharge_windows": "inputs_discharge_windows",
+    "charge_windows": "inputs_charge_windows",
+    "calendar_fade_pct": "inputs_calendar_fade_pct",
+    "dod_override": "inputs_dod_override",
+    "wacc_pct": "inputs_wacc_pct",
+    "inflation_pct": "inputs_inflation_pct",
+    "forex_rate_php_per_usd": "inputs_forex_rate_php_per_usd",
+    "capex_mode": "inputs_capex_mode",
+    "capex_usd_per_kwh": "inputs_capex_usd_per_kwh",
+    "capex_total_usd": "inputs_capex_total_usd",
+    "opex_mode": "inputs_opex_mode",
+    "fixed_opex_pct": "inputs_fixed_opex_pct",
+    "opex_php_per_kwh": "inputs_opex_php_per_kwh",
+    "fixed_opex_musd": "inputs_fixed_opex_musd",
+    "include_devex_year0": "inputs_include_devex_year0",
+    "devex_cost_php": "inputs_devex_cost_php",
+    "use_blended_price": "inputs_use_blended_price",
+    "contract_price_php_per_kwh": "inputs_contract_price_php_per_kwh",
+    "pv_market_price_php_per_kwh": "inputs_pv_market_price_php_per_kwh",
+    "blended_price_php_per_kwh": "inputs_blended_price_php_per_kwh",
+    "escalate_prices": "inputs_escalate_prices",
+    "wesm_pricing_enabled": "inputs_wesm_pricing_enabled",
+    "sell_to_wesm": "inputs_sell_to_wesm",
+    "debt_equity_ratio": "inputs_debt_equity_ratio",
+    "cost_of_debt_pct": "inputs_cost_of_debt_pct",
+    "tenor_years": "inputs_tenor_years",
+    "variable_schedule_choice": "inputs_variable_schedule_choice",
+    "periodic_variable_opex_usd": "inputs_periodic_variable_opex_usd",
+    "periodic_variable_opex_interval_years": "inputs_periodic_variable_opex_interval_years",
+    "variable_opex_custom_text": "inputs_variable_opex_custom_text",
+}
+
+
+def _coerce_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return default
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_optional_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_choice(value: Any, options: List[Any], default: Any) -> Any:
+    """Return a valid choice for selectboxes/radios or fall back to default."""
+
+    return value if value in options else default
+
+
+def _coerce_year_choice(value: Any, options: List[int], fallback: int) -> int:
+    """Return a valid project-life option or fall back to the closest default."""
+
+    if value in options:
+        return int(value)
+    if fallback in options:
+        return int(fallback)
+    return options[0]
+
+
+def _format_hhmm(hour_value: float) -> str:
+    hours = int(hour_value)
+    minutes = int(round((hour_value - hours) * 60))
+    if minutes == 60:
+        hours = (hours + 1) % 24
+        minutes = 0
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def _windows_to_text(windows: List[Window]) -> str:
+    return ", ".join(f"{_format_hhmm(w.start)}-{_format_hhmm(w.end)}" for w in windows)
+
+
+def _coerce_windows(payload: Any, fallback: List[Window]) -> List[Window]:
+    if isinstance(payload, list):
+        windows: List[Window] = []
+        for item in payload:
+            if isinstance(item, Window):
+                windows.append(item)
+            elif isinstance(item, dict):
+                start = _coerce_optional_float(item.get("start"))
+                end = _coerce_optional_float(item.get("end"))
+                if start is not None and end is not None:
+                    windows.append(Window(start=start, end=end))
+        if windows:
+            return windows
+    return fallback
+
+
+def _coerce_manual_schedule(payload: Any) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    if not isinstance(payload, list):
+        return rows
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        year = _coerce_optional_int(item.get("year") or item.get("Year"))
+        basis = item.get("basis") or item.get("Basis")
+        amount = item.get("value") if "value" in item else item.get("Amount")
+        amount_value = _coerce_optional_float(amount)
+        if year is None or basis is None or amount_value is None:
+            continue
+        rows.append({"Year": year, "Basis": str(basis), "Amount": amount_value})
+    return rows
+
+
+def _build_inputs_payload(
+    cfg: SimConfig,
+    dod_override: Optional[str],
+    run_economics: bool,
+    econ_inputs: Optional[EconomicInputs],
+    price_inputs: Optional[PriceInputs],
+    discharge_windows_text: str,
+    charge_windows_text: str,
+) -> Dict[str, Any]:
+    manual_schedule_rows: List[Dict[str, Any]] = []
+    for entry in cfg.augmentation_schedule or []:
+        if isinstance(entry, dict):
+            year_value = entry.get("year") or entry.get("Year")
+            basis_value = entry.get("basis") or entry.get("Basis")
+            amount_value = entry.get("value") if "value" in entry else entry.get("Amount")
+        else:
+            year_value = getattr(entry, "year", None)
+            basis_value = getattr(entry, "basis", None)
+            amount_value = getattr(entry, "value", None)
+        if year_value is None or basis_value is None or amount_value is None:
+            continue
+        manual_schedule_rows.append(
+            {"Year": int(year_value), "Basis": str(basis_value), "Amount": float(amount_value)}
+        )
+
+    payload = {
+        "schema_version": INPUTS_JSON_SCHEMA_VERSION,
+        "config": asdict(cfg),
+        "discharge_windows_text": discharge_windows_text,
+        "charge_windows_text": charge_windows_text,
+        "dod_override": dod_override,
+        "run_economics": run_economics,
+        "economic_inputs": asdict(econ_inputs) if econ_inputs is not None else None,
+        "price_inputs": asdict(price_inputs) if price_inputs is not None else None,
+        "manual_augmentation_schedule": manual_schedule_rows,
+    }
+    return payload
+
+
+def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> None:
+    config_payload = payload.get("config")
+    config_payload = config_payload if isinstance(config_payload, dict) else {}
+    econ_payload = payload.get("economic_inputs")
+    econ_payload = econ_payload if isinstance(econ_payload, dict) else {}
+    price_payload = payload.get("price_inputs")
+    price_payload = price_payload if isinstance(price_payload, dict) else {}
+
+    year_options = list(range(10, 36, 5))
+    years = _coerce_year_choice(
+        _coerce_int(config_payload.get("years"), fallback_cfg.years),
+        year_options,
+        fallback_cfg.years,
+    )
+    discharge_windows = _coerce_windows(config_payload.get("discharge_windows"), fallback_cfg.discharge_windows)
+    discharge_windows_text = config_payload.get("discharge_windows_text") or payload.get("discharge_windows_text")
+    if not discharge_windows_text:
+        discharge_windows_text = _windows_to_text(discharge_windows)
+    charge_windows_text = config_payload.get("charge_windows_text")
+    if charge_windows_text is None:
+        charge_windows_text = fallback_cfg.charge_windows_text or ""
+
+    forex_rate_php_per_usd = _coerce_float(
+        econ_payload.get("forex_rate_php_per_usd"),
+        economics.DEFAULT_FOREX_RATE_PHP_PER_USD,
+    )
+    run_economics = _coerce_bool(
+        payload.get("run_economics"),
+        bool(econ_payload or price_payload),
+    )
+
+    st.session_state[INPUTS_FORM_KEYS["years"]] = years
+    st.session_state[INPUTS_FORM_KEYS["pv_deg_pct"]] = _coerce_float(
+        config_payload.get("pv_deg_rate"),
+        fallback_cfg.pv_deg_rate,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["pv_avail"]] = _coerce_float(
+        config_payload.get("pv_availability"),
+        fallback_cfg.pv_availability,
+    )
+    st.session_state[INPUTS_FORM_KEYS["bess_avail"]] = _coerce_float(
+        config_payload.get("bess_availability"),
+        fallback_cfg.bess_availability,
+    )
+    use_split_rte = _coerce_bool(
+        config_payload.get("use_split_rte"),
+        fallback_cfg.use_split_rte,
+    )
+    st.session_state[INPUTS_FORM_KEYS["use_split_rte"]] = use_split_rte
+    st.session_state[INPUTS_FORM_KEYS["charge_eff"]] = _coerce_float(
+        config_payload.get("charge_efficiency"),
+        fallback_cfg.charge_efficiency or 0.94,
+    )
+    st.session_state[INPUTS_FORM_KEYS["discharge_eff"]] = _coerce_float(
+        config_payload.get("discharge_efficiency"),
+        fallback_cfg.discharge_efficiency or 0.94,
+    )
+    st.session_state[INPUTS_FORM_KEYS["rte"]] = _coerce_float(
+        config_payload.get("rte_roundtrip"),
+        fallback_cfg.rte_roundtrip,
+    )
+    st.session_state[INPUTS_FORM_KEYS["run_economics"]] = run_economics
+    st.session_state[INPUTS_FORM_KEYS["augmentation_mode"]] = _coerce_choice(
+        config_payload.get("augmentation"),
+        ["None", "Threshold", "Periodic", "Manual"],
+        fallback_cfg.augmentation,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_trigger_type"]] = _coerce_choice(
+        config_payload.get("aug_trigger_type"),
+        ["Capability", "SOH"],
+        fallback_cfg.aug_trigger_type,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_threshold_margin_pct"]] = _coerce_float(
+        config_payload.get("aug_threshold_margin"),
+        fallback_cfg.aug_threshold_margin,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_topup_margin_pct"]] = _coerce_float(
+        config_payload.get("aug_topup_margin"),
+        fallback_cfg.aug_topup_margin,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_soh_trigger_pct"]] = _coerce_float(
+        config_payload.get("aug_soh_trigger_pct"),
+        fallback_cfg.aug_soh_trigger_pct,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_soh_add_pct"]] = _coerce_float(
+        config_payload.get("aug_soh_add_frac_initial"),
+        fallback_cfg.aug_soh_add_frac_initial,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_periodic_every_years"]] = _coerce_int(
+        config_payload.get("aug_periodic_every_years"),
+        fallback_cfg.aug_periodic_every_years,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_periodic_add_pct"]] = _coerce_float(
+        config_payload.get("aug_periodic_add_frac_of_bol"),
+        fallback_cfg.aug_periodic_add_frac_of_bol,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_size_mode"]] = _coerce_choice(
+        config_payload.get("aug_add_mode"),
+        ["Percent", "Fixed"],
+        fallback_cfg.aug_add_mode,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_fixed_energy_mwh"]] = _coerce_float(
+        config_payload.get("aug_fixed_energy_mwh"),
+        fallback_cfg.aug_fixed_energy_mwh,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_enabled"]] = _coerce_bool(
+        config_payload.get("aug_retire_old_cohort"),
+        fallback_cfg.aug_retire_old_cohort,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_soh_pct"]] = _coerce_float(
+        config_payload.get("aug_retire_soh_pct"),
+        fallback_cfg.aug_retire_soh_pct,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_mode"]] = _coerce_choice(
+        config_payload.get("aug_retire_replacement_mode"),
+        ["None", "Percent", "Fixed"],
+        fallback_cfg.aug_retire_replacement_mode,
+    )
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_pct"]] = _coerce_float(
+        config_payload.get("aug_retire_replacement_pct_bol"),
+        fallback_cfg.aug_retire_replacement_pct_bol,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["aug_retire_replace_fixed_mwh"]] = _coerce_float(
+        config_payload.get("aug_retire_replacement_fixed_mwh"),
+        fallback_cfg.aug_retire_replacement_fixed_mwh,
+    )
+    st.session_state[INPUTS_FORM_KEYS["initial_power_mw"]] = _coerce_float(
+        config_payload.get("initial_power_mw"),
+        fallback_cfg.initial_power_mw,
+    )
+    st.session_state[INPUTS_FORM_KEYS["initial_usable_mwh"]] = _coerce_float(
+        config_payload.get("initial_usable_mwh"),
+        fallback_cfg.initial_usable_mwh,
+    )
+    st.session_state[INPUTS_FORM_KEYS["soc_floor_pct"]] = _coerce_float(
+        config_payload.get("soc_floor"),
+        fallback_cfg.soc_floor,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["soc_ceiling_pct"]] = _coerce_float(
+        config_payload.get("soc_ceiling"),
+        fallback_cfg.soc_ceiling,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["contracted_mw"]] = _coerce_float(
+        config_payload.get("contracted_mw"),
+        fallback_cfg.contracted_mw,
+    )
+    st.session_state[INPUTS_FORM_KEYS["discharge_windows"]] = discharge_windows_text
+    st.session_state[INPUTS_FORM_KEYS["charge_windows"]] = charge_windows_text
+    st.session_state[INPUTS_FORM_KEYS["calendar_fade_pct"]] = _coerce_float(
+        config_payload.get("calendar_fade_rate"),
+        fallback_cfg.calendar_fade_rate,
+    ) * 100.0
+    dod_options = ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"]
+    st.session_state[INPUTS_FORM_KEYS["dod_override"]] = _coerce_choice(
+        payload.get("dod_override"),
+        dod_options,
+        st.session_state.get(INPUTS_FORM_KEYS["dod_override"], "Auto (infer)"),
+    )
+
+    manual_schedule_rows = _coerce_manual_schedule(
+        payload.get("manual_augmentation_schedule") or config_payload.get("augmentation_schedule")
+    )
+    if manual_schedule_rows:
+        save_manual_aug_schedule_rows(manual_schedule_rows, years)
+
+    st.session_state[INPUTS_FORM_KEYS["wacc_pct"]] = _coerce_float(
+        econ_payload.get("wacc"),
+        0.08,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["inflation_pct"]] = _coerce_float(
+        econ_payload.get("inflation_rate"),
+        0.03,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["forex_rate_php_per_usd"]] = forex_rate_php_per_usd
+
+    capex_mode = "Total CAPEX (USD)"
+    if econ_payload.get("capex_usd_per_kwh") is not None:
+        capex_mode = "USD/kWh (BOL)"
+    st.session_state[INPUTS_FORM_KEYS["capex_mode"]] = _coerce_choice(
+        econ_payload.get("capex_mode"),
+        ["USD/kWh (BOL)", "Total CAPEX (USD)"],
+        capex_mode,
+    )
+    st.session_state[INPUTS_FORM_KEYS["capex_usd_per_kwh"]] = _coerce_float(
+        econ_payload.get("capex_usd_per_kwh"),
+        0.0,
+    )
+    capex_total_usd = econ_payload.get("capex_total_usd")
+    if capex_total_usd is None and econ_payload.get("capex_musd"):
+        capex_total_usd = _coerce_float(econ_payload.get("capex_musd"), 0.0) * 1_000_000.0
+    st.session_state[INPUTS_FORM_KEYS["capex_total_usd"]] = _coerce_float(capex_total_usd, 40_000_000.0)
+
+    opex_mode = "% of CAPEX per year"
+    if econ_payload.get("opex_php_per_kwh") is not None:
+        opex_mode = "PHP/kWh on total generation"
+    st.session_state[INPUTS_FORM_KEYS["opex_mode"]] = _coerce_choice(
+        econ_payload.get("opex_mode"),
+        ["% of CAPEX per year", "PHP/kWh on total generation"],
+        opex_mode,
+    )
+    st.session_state[INPUTS_FORM_KEYS["fixed_opex_pct"]] = _coerce_float(
+        econ_payload.get("fixed_opex_pct_of_capex"),
+        2.0,
+    )
+    st.session_state[INPUTS_FORM_KEYS["opex_php_per_kwh"]] = _coerce_float(
+        econ_payload.get("opex_php_per_kwh"),
+        0.0,
+    )
+    st.session_state[INPUTS_FORM_KEYS["fixed_opex_musd"]] = _coerce_float(
+        econ_payload.get("fixed_opex_musd"),
+        0.0,
+    )
+    st.session_state[INPUTS_FORM_KEYS["include_devex_year0"]] = _coerce_bool(
+        econ_payload.get("include_devex_year0"),
+        False,
+    )
+    st.session_state[INPUTS_FORM_KEYS["devex_cost_php"]] = _coerce_float(
+        econ_payload.get("devex_cost_php"),
+        economics.DEVEX_COST_PHP,
+    )
+
+    blended_price_usd_per_mwh = price_payload.get("blended_price_usd_per_mwh")
+    use_blended_price = blended_price_usd_per_mwh is not None
+    st.session_state[INPUTS_FORM_KEYS["use_blended_price"]] = use_blended_price
+    st.session_state[INPUTS_FORM_KEYS["contract_price_php_per_kwh"]] = _coerce_float(
+        price_payload.get("contract_price_usd_per_mwh"),
+        0.0,
+    ) * forex_rate_php_per_usd / 1000.0
+    st.session_state[INPUTS_FORM_KEYS["pv_market_price_php_per_kwh"]] = _coerce_float(
+        price_payload.get("pv_market_price_usd_per_mwh"),
+        0.0,
+    ) * forex_rate_php_per_usd / 1000.0
+    blended_php_per_kwh = _coerce_float(blended_price_usd_per_mwh, 0.0) * forex_rate_php_per_usd / 1000.0
+    st.session_state[INPUTS_FORM_KEYS["blended_price_php_per_kwh"]] = blended_php_per_kwh
+    st.session_state[INPUTS_FORM_KEYS["escalate_prices"]] = _coerce_bool(
+        price_payload.get("escalate_with_inflation"),
+        False,
+    )
+    st.session_state[INPUTS_FORM_KEYS["wesm_pricing_enabled"]] = _coerce_bool(
+        price_payload.get("apply_wesm_to_shortfall"),
+        False,
+    )
+    st.session_state[INPUTS_FORM_KEYS["sell_to_wesm"]] = _coerce_bool(
+        price_payload.get("sell_to_wesm"),
+        False,
+    )
+
+    debt_ratio = _coerce_float(econ_payload.get("debt_ratio"), 0.0)
+    debt_equity_ratio = debt_ratio / (1.0 - debt_ratio) if 0 < debt_ratio < 1.0 else 0.0
+    st.session_state[INPUTS_FORM_KEYS["debt_equity_ratio"]] = debt_equity_ratio
+    st.session_state[INPUTS_FORM_KEYS["cost_of_debt_pct"]] = _coerce_float(
+        econ_payload.get("cost_of_debt"),
+        0.06,
+    ) * 100.0
+    st.session_state[INPUTS_FORM_KEYS["tenor_years"]] = _coerce_int(
+        econ_payload.get("tenor_years"),
+        10,
+    )
+
+    variable_schedule_choice = "None"
+    variable_schedule = econ_payload.get("variable_opex_schedule_usd")
+    periodic_variable_opex_usd = econ_payload.get("periodic_variable_opex_usd")
+    periodic_variable_opex_interval_years = econ_payload.get("periodic_variable_opex_interval_years")
+    custom_variable_text = ""
+    if isinstance(variable_schedule, list):
+        variable_schedule_choice = "Custom"
+        custom_variable_text = "\n".join(str(val) for val in variable_schedule)
+    elif periodic_variable_opex_usd is not None:
+        variable_schedule_choice = "Periodic"
+    st.session_state[INPUTS_FORM_KEYS["variable_schedule_choice"]] = _coerce_choice(
+        econ_payload.get("variable_schedule_choice"),
+        ["None", "Periodic", "Custom"],
+        variable_schedule_choice,
+    )
+    st.session_state[INPUTS_FORM_KEYS["periodic_variable_opex_usd"]] = _coerce_float(
+        periodic_variable_opex_usd,
+        0.0,
+    )
+    st.session_state[INPUTS_FORM_KEYS["periodic_variable_opex_interval_years"]] = _coerce_int(
+        periodic_variable_opex_interval_years,
+        5,
+    )
+    st.session_state[INPUTS_FORM_KEYS["variable_opex_custom_text"]] = custom_variable_text
 
 
 def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
@@ -240,6 +736,62 @@ def run_app():
     run_submitted = form_result.run_submitted
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
+
+    with st.expander("Load/save inputs (JSON)", expanded=False):
+        st.caption(
+            "Load a JSON payload to prefill the simulation inputs. Missing fields fall back to "
+            "current defaults, so older exports remain compatible."
+        )
+        uploaded_inputs = st.file_uploader(
+            "Upload inputs JSON",
+            type=["json"],
+            accept_multiple_files=False,
+            key="inputs_json_upload",
+        )
+        pasted_inputs = st.text_area(
+            "Or paste inputs JSON",
+            placeholder='{"config": {"years": 20, "initial_power_mw": 30}}',
+            height=120,
+            key="inputs_json_paste",
+        )
+        if st.button("Apply JSON inputs", use_container_width=True):
+            payload_text = ""
+            if uploaded_inputs is not None:
+                payload_text = uploaded_inputs.read().decode("utf-8")
+            elif pasted_inputs.strip():
+                payload_text = pasted_inputs
+            if payload_text:
+                try:
+                    payload = json.loads(payload_text)
+                except json.JSONDecodeError as exc:
+                    st.error(f"Invalid JSON: {exc}")
+                else:
+                    if isinstance(payload, dict):
+                        _apply_inputs_payload(payload, fallback_cfg=cfg)
+                        st.success("Inputs loaded. Re-rendering with the new values.")
+                        st.rerun()
+                    else:
+                        st.error("Expected a JSON object with simulation inputs.")
+            else:
+                st.info("Provide JSON content to load.", icon="ℹ️")
+
+        inputs_payload = _build_inputs_payload(
+            cfg=cfg,
+            dod_override=dod_override,
+            run_economics=run_economics,
+            econ_inputs=econ_inputs,
+            price_inputs=price_inputs,
+            discharge_windows_text=discharge_windows_text,
+            charge_windows_text=charge_windows_text,
+        )
+        inputs_json = json.dumps(inputs_payload, indent=2).encode("utf-8")
+        st.download_button(
+            "Download inputs (JSON)",
+            data=inputs_json,
+            file_name="simulation_inputs.json",
+            mime="application/json",
+            use_container_width=True,
+        )
     inputs_fingerprint = build_inputs_fingerprint(cfg, dod_override, run_economics, econ_inputs, price_inputs)
     bootstrap_session_state(cfg, current_inputs_fingerprint=inputs_fingerprint)
 
