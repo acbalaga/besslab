@@ -61,6 +61,7 @@ from utils.ui_state import (
     cache_latest_economics_payload,
     build_inputs_fingerprint,
     get_base_dir,
+    get_cached_simulation_config,
     get_simulation_results,
     load_shared_data,
     save_last_run_inputs_fingerprint,
@@ -277,6 +278,8 @@ def _build_inputs_payload(
 
 
 def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> None:
+    """Populate session state defaults for input widgets before they render."""
+
     config_payload = payload.get("config")
     config_payload = config_payload if isinstance(config_payload, dict) else {}
     econ_payload = payload.get("economic_inputs")
@@ -723,19 +726,10 @@ def run_app():
         render_rate_limit_section()
 
     pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
-
     pv_df, cycle_df = render_layout(pv_df, cycle_df)
 
-    form_result = render_simulation_form(pv_df, cycle_df)
-    debug_mode = form_result.debug_mode
-    cfg = form_result.config
-    econ_inputs = form_result.econ_inputs
-    price_inputs = form_result.price_inputs
-    run_economics = form_result.run_economics
-    dod_override = form_result.dod_override
-    run_submitted = form_result.run_submitted
-    discharge_windows_text = form_result.discharge_windows_text
-    charge_windows_text = form_result.charge_windows_text
+    cached_cfg, _ = get_cached_simulation_config()
+    preload_cfg = cached_cfg or SimConfig()
 
     with st.expander("Load/save inputs (JSON)", expanded=False):
         st.caption(
@@ -767,7 +761,7 @@ def run_app():
                     st.error(f"Invalid JSON: {exc}")
                 else:
                     if isinstance(payload, dict):
-                        _apply_inputs_payload(payload, fallback_cfg=cfg)
+                        st.session_state["inputs_json_pending_payload"] = payload
                         st.success("Inputs loaded. Re-rendering with the new values.")
                         st.rerun()
                     else:
@@ -775,6 +769,22 @@ def run_app():
             else:
                 st.info("Provide JSON content to load.", icon="ℹ️")
 
+    pending_payload = st.session_state.pop("inputs_json_pending_payload", None)
+    if isinstance(pending_payload, dict):
+        _apply_inputs_payload(pending_payload, fallback_cfg=preload_cfg)
+
+    form_result = render_simulation_form(pv_df, cycle_df)
+    debug_mode = form_result.debug_mode
+    cfg = form_result.config
+    econ_inputs = form_result.econ_inputs
+    price_inputs = form_result.price_inputs
+    run_economics = form_result.run_economics
+    dod_override = form_result.dod_override
+    run_submitted = form_result.run_submitted
+    discharge_windows_text = form_result.discharge_windows_text
+    charge_windows_text = form_result.charge_windows_text
+
+    with st.expander("Download inputs (JSON)", expanded=False):
         inputs_payload = _build_inputs_payload(
             cfg=cfg,
             dod_override=dod_override,

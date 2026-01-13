@@ -954,6 +954,13 @@ st.download_button(
     mime="application/json",
     use_container_width=True,
 )
+st.download_button(
+    "Download sensitivity inputs (JSON)",
+    data=export_json,
+    file_name="sensitivity_inputs.json",
+    mime="application/json",
+    use_container_width=True,
+)
 
 st.caption(
     "Surplus % uses PV curtailment ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
