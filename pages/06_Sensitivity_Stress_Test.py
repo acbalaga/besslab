@@ -469,6 +469,26 @@ def _sensitivity_levers() -> Dict[str, SensitivityLever]:
     }
 
 
+def _is_supported_lever(lever_label: str, levers: Dict[str, SensitivityLever]) -> bool:
+    lever = levers.get(lever_label)
+    return lever is not None and lever.apply_delta is not _unsupported_lever
+
+
+def _split_lever_table(lever_table: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    levers = _sensitivity_levers()
+    supported_mask = lever_table["Lever"].map(lambda label: _is_supported_lever(str(label), levers))
+    supported = lever_table[supported_mask].reset_index(drop=True)
+    unsupported = lever_table[~supported_mask].reset_index(drop=True)
+    return supported, unsupported
+
+
+def _merge_supported_edits(full_table: pd.DataFrame, supported_table: pd.DataFrame) -> pd.DataFrame:
+    updated_table = full_table.set_index("Lever")
+    supported_updates = supported_table.set_index("Lever")
+    updated_table.update(supported_updates)
+    return updated_table.reset_index()
+
+
 def _compute_metric_value(metric_key: str, sim_output) -> Optional[float]:
     summary = summarize_simulation(sim_output)
     expected_total = sum(r.expected_firm_mwh for r in sim_output.results)
@@ -557,6 +577,7 @@ def _run_sensitivity(
     updated_table = lever_table.copy()
     warnings: List[str] = []
     levers = _sensitivity_levers()
+    supported_mask = updated_table["Lever"].map(lambda label: _is_supported_lever(str(label), levers))
 
     def _metric_from_output(sim_output) -> Optional[float]:
         if metric_key == "pirr_pct":
@@ -574,14 +595,11 @@ def _run_sensitivity(
     if baseline_value is None:
         warnings.append("Baseline metric could not be computed; impacts will remain blank.")
 
-    for idx, row in updated_table.iterrows():
+    for idx, row in updated_table[supported_mask].iterrows():
         lever_label = str(row.get("Lever"))
         lever = levers.get(lever_label)
         if lever is None:
             warnings.append(f"Unknown lever '{lever_label}' skipped.")
-            continue
-        if lever.apply_delta is _unsupported_lever:
-            warnings.append(f"{lever_label} is not yet mapped to simulation inputs.")
             continue
 
         low_delta = float(row.get("Low change", 0.0) or 0.0)
@@ -722,43 +740,80 @@ selected_metric_label = st.selectbox(
 selected_metric = metric_lookup[selected_metric_label]
 
 impact_table = _load_impact_table(selected_metric.key, _default_lever_table())
+supported_table, unsupported_table = _split_lever_table(impact_table)
 
 with st.form("sensitivity_table_form", clear_on_submit=False):
-    edited_table = st.data_editor(
-        impact_table,
+    if supported_table.empty:
+        st.info("No simulated levers are available for sensitivity runs.", icon="ℹ️")
+        edited_supported_table = supported_table
+    else:
+        edited_supported_table = st.data_editor(
+            supported_table,
+            num_rows="fixed",
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Lever": st.column_config.TextColumn("Lever", disabled=True),
+                "Low change": st.column_config.NumberColumn(
+                    "Low change",
+                    help="Magnitude of the downside change (see units in notes).",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "High change": st.column_config.NumberColumn(
+                    "High change",
+                    help="Magnitude of the upside change (see units in notes).",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "Low impact (pp)": st.column_config.NumberColumn(
+                    "Low impact (pp)",
+                    help="Computed change in the selected metric after running sensitivity.",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "High impact (pp)": st.column_config.NumberColumn(
+                    "High impact (pp)",
+                    help="Computed change in the selected metric after running sensitivity.",
+                    step=0.1,
+                    format="%.2f",
+                ),
+                "Notes": st.column_config.TextColumn("Notes", disabled=True),
+            },
+        )
+    run_sensitivity = st.form_submit_button("Run Sensitivity", use_container_width=True)
+
+edited_table = _merge_supported_edits(impact_table, edited_supported_table)
+
+if not unsupported_table.empty:
+    st.markdown("#### Not simulated (economic-only)")
+    st.caption("These levers are tracked for documentation but are not simulated in the model.")
+    unsupported_display = unsupported_table.copy()
+    unsupported_display.insert(1, "Status", "Not simulated (economic-only)")
+    st.data_editor(
+        unsupported_display,
         num_rows="fixed",
         use_container_width=True,
         hide_index=True,
+        disabled=True,
         column_config={
             "Lever": st.column_config.TextColumn("Lever", disabled=True),
-            "Low change": st.column_config.NumberColumn(
-                "Low change",
-                help="Magnitude of the downside change (see units in notes).",
-                step=0.1,
-                format="%.2f",
-            ),
-            "High change": st.column_config.NumberColumn(
-                "High change",
-                help="Magnitude of the upside change (see units in notes).",
-                step=0.1,
-                format="%.2f",
-            ),
+            "Status": st.column_config.TextColumn("Status", disabled=True),
+            "Low change": st.column_config.NumberColumn("Low change", format="%.2f", disabled=True),
+            "High change": st.column_config.NumberColumn("High change", format="%.2f", disabled=True),
             "Low impact (pp)": st.column_config.NumberColumn(
                 "Low impact (pp)",
-                help="Computed change in the selected metric after running sensitivity.",
-                step=0.1,
                 format="%.2f",
+                disabled=True,
             ),
             "High impact (pp)": st.column_config.NumberColumn(
                 "High impact (pp)",
-                help="Computed change in the selected metric after running sensitivity.",
-                step=0.1,
                 format="%.2f",
+                disabled=True,
             ),
             "Notes": st.column_config.TextColumn("Notes", disabled=True),
         },
     )
-    run_sensitivity = st.form_submit_button("Run Sensitivity", use_container_width=True)
 
 _save_impact_table(selected_metric.key, edited_table)
 
