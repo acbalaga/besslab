@@ -318,6 +318,10 @@ def _collect_impact_tables(metrics: List[MetricDefinition]) -> Dict[str, List[Di
 
 
 def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
+    scenario_label_map = {
+        "Low impact (pp)": "Low impact",
+        "High impact (pp)": "High impact",
+    }
     numeric_table = table.copy()
     numeric_table["Low impact (pp)"] = pd.to_numeric(
         numeric_table["Low impact (pp)"], errors="coerce"
@@ -332,6 +336,7 @@ def _prepare_tornado_data(table: pd.DataFrame) -> pd.DataFrame:
         var_name="Scenario",
         value_name="Impact (pp)",
     )
+    melted["Scenario"] = melted["Scenario"].map(scenario_label_map).fillna(melted["Scenario"])
     return melted.sort_values("sort_key", ascending=True)
 
 
