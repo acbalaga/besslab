@@ -217,6 +217,33 @@ def _baseline_inputs(
     return baseline_inputs
 
 
+def _baseline_inputs_ready_for_refresh(
+    baseline_inputs: Dict[str, Optional[float]],
+    metrics: List[MetricDefinition],
+) -> bool:
+    """Return True when existing inputs appear to be placeholders (all zero/None)."""
+
+    for metric in metrics:
+        value = baseline_inputs.get(metric.key)
+        if value not in (None, 0.0):
+            return False
+    return True
+
+
+def _baseline_defaults_from_simulation(
+    metrics: List[MetricDefinition],
+    baseline_values: Dict[str, Optional[float]],
+    current_inputs: Optional[Dict[str, Optional[float]]],
+) -> Dict[str, Optional[float]]:
+    """Seed baseline defaults from simulation once real results are available."""
+
+    current_inputs = current_inputs or {}
+    has_baseline = any(baseline_values.get(metric.key) is not None for metric in metrics)
+    if has_baseline and _baseline_inputs_ready_for_refresh(current_inputs, metrics):
+        return {metric.key: baseline_values.get(metric.key) for metric in metrics}
+    return current_inputs
+
+
 def _parse_optional_float(raw_value: str) -> Tuple[Optional[float], Optional[str]]:
     cleaned = raw_value.strip()
     if not cleaned:
@@ -731,10 +758,15 @@ st.caption(
     "Units: pp for RTE, degradation, and availability; MW for POI/power; MWh for energy; hours for dispatch window duration."
 )
 
+baseline_defaults = _baseline_defaults_from_simulation(
+    metrics,
+    baseline_values,
+    st.session_state.get("sensitivity_baseline_inputs"),
+)
 baseline_inputs = _baseline_inputs(
     metrics,
     baseline_values,
-    default_overrides=st.session_state.get("sensitivity_baseline_inputs"),
+    default_overrides=baseline_defaults,
 )
 st.session_state["sensitivity_baseline_inputs"] = baseline_inputs
 missing_baselines = _missing_baseline_metrics(baseline_inputs, metrics)
