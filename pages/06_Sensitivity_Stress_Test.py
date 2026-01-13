@@ -196,11 +196,13 @@ def _baseline_inputs(
     cols = st.columns(2)
     for idx, metric in enumerate(metrics):
         default_value = default_overrides.get(metric.key, baseline_values.get(metric.key))
-        input_value = cols[idx % 2].number_input(
+        value_text = "" if default_value is None else str(default_value)
+        input_text = cols[idx % 2].text_input(
             metric.label,
             value=value_text,
             help=metric.description,
             placeholder="Missing",
+            key=f"baseline_{metric.key}",
         )
         parsed_value, error_message = _parse_optional_float(input_text)
         if error_message:
