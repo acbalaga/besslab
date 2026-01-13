@@ -130,6 +130,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         "Debug mode",
         value=False,
         help="Show validation details and recent inputs without exposing stack traces to all users.",
+        key="inputs_debug_mode",
     )
 
     # Project & PV
@@ -141,6 +142,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 list(range(10, 36, 5)),
                 index=2,
                 help="Extend to test augmentation schedules and end effects.",
+                key="inputs_years",
             )
         with c2:
             pv_deg = (
@@ -151,11 +153,20 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     0.6,
                     0.1,
                     help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).",
+                    key="inputs_pv_deg_pct",
                 )
                 / 100.0
             )
         with c3:
-            pv_avail = st.slider("PV availability", 0.90, 1.00, 0.98, 0.01, help="Uptime factor applied to PV output.")
+            pv_avail = st.slider(
+                "PV availability",
+                0.90,
+                1.00,
+                0.98,
+                0.01,
+                help="Uptime factor applied to PV output.",
+                key="inputs_pv_avail",
+            )
 
     # Availability (kept outside the main form so toggles rerender immediately)
     with st.expander("Availability", expanded=True):
@@ -168,12 +179,14 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 0.99,
                 0.01,
                 help="Uptime factor applied to BESS power capability.",
+                key="inputs_bess_avail",
             )
         with c2:
             use_split_rte = st.checkbox(
                 "Use separate charge/discharge efficiencies",
                 value=False,
                 help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
+                key="inputs_use_split_rte",
             )
             if use_split_rte:
                 charge_eff = st.slider(
@@ -183,6 +196,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     0.94,
                     0.01,
                     help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
+                    key="inputs_charge_eff",
                 )
                 discharge_eff = st.slider(
                     "Discharge efficiency (AC-AC)",
@@ -191,6 +205,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     0.94,
                     0.01,
                     help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
+                    key="inputs_discharge_eff",
                 )
                 rte = charge_eff * discharge_eff
                 st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
@@ -202,6 +217,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     0.88,
                     0.01,
                     help="Single RTE; internally split √RTE for charge/discharge.",
+                    key="inputs_rte",
                 )
                 charge_eff = None
                 discharge_eff = None
@@ -212,6 +228,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         "Compute economics using simulation outputs",
         value=False,
         help=("Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."),
+        key="inputs_run_economics",
     )
 
     manual_schedule_entries: List[AugmentationScheduleEntry] = []
@@ -277,6 +294,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 ["Capability", "SOH"],
                 index=0,
                 help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.",
+                key="inputs_aug_trigger_type",
             )
             if trigger == "Capability":
                 c1, c2 = st.columns(2)
@@ -289,6 +307,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             0.0,
                             0.5,
                             help="Trigger when capability < target × (1 − margin).",
+                            key="inputs_aug_threshold_margin_pct",
                         )
                         / 100.0
                     )
@@ -301,6 +320,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             5.0,
                             0.5,
                             help="Augment up to target × (1 + margin) when triggered.",
+                            key="inputs_aug_topup_margin_pct",
                         )
                         / 100.0
                     )
@@ -313,7 +333,15 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 c1, c2 = st.columns(2)
                 with c1:
                     aug_soh_trig = (
-                        st.number_input("SOH trigger (%)", 50.0, 100.0, 80.0, 1.0, help="Augment when SOH falls below this threshold.")
+                        st.number_input(
+                            "SOH trigger (%)",
+                            50.0,
+                            100.0,
+                            80.0,
+                            1.0,
+                            help="Augment when SOH falls below this threshold.",
+                            key="inputs_aug_soh_trigger_pct",
+                        )
                         / 100.0
                     )
                 with c2:
@@ -325,6 +353,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             10.0,
                             1.0,
                             help="Added energy as % of initial BOL. Power added to keep original C-hours.",
+                            key="inputs_aug_soh_add_pct",
                         )
                         / 100.0
                     )
@@ -337,7 +366,13 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             c1, c2 = st.columns(2)
             with c1:
                 aug_every = st.number_input(
-                    "Every N years", 1, None, 5, 1, help="Add capacity on this cadence (e.g., every 5 years)."
+                    "Every N years",
+                    1,
+                    None,
+                    5,
+                    1,
+                    help="Add capacity on this cadence (e.g., every 5 years).",
+                    key="inputs_aug_periodic_every_years",
                 )
             with c2:
                 aug_frac = (
@@ -348,6 +383,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         10.0,
                         1.0,
                         help="Top-up energy relative to current BOL reference.",
+                        key="inputs_aug_periodic_add_pct",
                     )
                     / 100.0
                 )
@@ -371,6 +407,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 ["Percent", "Fixed"],
                 format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
                 help="Choose whether to size augmentation as a percent or a fixed MWh add.",
+                key="inputs_aug_size_mode",
             )
             if aug_size_mode == "Fixed":
                 aug_fixed_energy = st.number_input(
@@ -379,6 +416,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=0.0,
                     step=1.0,
                     help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
+                    key="inputs_aug_fixed_energy_mwh",
                 )
 
         if aug_mode != "None":
@@ -386,6 +424,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 "Retire low-SOH cohorts when augmenting",
                 value=False,
                 help="Remove cohorts once their SOH falls below the retirement threshold.",
+                key="inputs_aug_retire_enabled",
             )
             if retire_enabled:
                 retire_soh = (
@@ -396,6 +435,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=60.0,
                         step=1.0,
                         help="Cohorts at or below this SOH are retired before applying augmentation.",
+                        key="inputs_aug_retire_soh_pct",
                     )
                     / 100.0
                 )
@@ -404,6 +444,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     ["None", "Percent", "Fixed"],
                     format_func=lambda k: "None" if k == "None" else ("% of BOL energy" if k == "Percent" else "Fixed energy (MWh)"),
                     help="Optionally replace retired cohorts with new energy on a BOL basis.",
+                    key="inputs_aug_retire_replace_mode",
                 )
                 if retire_replace_mode == "Percent":
                     retire_replace_pct = (
@@ -414,6 +455,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             value=0.0,
                             step=1.0,
                             help="Add this fraction of initial BOL energy when retirement happens.",
+                            key="inputs_aug_retire_replace_pct",
                         )
                         / 100.0
                     )
@@ -424,6 +466,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=0.0,
                         step=1.0,
                         help="Add this BOL-equivalent energy when retirement happens.",
+                        key="inputs_aug_retire_replace_fixed_mwh",
                     )
 
     with st.container():
@@ -432,18 +475,42 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             c1, c2, c3 = st.columns(3)
             with c1:
                 init_power = st.number_input(
-                    "Power rating (MW)", 1.0, None, 30.0, 1.0, help="Initial nameplate power (POI context), before availability."
+                    "Power rating (MW)",
+                    1.0,
+                    None,
+                    30.0,
+                    1.0,
+                    help="Initial nameplate power (POI context), before availability.",
+                    key="inputs_initial_power_mw",
                 )
             with c2:
                 init_energy = st.number_input(
-                    "Usable energy at BOL (MWh)", 1.0, None, 120.0, 1.0, help="Initial usable energy (POI context)."
+                    "Usable energy at BOL (MWh)",
+                    1.0,
+                    None,
+                    120.0,
+                    1.0,
+                    help="Initial usable energy (POI context).",
+                    key="inputs_initial_usable_mwh",
                 )
             with c3:
                 soc_floor = st.slider(
-                    "SOC floor (%)", 0, 50, 10, 1, help="Reserve to protect cycling; lowers daily swing."
+                    "SOC floor (%)",
+                    0,
+                    50,
+                    10,
+                    1,
+                    help="Reserve to protect cycling; lowers daily swing.",
+                    key="inputs_soc_floor_pct",
                 ) / 100.0
                 soc_ceiling = st.slider(
-                    "SOC ceiling (%)", 50, 100, 98, 1, help="Upper limit to protect cycling; raises daily swing when higher."
+                    "SOC ceiling (%)",
+                    50,
+                    100,
+                    98,
+                    1,
+                    help="Upper limit to protect cycling; raises daily swing when higher.",
+                    key="inputs_soc_ceiling_pct",
                 ) / 100.0
 
         # Dispatch
@@ -451,17 +518,27 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             c1, c2, c3 = st.columns(3)
             with c1:
                 contracted_mw = st.number_input(
-                    "Contracted MW (firm)", 0.0, None, 30.0, 1.0, help="Firm capacity to meet during discharge windows."
+                    "Contracted MW (firm)",
+                    0.0,
+                    None,
+                    30.0,
+                    1.0,
+                    help="Firm capacity to meet during discharge windows.",
+                    key="inputs_contracted_mw",
                 )
             with c2:
                 discharge_windows_text = st.text_input(
                     "Discharge windows (HH:MM-HH:MM, comma-separated)",
                     "10:00-14:00, 18:00-22:00",
                     help="Ex: 10:00-14:00, 18:00-22:00",
+                    key="inputs_discharge_windows",
                 )
             with c3:
                 charge_windows_text = st.text_input(
-                    "Charge windows (blank = any PV hours)", "", help="PV-only charging; blank allows any PV hour."
+                    "Charge windows (blank = any PV hours)",
+                    "",
+                    help="PV-only charging; blank allows any PV hour.",
+                    key="inputs_charge_windows",
                 )
 
         # Degradation
@@ -476,6 +553,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         1.0,
                         0.1,
                         help="Multiplicative retention: (1 − rate)^year.",
+                        key="inputs_calendar_fade_pct",
                     )
                     / 100.0
                 )
@@ -484,6 +562,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "Degradation DoD basis",
                     ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
                     help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.",
+                    key="inputs_dod_override",
                 )
 
         validation_errors, validation_warnings, validation_details = [], [], []
@@ -558,7 +637,14 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
 
             econ_col1, econ_col2, econ_col3 = st.columns(3)
             with econ_col1:
-                wacc_pct = st.number_input("WACC (%)", min_value=0.0, max_value=30.0, value=8.0, step=0.1)
+                wacc_pct = st.number_input(
+                    "WACC (%)",
+                    min_value=0.0,
+                    max_value=30.0,
+                    value=8.0,
+                    step=0.1,
+                    key="inputs_wacc_pct",
+                )
                 inflation_pct = st.number_input(
                     "Inflation rate (%)",
                     min_value=0.0,
@@ -566,6 +652,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=3.0,
                     step=0.1,
                     help="Used to derive the real discount rate applied to costs and revenues.",
+                    key="inputs_inflation_pct",
                 )
                 discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
                 st.caption(f"Real discount rate derived from WACC and inflation: {discount_rate * 100:.2f}%.")
@@ -575,6 +662,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=float(DEFAULT_FOREX_RATE_PHP_PER_USD),
                     step=0.5,
                     help="Used to convert PHP-denominated inputs (prices, OPEX, DevEx) to USD.",
+                    key="inputs_forex_rate_php_per_usd",
                 )
             default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
             default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
@@ -586,6 +674,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     help=(
                         "Enter CAPEX as a unit rate per kWh of BOL energy or override with a total USD value."
                     ),
+                    key="inputs_capex_mode",
                 )
                 capex_usd_per_kwh = 0.0
                 capex_total_usd = 0.0
@@ -600,6 +689,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=round(default_capex_usd_per_kwh, 2),
                         step=1.0,
                         help="Applied to BOL usable energy (kWh) to derive total CAPEX in USD.",
+                        key="inputs_capex_usd_per_kwh",
                     )
                     capex_total_usd = capex_usd_per_kwh * bess_bol_kwh
                     st.caption(f"Implied total CAPEX: ${capex_total_usd / 1_000_000:,.2f}M.")
@@ -610,12 +700,14 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=40_000_000.0,
                         step=1_000_000.0,
                         help="Single-number override for total CAPEX in USD.",
+                        key="inputs_capex_total_usd",
                     )
                 opex_mode = st.radio(
                     "OPEX input",
                     options=["% of CAPEX per year", "PHP/kWh on total generation"],
                     horizontal=True,
                     help="Choose a fixed % of CAPEX/year or a PHP/kWh rate applied to total generation.",
+                    key="inputs_opex_mode",
                 )
                 fixed_opex_pct = 0.0
                 opex_php_per_kwh = None
@@ -627,6 +719,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=2.0,
                         step=0.1,
                         help="Enter the percent value (e.g., 2.0 for 2%).",
+                        key="inputs_fixed_opex_pct",
                     )
                 else:
                     opex_php_per_kwh = st.number_input(
@@ -635,12 +728,17 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=0.0,
                         step=0.05,
                         help="Converted to USD/MWh using the FX rate; applied to total generation.",
+                        key="inputs_opex_php_per_kwh",
                     )
                     if opex_php_per_kwh > 0:
                         opex_usd_per_mwh = opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
                         st.caption(f"Converted OPEX: ${opex_usd_per_mwh:,.2f}/MWh.")
                 fixed_opex_musd = st.number_input(
-                    "Additional fixed OPEX (USD million/yr)", min_value=0.0, value=0.0, step=0.1
+                    "Additional fixed OPEX (USD million/yr)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.1,
+                    key="inputs_fixed_opex_musd",
                 )
                 include_devex_year0 = st.checkbox(
                     "Include DevEx at year 0",
@@ -650,6 +748,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         "enter the amount to convert it using the FX rate. "
                         "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
                     ),
+                    key="inputs_include_devex_year0",
                 )
                 devex_cost_php = st.number_input(
                     "DevEx amount (PHP)",
@@ -658,6 +757,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=1_000_000.0,
                     help="Used only when the DevEx toggle is enabled.",
                     disabled=not include_devex_year0,
+                    key="inputs_devex_cost_php",
                 )
                 devex_cost_usd = devex_cost_php / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
                 if include_devex_year0:
@@ -673,6 +773,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         "Apply a single price to all delivered firm energy and excess PV. "
                         "Contract/PV-specific inputs are ignored while enabled."
                     ),
+                    key="inputs_use_blended_price",
                 )
                 contract_price_php_per_kwh = st.number_input(
                     "Contract price (PHP/kWh from BESS)",
@@ -681,6 +782,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=0.05,
                     help="Price converted to USD/MWh using the FX rate above.",
                     disabled=use_blended_price,
+                    key="inputs_contract_price_php_per_kwh",
                 )
                 pv_market_price_php_per_kwh = st.number_input(
                     "PV market price (PHP/kWh for excess PV)",
@@ -689,6 +791,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=0.05,
                     help="Price converted to USD/MWh using the FX rate above.",
                     disabled=use_blended_price,
+                    key="inputs_pv_market_price_php_per_kwh",
                 )
                 blended_price_php_per_kwh = st.number_input(
                     "Blended energy price (PHP/kWh)",
@@ -697,14 +800,20 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=0.05,
                     help=("Applied to all delivered firm energy and marketed PV when blended pricing is enabled."),
                     disabled=not use_blended_price,
+                    key="inputs_blended_price_php_per_kwh",
                 )
-                escalate_prices = st.checkbox("Escalate prices with inflation", value=False)
+                escalate_prices = st.checkbox(
+                    "Escalate prices with inflation",
+                    value=False,
+                    key="inputs_escalate_prices",
+                )
                 wesm_pricing_enabled = st.checkbox(
                     "Apply WESM pricing to contract shortfalls",
                     value=False,
                     help=(
                         "Uses the uploaded (or bundled) hourly WESM profile to price contract shortfalls."
                     ),
+                    key="inputs_wesm_pricing_enabled",
                 )
                 sell_to_wesm = st.checkbox(
                     "Sell PV surplus to WESM",
@@ -714,6 +823,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         "is excluded from revenue. Pricing comes from the hourly WESM profile."
                     ),
                     disabled=not wesm_pricing_enabled,
+                    key="inputs_sell_to_wesm",
                 )
 
                 contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
@@ -746,6 +856,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=1.0,
                     step=0.1,
                     help="Debt divided by equity; 1.0 implies 50% debt and 50% equity.",
+                    key="inputs_debt_equity_ratio",
                 )
                 debt_ratio = debt_equity_ratio / (1.0 + debt_equity_ratio) if debt_equity_ratio > 0 else 0.0
                 st.caption(f"Implied debt share of capital: {debt_ratio * 100:.1f}%.")
@@ -757,6 +868,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=6.0,
                     step=0.1,
                     help="Annual interest rate applied to the debt balance.",
+                    key="inputs_cost_of_debt_pct",
                 )
             with financing_col3:
                 tenor_years = st.number_input(
@@ -765,6 +877,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     value=10,
                     step=1,
                     help="Years over which debt is amortized using level payments.",
+                    key="inputs_tenor_years",
                 )
 
             variable_col1, variable_col2 = st.columns(2)
@@ -781,6 +894,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     options=["None", "Periodic", "Custom"],
                     horizontal=True,
                     help="Custom or periodic schedules override per-kWh and fixed OPEX assumptions.",
+                    key="inputs_variable_schedule_choice",
                 )
                 variable_opex_schedule_usd: Optional[Tuple[float, ...]] = None
                 periodic_variable_opex_usd: Optional[float] = None
@@ -792,8 +906,15 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         value=0.0,
                         step=10_000.0,
                         help="Amount applied on the selected cadence (year 1, then every N years).",
+                        key="inputs_periodic_variable_opex_usd",
                     )
-                    periodic_variable_opex_interval_years = st.number_input("Cadence (years)", min_value=1, value=5, step=1)
+                    periodic_variable_opex_interval_years = st.number_input(
+                        "Cadence (years)",
+                        min_value=1,
+                        value=5,
+                        step=1,
+                        key="inputs_periodic_variable_opex_interval_years",
+                    )
                     if periodic_variable_opex_usd <= 0:
                         periodic_variable_opex_usd = None
                 elif variable_schedule_choice == "Custom":
@@ -801,6 +922,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         "Custom variable expenses (USD/year)",
                         placeholder="e.g., 250000, 275000, 300000",
                         help=("Comma or newline separated values applied per project year. Length must match the simulation horizon."),
+                        key="inputs_variable_opex_custom_text",
                     )
                     st.caption(f"Use commas or newlines between amounts; provide one value per project year ({cfg.years} entries).")
                     if custom_variable_text.strip():
