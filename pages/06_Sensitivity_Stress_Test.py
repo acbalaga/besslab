@@ -933,6 +933,8 @@ export_json = json.dumps(
     indent=2,
 ).encode("utf-8")
 
+export_disabled = edited_table.empty
+
 st.download_button(
     "Download sensitivity table (CSV)",
     data=export_csv,
@@ -948,20 +950,6 @@ st.download_button(
     mime="application/json",
     use_container_width=True,
     disabled=export_disabled,
-)
-st.download_button(
-    "Download sensitivity inputs (JSON)",
-    data=export_json,
-    file_name="sensitivity_inputs.json",
-    mime="application/json",
-    use_container_width=True,
-)
-st.download_button(
-    "Download sensitivity inputs (JSON)",
-    data=export_json,
-    file_name="sensitivity_inputs.json",
-    mime="application/json",
-    use_container_width=True,
 )
 
 st.caption(
