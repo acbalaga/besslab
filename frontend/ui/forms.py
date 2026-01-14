@@ -133,386 +133,405 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         key="inputs_debug_mode",
     )
 
-    # Project & PV
-    with st.expander("Project & PV", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            years = st.selectbox(
-                "Project life (years)",
-                list(range(10, 36, 5)),
-                index=2,
-                help="Extend to test augmentation schedules and end effects.",
-                key="inputs_years",
-            )
-        with c2:
-            pv_deg = (
-                st.number_input(
-                    "PV degradation %/yr",
-                    0.0,
-                    5.0,
-                    0.6,
-                    0.1,
-                    help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).",
-                    key="inputs_pv_deg_pct",
+    with st.expander("Technical", expanded=True):
+        # Project & PV
+        with st.expander("Project & PV", expanded=True):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                years = st.selectbox(
+                    "Project life (years)",
+                    list(range(10, 36, 5)),
+                    index=2,
+                    help="Extend to test augmentation schedules and end effects.",
+                    key="inputs_years",
                 )
-                / 100.0
-            )
-        with c3:
-            pv_avail = st.slider(
-                "PV availability",
-                0.90,
-                1.00,
-                0.98,
-                0.01,
-                help="Uptime factor applied to PV output.",
-                key="inputs_pv_avail",
-            )
-
-    # Availability (kept outside the main form so toggles rerender immediately)
-    with st.expander("Availability", expanded=True):
-        c1, c2 = st.columns(2)
-        with c1:
-            bess_avail = st.slider(
-                "BESS availability",
-                0.90,
-                1.00,
-                0.99,
-                0.01,
-                help="Uptime factor applied to BESS power capability.",
-                key="inputs_bess_avail",
-            )
-        with c2:
-            use_split_rte = st.checkbox(
-                "Use separate charge/discharge efficiencies",
-                value=False,
-                help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
-                key="inputs_use_split_rte",
-            )
-            if use_split_rte:
-                charge_eff = st.slider(
-                    "Charge efficiency (AC-AC)",
-                    0.70,
-                    0.99,
-                    0.94,
+            with c2:
+                pv_deg = (
+                    st.number_input(
+                        "PV degradation %/yr",
+                        0.0,
+                        5.0,
+                        0.6,
+                        0.1,
+                        help="Applied multiplicatively per year (e.g., 0.6% → (1−0.006)^year).",
+                        key="inputs_pv_deg_pct",
+                    )
+                    / 100.0
+                )
+            with c3:
+                pv_avail = st.slider(
+                    "PV availability",
+                    0.90,
+                    1.00,
+                    0.98,
                     0.01,
-                    help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
-                    key="inputs_charge_eff",
+                    help="Uptime factor applied to PV output.",
+                    key="inputs_pv_avail",
                 )
-                discharge_eff = st.slider(
-                    "Discharge efficiency (AC-AC)",
-                    0.70,
+
+        # Availability (kept outside the main form so toggles rerender immediately)
+        with st.expander("Availability", expanded=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                bess_avail = st.slider(
+                    "BESS availability",
+                    0.90,
+                    1.00,
                     0.99,
-                    0.94,
                     0.01,
-                    help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
-                    key="inputs_discharge_eff",
+                    help="Uptime factor applied to BESS power capability.",
+                    key="inputs_bess_avail",
                 )
-                rte = charge_eff * discharge_eff
-                st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
-            else:
-                rte = st.slider(
-                    "Round-trip efficiency (single, at POI)",
-                    0.70,
-                    0.99,
-                    0.88,
-                    0.01,
-                    help="Single RTE; internally split √RTE for charge/discharge.",
-                    key="inputs_rte",
+            with c2:
+                use_split_rte = st.checkbox(
+                    "Use separate charge/discharge efficiencies",
+                    value=False,
+                    help="Select to enter distinct charge and discharge efficiencies instead of a single round-trip value.",
+                    key="inputs_use_split_rte",
                 )
-                charge_eff = None
-                discharge_eff = None
+                if use_split_rte:
+                    charge_eff = st.slider(
+                        "Charge efficiency (AC-AC)",
+                        0.70,
+                        0.99,
+                        0.94,
+                        0.01,
+                        help="Applied when absorbing energy; multiplied with discharge efficiency to form the round-trip value.",
+                        key="inputs_charge_eff",
+                    )
+                    discharge_eff = st.slider(
+                        "Discharge efficiency (AC-AC)",
+                        0.70,
+                        0.99,
+                        0.94,
+                        0.01,
+                        help="Applied when delivering energy; multiplied with charge efficiency to form the round-trip value.",
+                        key="inputs_discharge_eff",
+                    )
+                    rte = charge_eff * discharge_eff
+                    st.caption(f"Implied round-trip efficiency: {rte:.3f} (charge × discharge).")
+                else:
+                    rte = st.slider(
+                        "Round-trip efficiency (single, at POI)",
+                        0.70,
+                        0.99,
+                        0.88,
+                        0.01,
+                        help="Single RTE; internally split √RTE for charge/discharge.",
+                        key="inputs_rte",
+                    )
+                    charge_eff = None
+                    discharge_eff = None
 
-    # Keep the economics toggle outside the main input block so checking it reveals inputs immediately.
-    st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
-    run_economics = st.checkbox(
-        "Compute economics using simulation outputs",
-        value=False,
-        help=("Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."),
-        key="inputs_run_economics",
-    )
+        manual_schedule_entries: List[AugmentationScheduleEntry] = []
+        manual_schedule_errors: List[str] = []
+        manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
 
-    manual_schedule_entries: List[AugmentationScheduleEntry] = []
-    manual_schedule_errors: List[str] = []
-    manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
-
-    # Augmentation (kept outside the main form so dropdown changes reveal inputs immediately).
-    with st.expander("Augmentation strategy", expanded=False):
-        aug_mode = st.selectbox(
-            "Strategy",
-            ["None", "Threshold", "Periodic", "Manual"],
-            index=0,
-            key="augmentation_strategy_mode",
-        )
-
-        aug_size_mode = "Percent"
-        aug_fixed_energy = 0.0
-        retire_enabled = False
-        retire_soh = 0.60
-        retire_replace_mode = "None"
-        retire_replace_pct = 0.0
-        retire_replace_fixed_mwh = 0.0
-
-        if aug_mode == "Manual":
-            st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
-            with st.form("manual_aug_schedule_form", clear_on_submit=False):
-                manual_schedule_df = st.data_editor(
-                    pd.DataFrame(manual_schedule_rows),
-                    key="manual_aug_schedule_editor",
-                    column_config={
-                        "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
-                        "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
-                        "Amount": st.column_config.NumberColumn(
-                            "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
-                        ),
-                    },
-                    num_rows="dynamic",
-                    hide_index=True,
-                    use_container_width=True,
-                )
-                saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
-            if saved_manual_schedule:
-                save_manual_aug_schedule_rows(manual_schedule_df.to_dict("records"), int(years))
-                manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
-                st.success("Saved augmentation events for this session.")
-            manual_schedule_df = pd.DataFrame(manual_schedule_rows)
-            manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(manual_schedule_df, int(years))
-            if manual_schedule_errors:
-                for err in manual_schedule_errors:
-                    st.error(err)
-            elif not manual_schedule_entries:
-                st.warning("Add at least one row to run a manual augmentation schedule.")
-            aug_thr_margin = 0.0
-            aug_topup = 0.0
-            aug_every = 5
-            aug_frac = 0.10
-            aug_trigger_type = "Capability"
-            aug_soh_trig = 0.80
-            aug_soh_add = 0.10
-        elif aug_mode == "Threshold":
-            trigger = st.selectbox(
-                "Trigger type",
-                ["Capability", "SOH"],
+        # Augmentation (kept outside the main form so dropdown changes reveal inputs immediately).
+        with st.expander("Augmentation strategy", expanded=False):
+            aug_mode = st.selectbox(
+                "Strategy",
+                ["None", "Threshold", "Periodic", "Manual"],
                 index=0,
-                help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.",
-                key="inputs_aug_trigger_type",
+                key="augmentation_strategy_mode",
             )
-            if trigger == "Capability":
-                c1, c2 = st.columns(2)
-                with c1:
-                    aug_thr_margin = (
-                        st.number_input(
-                            "Allowance margin (%)",
-                            0.0,
-                            None,
-                            0.0,
-                            0.5,
-                            help="Trigger when capability < target × (1 − margin).",
-                            key="inputs_aug_threshold_margin_pct",
-                        )
-                        / 100.0
+
+            aug_size_mode = "Percent"
+            aug_fixed_energy = 0.0
+            retire_enabled = False
+            retire_soh = 0.60
+            retire_replace_mode = "None"
+            retire_replace_pct = 0.0
+            retire_replace_fixed_mwh = 0.0
+
+            if aug_mode == "Manual":
+                st.caption("Define explicit augmentation events by year. Save the table to persist edits across reruns.")
+                with st.form("manual_aug_schedule_form", clear_on_submit=False):
+                    manual_schedule_df = st.data_editor(
+                        pd.DataFrame(manual_schedule_rows),
+                        key="manual_aug_schedule_editor",
+                        column_config={
+                            "Year": st.column_config.NumberColumn("Year", min_value=1, step=1),
+                            "Basis": st.column_config.SelectboxColumn("Basis", options=AUGMENTATION_SCHEDULE_BASIS),
+                            "Amount": st.column_config.NumberColumn(
+                                "Amount", min_value=0.0, format="%.3f", help="Percent or MW/MWh depending on basis."
+                            ),
+                        },
+                        num_rows="dynamic",
+                        hide_index=True,
+                        use_container_width=True,
                     )
-                with c2:
-                    aug_topup = (
-                        st.number_input(
-                            "Top-up margin (%)",
-                            0.0,
-                            None,
-                            5.0,
-                            0.5,
-                            help="Augment up to target × (1 + margin) when triggered.",
-                            key="inputs_aug_topup_margin_pct",
-                        )
-                        / 100.0
-                    )
+                    saved_manual_schedule = st.form_submit_button("Save augmentation table", use_container_width=True)
+                if saved_manual_schedule:
+                    save_manual_aug_schedule_rows(manual_schedule_df.to_dict("records"), int(years))
+                    manual_schedule_rows = get_manual_aug_schedule_rows(int(years))
+                    st.success("Saved augmentation events for this session.")
+                manual_schedule_df = pd.DataFrame(manual_schedule_rows)
+                manual_schedule_entries, manual_schedule_errors = build_schedule_from_editor(manual_schedule_df, int(years))
+                if manual_schedule_errors:
+                    for err in manual_schedule_errors:
+                        st.error(err)
+                elif not manual_schedule_entries:
+                    st.warning("Add at least one row to run a manual augmentation schedule.")
+                aug_thr_margin = 0.0
+                aug_topup = 0.0
                 aug_every = 5
                 aug_frac = 0.10
                 aug_trigger_type = "Capability"
                 aug_soh_trig = 0.80
                 aug_soh_add = 0.10
-            else:
+            elif aug_mode == "Threshold":
+                trigger = st.selectbox(
+                    "Trigger type",
+                    ["Capability", "SOH"],
+                    index=0,
+                    help="Capability: Compare EOY capability vs target MWh/day.  SOH: Compare fleet SOH vs threshold.",
+                    key="inputs_aug_trigger_type",
+                )
+                if trigger == "Capability":
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        aug_thr_margin = (
+                            st.number_input(
+                                "Allowance margin (%)",
+                                0.0,
+                                None,
+                                0.0,
+                                0.5,
+                                help="Trigger when capability < target × (1 − margin).",
+                                key="inputs_aug_threshold_margin_pct",
+                            )
+                            / 100.0
+                        )
+                    with c2:
+                        aug_topup = (
+                            st.number_input(
+                                "Top-up margin (%)",
+                                0.0,
+                                None,
+                                5.0,
+                                0.5,
+                                help="Augment up to target × (1 + margin) when triggered.",
+                                key="inputs_aug_topup_margin_pct",
+                            )
+                            / 100.0
+                        )
+                    aug_every = 5
+                    aug_frac = 0.10
+                    aug_trigger_type = "Capability"
+                    aug_soh_trig = 0.80
+                    aug_soh_add = 0.10
+                else:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        aug_soh_trig = (
+                            st.number_input(
+                                "SOH trigger (%)",
+                                50.0,
+                                100.0,
+                                80.0,
+                                1.0,
+                                help="Augment when SOH falls below this threshold.",
+                                key="inputs_aug_soh_trigger_pct",
+                            )
+                            / 100.0
+                        )
+                    with c2:
+                        aug_soh_add = (
+                            st.number_input(
+                                "Add % of initial BOL energy",
+                                0.0,
+                                None,
+                                10.0,
+                                1.0,
+                                help="Added energy as % of initial BOL. Power added to keep original C-hours.",
+                                key="inputs_aug_soh_add_pct",
+                            )
+                            / 100.0
+                        )
+                    aug_thr_margin = 0.0
+                    aug_topup = 0.0
+                    aug_every = 5
+                    aug_frac = 0.10
+                    aug_trigger_type = "SOH"
+            elif aug_mode == "Periodic":
                 c1, c2 = st.columns(2)
                 with c1:
-                    aug_soh_trig = (
-                        st.number_input(
-                            "SOH trigger (%)",
-                            50.0,
-                            100.0,
-                            80.0,
-                            1.0,
-                            help="Augment when SOH falls below this threshold.",
-                            key="inputs_aug_soh_trigger_pct",
-                        )
-                        / 100.0
+                    aug_every = st.number_input(
+                        "Every N years",
+                        1,
+                        None,
+                        5,
+                        1,
+                        help="Add capacity on this cadence (e.g., every 5 years).",
+                        key="inputs_aug_periodic_every_years",
                     )
                 with c2:
-                    aug_soh_add = (
+                    aug_frac = (
                         st.number_input(
-                            "Add % of initial BOL energy",
+                            "Add % of current BOL-ref energy",
                             0.0,
                             None,
                             10.0,
                             1.0,
-                            help="Added energy as % of initial BOL. Power added to keep original C-hours.",
-                            key="inputs_aug_soh_add_pct",
+                            help="Top-up energy relative to current BOL reference.",
+                            key="inputs_aug_periodic_add_pct",
                         )
                         / 100.0
                     )
                 aug_thr_margin = 0.0
                 aug_topup = 0.0
+                aug_trigger_type = "Capability"
+                aug_soh_trig = 0.80
+                aug_soh_add = 0.10
+            else:
+                aug_thr_margin = 0.0
+                aug_topup = 0.0
                 aug_every = 5
                 aug_frac = 0.10
-                aug_trigger_type = "SOH"
-        elif aug_mode == "Periodic":
-            c1, c2 = st.columns(2)
-            with c1:
-                aug_every = st.number_input(
-                    "Every N years",
-                    1,
-                    None,
-                    5,
-                    1,
-                    help="Add capacity on this cadence (e.g., every 5 years).",
-                    key="inputs_aug_periodic_every_years",
-                )
-            with c2:
-                aug_frac = (
-                    st.number_input(
-                        "Add % of current BOL-ref energy",
-                        0.0,
-                        None,
-                        10.0,
-                        1.0,
-                        help="Top-up energy relative to current BOL reference.",
-                        key="inputs_aug_periodic_add_pct",
-                    )
-                    / 100.0
-                )
-            aug_thr_margin = 0.0
-            aug_topup = 0.0
-            aug_trigger_type = "Capability"
-            aug_soh_trig = 0.80
-            aug_soh_add = 0.10
-        else:
-            aug_thr_margin = 0.0
-            aug_topup = 0.0
-            aug_every = 5
-            aug_frac = 0.10
-            aug_trigger_type = "Capability"
-            aug_soh_trig = 0.80
-            aug_soh_add = 0.10
+                aug_trigger_type = "Capability"
+                aug_soh_trig = 0.80
+                aug_soh_add = 0.10
 
-        if aug_mode not in ["None", "Manual"]:
-            aug_size_mode = st.selectbox(
-                "Augmentation sizing",
-                ["Percent", "Fixed"],
-                format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
-                help="Choose whether to size augmentation as a percent or a fixed MWh add.",
-                key="inputs_aug_size_mode",
-            )
-            if aug_size_mode == "Fixed":
-                aug_fixed_energy = st.number_input(
-                    "Fixed energy added per event (MWh, BOL basis)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=1.0,
-                    help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
-                    key="inputs_aug_fixed_energy_mwh",
+            if aug_mode not in ["None", "Manual"]:
+                aug_size_mode = st.selectbox(
+                    "Augmentation sizing",
+                    ["Percent", "Fixed"],
+                    format_func=lambda k: "% basis" if k == "Percent" else "Fixed energy (MWh)",
+                    help="Choose whether to size augmentation as a percent or a fixed MWh add.",
+                    key="inputs_aug_size_mode",
                 )
-
-        if aug_mode != "None":
-            retire_enabled = st.checkbox(
-                "Retire low-SOH cohorts when augmenting",
-                value=False,
-                help="Remove cohorts once their SOH falls below the retirement threshold.",
-                key="inputs_aug_retire_enabled",
-            )
-            if retire_enabled:
-                retire_soh = (
-                    st.number_input(
-                        "Retirement SOH threshold (%)",
-                        min_value=0.0,
-                        max_value=100.0,
-                        value=60.0,
-                        step=1.0,
-                        help="Cohorts at or below this SOH are retired before applying augmentation.",
-                        key="inputs_aug_retire_soh_pct",
-                    )
-                    / 100.0
-                )
-                retire_replace_mode = st.selectbox(
-                    "Replacement after retirement",
-                    ["None", "Percent", "Fixed"],
-                    format_func=lambda k: "None" if k == "None" else ("% of BOL energy" if k == "Percent" else "Fixed energy (MWh)"),
-                    help="Optionally replace retired cohorts with new energy on a BOL basis.",
-                    key="inputs_aug_retire_replace_mode",
-                )
-                if retire_replace_mode == "Percent":
-                    retire_replace_pct = (
-                        st.number_input(
-                            "Replacement % of BOL energy",
-                            min_value=0.0,
-                            max_value=200.0,
-                            value=0.0,
-                            step=1.0,
-                            help="Add this fraction of initial BOL energy when retirement happens.",
-                            key="inputs_aug_retire_replace_pct",
-                        )
-                        / 100.0
-                    )
-                elif retire_replace_mode == "Fixed":
-                    retire_replace_fixed_mwh = st.number_input(
-                        "Replacement energy (MWh, BOL basis)",
+                if aug_size_mode == "Fixed":
+                    aug_fixed_energy = st.number_input(
+                        "Fixed energy added per event (MWh, BOL basis)",
                         min_value=0.0,
                         value=0.0,
                         step=1.0,
-                        help="Add this BOL-equivalent energy when retirement happens.",
-                        key="inputs_aug_retire_replace_fixed_mwh",
+                        help="Adds this BOL-equivalent energy whenever augmentation is triggered.",
+                        key="inputs_aug_fixed_energy_mwh",
                     )
 
-    with st.container():
-        # BESS Specs
-        with st.expander("BESS Specs (high-level)", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                init_power = st.number_input(
-                    "Power rating (MW)",
-                    1.0,
-                    None,
-                    30.0,
-                    1.0,
-                    help="Initial nameplate power (POI context), before availability.",
-                    key="inputs_initial_power_mw",
+            if aug_mode != "None":
+                retire_enabled = st.checkbox(
+                    "Retire low-SOH cohorts when augmenting",
+                    value=False,
+                    help="Remove cohorts once their SOH falls below the retirement threshold.",
+                    key="inputs_aug_retire_enabled",
                 )
-            with c2:
-                init_energy = st.number_input(
-                    "Usable energy at BOL (MWh)",
-                    1.0,
-                    None,
-                    120.0,
-                    1.0,
-                    help="Initial usable energy (POI context).",
-                    key="inputs_initial_usable_mwh",
-                )
-            with c3:
-                soc_floor = st.slider(
-                    "SOC floor (%)",
-                    0,
-                    50,
-                    10,
-                    1,
-                    help="Reserve to protect cycling; lowers daily swing.",
-                    key="inputs_soc_floor_pct",
-                ) / 100.0
-                soc_ceiling = st.slider(
-                    "SOC ceiling (%)",
-                    50,
-                    100,
-                    98,
-                    1,
-                    help="Upper limit to protect cycling; raises daily swing when higher.",
-                    key="inputs_soc_ceiling_pct",
-                ) / 100.0
+                if retire_enabled:
+                    retire_soh = (
+                        st.number_input(
+                            "Retirement SOH threshold (%)",
+                            min_value=0.0,
+                            max_value=100.0,
+                            value=60.0,
+                            step=1.0,
+                            help="Cohorts at or below this SOH are retired before applying augmentation.",
+                            key="inputs_aug_retire_soh_pct",
+                        )
+                        / 100.0
+                    )
+                    retire_replace_mode = st.selectbox(
+                        "Replacement after retirement",
+                        ["None", "Percent", "Fixed"],
+                        format_func=lambda k: "None"
+                        if k == "None"
+                        else ("% of BOL energy" if k == "Percent" else "Fixed energy (MWh)"),
+                        help="Optionally replace retired cohorts with new energy on a BOL basis.",
+                        key="inputs_aug_retire_replace_mode",
+                    )
+                    if retire_replace_mode == "Percent":
+                        retire_replace_pct = (
+                            st.number_input(
+                                "Replacement % of BOL energy",
+                                min_value=0.0,
+                                max_value=200.0,
+                                value=0.0,
+                                step=1.0,
+                                help="Add this fraction of initial BOL energy when retirement happens.",
+                                key="inputs_aug_retire_replace_pct",
+                            )
+                            / 100.0
+                        )
+                    elif retire_replace_mode == "Fixed":
+                        retire_replace_fixed_mwh = st.number_input(
+                            "Replacement energy (MWh, BOL basis)",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            help="Add this BOL-equivalent energy when retirement happens.",
+                            key="inputs_aug_retire_replace_fixed_mwh",
+                        )
 
+        with st.container():
+            # BESS Specs
+            with st.expander("BESS Specs (high-level)", expanded=True):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    init_power = st.number_input(
+                        "Power rating (MW)",
+                        1.0,
+                        None,
+                        30.0,
+                        1.0,
+                        help="Initial nameplate power (POI context), before availability.",
+                        key="inputs_initial_power_mw",
+                    )
+                with c2:
+                    init_energy = st.number_input(
+                        "Usable energy at BOL (MWh)",
+                        1.0,
+                        None,
+                        120.0,
+                        1.0,
+                        help="Initial usable energy (POI context).",
+                        key="inputs_initial_usable_mwh",
+                    )
+                with c3:
+                    soc_floor = st.slider(
+                        "SOC floor (%)",
+                        0,
+                        50,
+                        10,
+                        1,
+                        help="Reserve to protect cycling; lowers daily swing.",
+                        key="inputs_soc_floor_pct",
+                    ) / 100.0
+                    soc_ceiling = st.slider(
+                        "SOC ceiling (%)",
+                        50,
+                        100,
+                        98,
+                        1,
+                        help="Upper limit to protect cycling; raises daily swing when higher.",
+                        key="inputs_soc_ceiling_pct",
+                    ) / 100.0
+
+            # Degradation
+            with st.expander("Degradation modeling", expanded=False):
+                c1, c2 = st.columns(2)
+                with c1:
+                    cal_fade = (
+                        st.number_input(
+                            "Calendar fade %/yr (empirical)",
+                            0.0,
+                            5.0,
+                            1.0,
+                            0.1,
+                            help="Multiplicative retention: (1 − rate)^year.",
+                            key="inputs_calendar_fade_pct",
+                        )
+                        / 100.0
+                    )
+                with c2:
+                    dod_override = st.selectbox(
+                        "Degradation DoD basis",
+                        ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
+                        help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.",
+                        key="inputs_dod_override",
+                    )
+
+    with st.expander("Market", expanded=True):
         # Dispatch
         with st.expander("Dispatch Strategy", expanded=True):
             c1, c2, c3 = st.columns(3)
@@ -541,94 +560,21 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_charge_windows",
                 )
 
-        # Degradation
-        with st.expander("Degradation modeling", expanded=False):
-            c1, c2 = st.columns(2)
-            with c1:
-                cal_fade = (
-                    st.number_input(
-                        "Calendar fade %/yr (empirical)",
-                        0.0,
-                        5.0,
-                        1.0,
-                        0.1,
-                        help="Multiplicative retention: (1 − rate)^year.",
-                        key="inputs_calendar_fade_pct",
-                    )
-                    / 100.0
-                )
-            with c2:
-                dod_override = st.selectbox(
-                    "Degradation DoD basis",
-                    ["Auto (infer)", "10%", "20%", "40%", "80%", "100%"],
-                    help="Use the cycle table at a fixed DoD, or let the app infer based on median daily discharge.",
-                    key="inputs_dod_override",
-                )
+    econ_inputs: Optional[EconomicInputs] = None
+    price_inputs: Optional[PriceInputs] = None
 
-        validation_errors, validation_warnings, validation_details = [], [], []
-        dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
-        validation_warnings.extend(dispatch_validation.warnings)
-        manual_errors, manual_details = validate_manual_augmentation_schedule(
-            aug_mode, manual_schedule_entries, manual_schedule_errors
-        )
-        validation_errors.extend(manual_errors)
-        validation_details.extend(manual_details)
-        validation_details.extend(dispatch_validation.details)
-
-        for msg in validation_warnings:
-            st.warning(msg)
-        for msg in validation_errors:
-            st.error(msg)
-
-        cfg = SimConfig(
-            years=int(years),
-            pv_deg_rate=float(pv_deg),
-            pv_availability=float(pv_avail),
-            bess_availability=float(bess_avail),
-            rte_roundtrip=float(rte),
-            use_split_rte=bool(use_split_rte),
-            charge_efficiency=float(charge_eff) if use_split_rte else None,
-            discharge_efficiency=float(discharge_eff) if use_split_rte else None,
-            soc_floor=float(soc_floor),
-            soc_ceiling=float(soc_ceiling),
-            initial_power_mw=float(init_power),
-            initial_usable_mwh=float(init_energy),
-            contracted_mw=float(contracted_mw),
-            discharge_windows=dispatch_validation.discharge_windows,
-            charge_windows_text=charge_windows_text,
-            charge_windows=dispatch_validation.charge_windows,
-            max_cycles_per_day_cap=1.2,
-            calendar_fade_rate=float(cal_fade),
-            use_calendar_exp_model=True,
-            augmentation=aug_mode,
-            aug_trigger_type=aug_trigger_type,
-            aug_threshold_margin=float(aug_thr_margin),
-            aug_topup_margin=float(aug_topup),
-            aug_soh_trigger_pct=float(aug_soh_trig),
-            aug_soh_add_frac_initial=float(aug_soh_add),
-            aug_periodic_every_years=int(aug_every),
-            aug_periodic_add_frac_of_bol=float(aug_frac),
-            aug_add_mode=aug_size_mode,
-            aug_fixed_energy_mwh=float(aug_fixed_energy),
-            aug_retire_old_cohort=bool(retire_enabled),
-            aug_retire_soh_pct=float(retire_soh),
-            aug_retire_replacement_mode=retire_replace_mode,
-            aug_retire_replacement_pct_bol=float(retire_replace_pct),
-            aug_retire_replacement_fixed_mwh=float(retire_replace_fixed_mwh),
-            augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
+    with st.expander("Financial", expanded=False):
+        # Keep the economics toggle outside the main input block so checking it reveals inputs immediately.
+        st.markdown("### Optional economics (NPV, IRR, LCOE, LCOS)")
+        run_economics = st.checkbox(
+            "Compute economics using simulation outputs",
+            value=False,
+            help=(
+                "Enable to enter financial assumptions and derive LCOE/LCOS, NPV, and IRR from the simulated annual energy streams."
+            ),
+            key="inputs_run_economics",
         )
 
-        inferred_step = infer_step_hours_from_pv(pv_df)
-        if inferred_step is not None:
-            cfg.step_hours = inferred_step
-
-        duration_error = validate_pv_profile_duration(pv_df, cfg.step_hours)
-        if duration_error:
-            validation_errors.append(duration_error)
-            validation_details.append(f"PV profile validation error: {duration_error}")
-
-        econ_inputs: Optional[EconomicInputs] = None
-        price_inputs: Optional[PriceInputs] = None
         forex_rate_php_per_usd = DEFAULT_FOREX_RATE_PHP_PER_USD
 
         if run_economics:
@@ -678,7 +624,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 )
                 capex_usd_per_kwh = 0.0
                 capex_total_usd = 0.0
-                bess_bol_kwh = cfg.initial_usable_mwh * 1000.0
+                bess_bol_kwh = init_energy * 1000.0
                 if capex_mode == "USD/kWh (BOL)":
                     default_capex_usd_per_kwh = 0.0
                     if bess_bol_kwh > 0:
@@ -924,7 +870,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         help=("Comma or newline separated values applied per project year. Length must match the simulation horizon."),
                         key="inputs_variable_opex_custom_text",
                     )
-                    st.caption(f"Use commas or newlines between amounts; provide one value per project year ({cfg.years} entries).")
+                    st.caption(f"Use commas or newlines between amounts; provide one value per project year ({years} entries).")
                     if custom_variable_text.strip():
                         try:
                             variable_opex_schedule_usd = tuple(
@@ -967,15 +913,77 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
             )
 
-        run_cols = st.columns([2, 1])
-        with run_cols[0]:
-            run_submitted = st.button(
-                "Run simulation",
-                use_container_width=True,
-                help="Click to compute results with the current inputs.",
-            )
-        with run_cols[1]:
-            st.caption("Edit parameters freely, then run when ready.")
+    validation_errors, validation_warnings, validation_details = [], [], []
+    dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
+    validation_warnings.extend(dispatch_validation.warnings)
+    manual_errors, manual_details = validate_manual_augmentation_schedule(
+        aug_mode, manual_schedule_entries, manual_schedule_errors
+    )
+    validation_errors.extend(manual_errors)
+    validation_details.extend(manual_details)
+    validation_details.extend(dispatch_validation.details)
+
+    for msg in validation_warnings:
+        st.warning(msg)
+    for msg in validation_errors:
+        st.error(msg)
+
+    cfg = SimConfig(
+        years=int(years),
+        pv_deg_rate=float(pv_deg),
+        pv_availability=float(pv_avail),
+        bess_availability=float(bess_avail),
+        rte_roundtrip=float(rte),
+        use_split_rte=bool(use_split_rte),
+        charge_efficiency=float(charge_eff) if use_split_rte else None,
+        discharge_efficiency=float(discharge_eff) if use_split_rte else None,
+        soc_floor=float(soc_floor),
+        soc_ceiling=float(soc_ceiling),
+        initial_power_mw=float(init_power),
+        initial_usable_mwh=float(init_energy),
+        contracted_mw=float(contracted_mw),
+        discharge_windows=dispatch_validation.discharge_windows,
+        charge_windows_text=charge_windows_text,
+        charge_windows=dispatch_validation.charge_windows,
+        max_cycles_per_day_cap=1.2,
+        calendar_fade_rate=float(cal_fade),
+        use_calendar_exp_model=True,
+        augmentation=aug_mode,
+        aug_trigger_type=aug_trigger_type,
+        aug_threshold_margin=float(aug_thr_margin),
+        aug_topup_margin=float(aug_topup),
+        aug_soh_trigger_pct=float(aug_soh_trig),
+        aug_soh_add_frac_initial=float(aug_soh_add),
+        aug_periodic_every_years=int(aug_every),
+        aug_periodic_add_frac_of_bol=float(aug_frac),
+        aug_add_mode=aug_size_mode,
+        aug_fixed_energy_mwh=float(aug_fixed_energy),
+        aug_retire_old_cohort=bool(retire_enabled),
+        aug_retire_soh_pct=float(retire_soh),
+        aug_retire_replacement_mode=retire_replace_mode,
+        aug_retire_replacement_pct_bol=float(retire_replace_pct),
+        aug_retire_replacement_fixed_mwh=float(retire_replace_fixed_mwh),
+        augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
+    )
+
+    inferred_step = infer_step_hours_from_pv(pv_df)
+    if inferred_step is not None:
+        cfg.step_hours = inferred_step
+
+    duration_error = validate_pv_profile_duration(pv_df, cfg.step_hours)
+    if duration_error:
+        validation_errors.append(duration_error)
+        validation_details.append(f"PV profile validation error: {duration_error}")
+
+    run_cols = st.columns([2, 1])
+    with run_cols[0]:
+        run_submitted = st.button(
+            "Run simulation",
+            use_container_width=True,
+            help="Click to compute results with the current inputs.",
+        )
+    with run_cols[1]:
+        st.caption("Edit parameters freely, then run when ready.")
 
     is_valid = not validation_errors
     if validation_errors and run_submitted:
