@@ -615,15 +615,15 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             with econ_col2:
                 capex_mode = st.radio(
                     "BESS CAPEX input",
-                    options=["USD/kWh (BOL)", "Total CAPEX (USD)"],
+                    options=["USD/kWh (BOL)", "Total CAPEX (USD million)"],
                     horizontal=True,
                     help=(
-                        "Enter BESS CAPEX as a unit rate per kWh of BOL energy or override with a total USD value."
+                        "Enter BESS CAPEX as a unit rate per kWh of BOL energy or override with a total USD million value."
                     ),
                     key="inputs_capex_mode",
                 )
                 capex_usd_per_kwh = 0.0
-                capex_total_usd = 0.0
+                capex_musd = 0.0
                 bess_bol_kwh = init_energy * 1000.0
                 if capex_mode == "USD/kWh (BOL)":
                     default_capex_usd_per_kwh = 0.0
@@ -638,15 +638,16 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         key="inputs_capex_usd_per_kwh",
                     )
                     capex_total_usd = capex_usd_per_kwh * bess_bol_kwh
-                    st.caption(f"Implied BESS CAPEX: ${capex_total_usd / 1_000_000:,.2f}M.")
+                    capex_musd = capex_total_usd / 1_000_000.0
+                    st.caption(f"Implied BESS CAPEX: ${capex_musd:,.2f}M.")
                 else:
-                    capex_total_usd = st.number_input(
-                        "Total BESS CAPEX override (USD)",
+                    capex_musd = st.number_input(
+                        "Total BESS CAPEX (USD million)",
                         min_value=0.0,
-                        value=40_000_000.0,
-                        step=1_000_000.0,
-                        help="Single-number override for BESS CAPEX in USD.",
-                        key="inputs_capex_total_usd",
+                        value=40.0,
+                        step=0.1,
+                        help="Single-number override for BESS CAPEX in USD million.",
+                        key="inputs_capex_musd",
                     )
                 pv_capex_musd = st.number_input(
                     "PV CAPEX (USD million)",
@@ -656,8 +657,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     help="Standalone PV CAPEX; combined with BESS CAPEX for total project spend.",
                     key="inputs_pv_capex_musd",
                 )
-                total_capex_usd = capex_total_usd + pv_capex_musd * 1_000_000.0
-                st.caption(f"Total project CAPEX (BESS + PV): ${total_capex_usd / 1_000_000:,.2f}M.")
+                total_capex_musd = capex_musd + pv_capex_musd
+                st.caption(f"Total project CAPEX (BESS + PV): ${total_capex_musd:,.2f}M.")
                 opex_mode = st.radio(
                     "OPEX input",
                     options=["% of CAPEX per year", "PHP/kWh on total generation"],
@@ -891,10 +892,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                             st.stop()
 
             econ_inputs = EconomicInputs(
-                capex_musd=capex_total_usd / 1_000_000.0,
+                capex_musd=capex_musd,
                 capex_usd_per_kwh=capex_usd_per_kwh if capex_mode == "USD/kWh (BOL)" else None,
-                capex_total_usd=capex_total_usd if capex_mode == "Total CAPEX (USD)" else None,
-                bess_bol_kwh=bess_bol_kwh,
+                capex_total_usd=None,
+                bess_bol_kwh=bess_bol_kwh if capex_mode == "USD/kWh (BOL)" else None,
                 pv_capex_musd=pv_capex_musd,
                 fixed_opex_pct_of_capex=fixed_opex_pct,
                 fixed_opex_musd=fixed_opex_musd,

@@ -21,7 +21,9 @@ class EconomicInputs:
     """High-level project economics.
 
     Unit conventions:
-    - BESS CAPEX can be entered as USD/kWh (with a BOL size in kWh) or as a total USD override.
+    - BESS CAPEX can be entered as USD/kWh (with a BOL size in kWh) or as a total
+      USD million override via ``capex_musd``. ``capex_total_usd`` is retained
+      for legacy payloads that store raw USD.
       Canonical BESS CAPEX is stored in ``capex_musd`` (USD millions).
     - PV CAPEX is entered separately in ``pv_capex_musd`` (USD millions).
       ``total_capex_musd`` stores the combined CAPEX used for year-0 spend and
@@ -587,7 +589,8 @@ def _resolve_total_capex_usd(inputs: EconomicInputs) -> float:
 def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
     """Normalize economic inputs to canonical USD-based values.
 
-    This helper converts CAPEX and OPEX inputs into the USD terms consumed by
+    This helper converts CAPEX and OPEX inputs (USD/kWh or USD million) into the
+    USD terms consumed by
     the core cash-flow calculations. It also applies the PHP-based DevEx input
     (defaulting to 100M PHP) and sets variable OPEX to use total-generation
     energy when the PHP/kWh mode is supplied.
@@ -600,6 +603,7 @@ def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
 
     capex_total_usd: float | None = None
     if inputs.capex_total_usd is not None:
+        # Legacy raw-USD input; prefer capex_musd for new callers.
         capex_total_usd = float(inputs.capex_total_usd)
         _ensure_non_negative_finite(capex_total_usd, "capex_total_usd")
     elif inputs.capex_usd_per_kwh is not None:

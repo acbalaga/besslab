@@ -418,18 +418,18 @@ with st.expander("Economics (optional)", expanded=False):
     default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
 
     with econ_col2:
-        capex_mode_default = "Total CAPEX (USD)"
+        capex_mode_default = "Total CAPEX (USD million)"
         if econ_inputs_default and econ_inputs_default.capex_usd_per_kwh is not None:
             capex_mode_default = "USD/kWh (BOL)"
         capex_mode = st.radio(
             "BESS CAPEX input",
-            options=["USD/kWh (BOL)", "Total CAPEX (USD)"],
-            index=["USD/kWh (BOL)", "Total CAPEX (USD)"].index(capex_mode_default),
+            options=["USD/kWh (BOL)", "Total CAPEX (USD million)"],
+            index=["USD/kWh (BOL)", "Total CAPEX (USD million)"].index(capex_mode_default),
             horizontal=True,
-            help="Enter BESS CAPEX as a unit rate per kWh of BOL energy or override with a total USD value.",
+            help="Enter BESS CAPEX as a unit rate per kWh of BOL energy or override with a total USD million value.",
         )
         capex_usd_per_kwh = 0.0
-        capex_total_usd = 0.0
+        capex_musd = 0.0
         bess_bol_kwh_default = cached_cfg.initial_usable_mwh * 1000.0
         if capex_mode == "USD/kWh (BOL)":
             default_capex_usd_per_kwh = 0.0
@@ -445,18 +445,19 @@ with st.expander("Economics (optional)", expanded=False):
                 help="Applied to BOL usable energy (kWh) to derive total CAPEX in USD.",
             )
             capex_total_usd = capex_usd_per_kwh * bess_bol_kwh_default
+            capex_musd = capex_total_usd / 1_000_000.0
         else:
-            default_capex_total_usd = 40_000_000.0
+            default_capex_musd = 40.0
             if econ_inputs_default:
-                if econ_inputs_default.capex_total_usd is not None:
-                    default_capex_total_usd = float(econ_inputs_default.capex_total_usd)
-                elif econ_inputs_default.capex_musd:
-                    default_capex_total_usd = float(econ_inputs_default.capex_musd) * 1_000_000.0
-            capex_total_usd = st.number_input(
-                "Total BESS CAPEX (USD)",
+                if econ_inputs_default.capex_musd is not None:
+                    default_capex_musd = float(econ_inputs_default.capex_musd)
+                elif econ_inputs_default.capex_total_usd is not None:
+                    default_capex_musd = float(econ_inputs_default.capex_total_usd) / 1_000_000.0
+            capex_musd = st.number_input(
+                "Total BESS CAPEX (USD million)",
                 min_value=0.0,
-                value=float(default_capex_total_usd),
-                step=100_000.0,
+                value=float(default_capex_musd),
+                step=0.1,
             )
         pv_capex_musd = st.number_input(
             "PV CAPEX (USD million)",
@@ -465,7 +466,7 @@ with st.expander("Economics (optional)", expanded=False):
             step=0.1,
             help="Standalone PV CAPEX added to the BESS CAPEX input above.",
         )
-        total_capex_musd = capex_total_usd / 1_000_000.0 + pv_capex_musd
+        total_capex_musd = capex_musd + pv_capex_musd
         st.caption(f"Total project CAPEX (BESS + PV): ${total_capex_musd:,.2f}M.")
         fixed_opex_pct = st.number_input(
             "Fixed OPEX (% of CAPEX per year)",
@@ -777,9 +778,9 @@ with st.expander("Economics (optional)", expanded=False):
         )
 
 economic_inputs = EconomicInputs(
-    capex_musd=capex_total_usd / 1_000_000.0,
+    capex_musd=capex_musd,
     capex_usd_per_kwh=capex_usd_per_kwh if capex_mode == "USD/kWh (BOL)" else None,
-    capex_total_usd=capex_total_usd if capex_mode == "Total CAPEX (USD)" else None,
+    capex_total_usd=None,
     bess_bol_kwh=bess_bol_kwh_default if capex_mode == "USD/kWh (BOL)" else None,
     pv_capex_musd=pv_capex_musd,
     fixed_opex_pct_of_capex=fixed_opex_pct,
