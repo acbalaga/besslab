@@ -13,7 +13,10 @@ from app import BASE_DIR
 from services.simulation_core import HourlyLog, SimConfig, Window, parse_windows, simulate_project, summarize_simulation
 from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
 from utils.economics import (
+    DEFAULT_COST_OF_DEBT_PCT,
+    DEFAULT_DEBT_EQUITY_RATIO,
     DEFAULT_FOREX_RATE_PHP_PER_USD,
+    DEFAULT_TENOR_YEARS,
     DEVEX_COST_PHP,
     EconomicInputs,
     PriceInputs,
@@ -761,7 +764,7 @@ with st.expander("Economics (optional)", expanded=False):
 
     financing_col1, financing_col2, financing_col3 = st.columns(3)
     with financing_col1:
-        default_debt_equity_ratio = 1.0
+        default_debt_equity_ratio = DEFAULT_DEBT_EQUITY_RATIO
         if econ_inputs_default and 0.0 < econ_inputs_default.debt_ratio < 1.0:
             default_debt_equity_ratio = econ_inputs_default.debt_ratio / (1.0 - econ_inputs_default.debt_ratio)
         debt_equity_ratio = st.number_input(
@@ -769,7 +772,10 @@ with st.expander("Economics (optional)", expanded=False):
             min_value=0.0,
             value=default_debt_equity_ratio,
             step=0.1,
-            help="Debt divided by equity; 1.0 implies 50% debt and 50% equity.",
+            help=(
+                "Debt divided by equity; 1.0 implies 50% debt and 50% equity. "
+                f"Default: {DEFAULT_DEBT_EQUITY_RATIO:.1f} D/E."
+            ),
         )
         debt_ratio = debt_equity_ratio / (1.0 + debt_equity_ratio) if debt_equity_ratio > 0 else 0.0
         st.caption(f"Implied debt share of capital: {debt_ratio * 100:.1f}%.")
@@ -778,17 +784,21 @@ with st.expander("Economics (optional)", expanded=False):
             "Cost of debt (%)",
             min_value=0.0,
             max_value=30.0,
-            value=float(econ_inputs_default.cost_of_debt * 100.0) if econ_inputs_default else 6.0,
+            value=float(econ_inputs_default.cost_of_debt * 100.0)
+            if econ_inputs_default and econ_inputs_default.cost_of_debt is not None
+            else DEFAULT_COST_OF_DEBT_PCT,
             step=0.1,
-            help="Annual interest rate applied to the debt balance.",
+            help=f"Annual interest rate applied to the debt balance. Default: {DEFAULT_COST_OF_DEBT_PCT:.1f}%.",
         )
     with financing_col3:
         tenor_years = st.number_input(
             "Debt tenor (years)",
             min_value=1,
-            value=int(econ_inputs_default.tenor_years) if econ_inputs_default and econ_inputs_default.tenor_years else 10,
+            value=int(econ_inputs_default.tenor_years)
+            if econ_inputs_default and econ_inputs_default.tenor_years
+            else DEFAULT_TENOR_YEARS,
             step=1,
-            help="Years over which debt is amortized using level payments.",
+            help=f"Years over which debt is amortized using level payments. Default: {DEFAULT_TENOR_YEARS}.",
         )
 
 economic_inputs = EconomicInputs(

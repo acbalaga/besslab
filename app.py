@@ -540,16 +540,17 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         False,
     )
 
-    debt_ratio = _coerce_float(econ_payload.get("debt_ratio"), 0.0)
+    default_debt_ratio = economics.DEFAULT_DEBT_EQUITY_RATIO / (1.0 + economics.DEFAULT_DEBT_EQUITY_RATIO)
+    debt_ratio = _coerce_float(econ_payload.get("debt_ratio"), default_debt_ratio)
     debt_equity_ratio = debt_ratio / (1.0 - debt_ratio) if 0 < debt_ratio < 1.0 else 0.0
     st.session_state[INPUTS_FORM_KEYS["debt_equity_ratio"]] = debt_equity_ratio
     st.session_state[INPUTS_FORM_KEYS["cost_of_debt_pct"]] = _coerce_float(
         econ_payload.get("cost_of_debt"),
-        0.06,
+        economics.DEFAULT_COST_OF_DEBT_PCT / 100.0,
     ) * 100.0
     st.session_state[INPUTS_FORM_KEYS["tenor_years"]] = _coerce_int(
         econ_payload.get("tenor_years"),
-        10,
+        economics.DEFAULT_TENOR_YEARS,
     )
 
     variable_schedule_choice = "None"

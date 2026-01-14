@@ -9,6 +9,9 @@ import pandas as pd
 
 
 DEFAULT_FOREX_RATE_PHP_PER_USD = 58.0
+DEFAULT_DEBT_EQUITY_RATIO = 1.5
+DEFAULT_COST_OF_DEBT_PCT = 7.0
+DEFAULT_TENOR_YEARS = 12
 # DevEx is modeled as a PHP-denominated amount to align with other UI inputs.
 # A default USD conversion is retained for callers that do not override
 # ``devex_cost_usd`` explicitly (e.g., during tests or CLI usage).
@@ -1671,7 +1674,10 @@ def estimate_augmentation_costs_by_year(
 
 
 __all__ = [
+    "DEFAULT_COST_OF_DEBT_PCT",
+    "DEFAULT_DEBT_EQUITY_RATIO",
     "DEFAULT_FOREX_RATE_PHP_PER_USD",
+    "DEFAULT_TENOR_YEARS",
     "DEVEX_COST_PHP",
     "DEVEX_COST_USD",
     "EconomicInputs",
