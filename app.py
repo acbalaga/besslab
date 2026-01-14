@@ -2,7 +2,7 @@ import io
 import json
 import math
 from dataclasses import asdict, dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 import altair as alt
 import numpy as np
@@ -196,6 +196,27 @@ def _coerce_year_choice(value: Any, options: List[int], fallback: int) -> int:
     if fallback in options:
         return int(fallback)
     return options[0]
+
+
+T = TypeVar("T")
+
+
+def _get_download_payload(
+    inputs_fingerprint: str,
+    cache_key: str,
+    label: str,
+    build_fn: Callable[[], T],
+) -> T:
+    """Build and cache download payloads while showing progress for heavy downloads."""
+
+    cache = st.session_state.setdefault("download_payload_cache", {})
+    scoped_key = f"{inputs_fingerprint}:{cache_key}"
+    if scoped_key in cache:
+        return cache[scoped_key]
+    with st.spinner(f"Preparing {label}..."):
+        payload = build_fn()
+    cache[scoped_key] = payload
+    return payload
 
 
 def _format_hhmm(hour_value: float) -> str:
@@ -1194,17 +1215,26 @@ def run_app():
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
 
+    inputs_fingerprint = build_inputs_fingerprint(cfg, dod_override, run_economics, econ_inputs, price_inputs)
     with st.expander("Download inputs (JSON, includes economics)", expanded=False):
-        inputs_payload = _build_inputs_payload(
-            cfg=cfg,
-            dod_override=dod_override,
-            run_economics=run_economics,
-            econ_inputs=econ_inputs,
-            price_inputs=price_inputs,
-            discharge_windows_text=discharge_windows_text,
-            charge_windows_text=charge_windows_text,
+        def _build_inputs_json() -> bytes:
+            inputs_payload = _build_inputs_payload(
+                cfg=cfg,
+                dod_override=dod_override,
+                run_economics=run_economics,
+                econ_inputs=econ_inputs,
+                price_inputs=price_inputs,
+                discharge_windows_text=discharge_windows_text,
+                charge_windows_text=charge_windows_text,
+            )
+            return json.dumps(inputs_payload, indent=2).encode("utf-8")
+
+        inputs_json = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="inputs_json",
+            label="inputs JSON",
+            build_fn=_build_inputs_json,
         )
-        inputs_json = json.dumps(inputs_payload, indent=2).encode("utf-8")
         st.download_button(
             "Download inputs (JSON)",
             data=inputs_json,
@@ -1212,7 +1242,6 @@ def run_app():
             mime="application/json",
             use_container_width=True,
         )
-    inputs_fingerprint = build_inputs_fingerprint(cfg, dod_override, run_economics, econ_inputs, price_inputs)
     bootstrap_session_state(cfg, current_inputs_fingerprint=inputs_fingerprint)
 
     save_simulation_config(cfg, dod_override)
@@ -2203,10 +2232,15 @@ def run_app():
 
     # ---------- Downloads ----------
     st.subheader("Downloads")
-    cfg_download = json.dumps(asdict(cfg), indent=2)
+    cfg_download = _get_download_payload(
+        inputs_fingerprint=inputs_fingerprint,
+        cache_key="simulation_config_json",
+        label="simulation config",
+        build_fn=lambda: json.dumps(asdict(cfg), indent=2).encode("utf-8"),
+    )
     st.download_button(
         "Download simulation config (JSON)",
-        cfg_download.encode("utf-8"),
+        cfg_download,
         file_name="bess_config.json",
         mime="application/json",
     )
@@ -2228,73 +2262,81 @@ def run_app():
         and annual_total_generation is not None
         and cash_flow_builders_available
     ):
-        daily_df = (
-            _build_daily_summary_df(hourly_logs_by_year, cfg.step_hours)
-            if hourly_logs_by_year
-            else pd.DataFrame()
-        )
-        operating_cash_flow_df = economics.build_operating_cash_flow_table(
-            annual_delivered,
-            annual_bess,
-            annual_pv_excess,
-            normalized_econ_inputs,
-            price_inputs,
-            annual_pv_delivered_mwh=annual_pv_delivered,
-            annual_shortfall_mwh=annual_shortfall,
-            annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
-            annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
-            augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
-            annual_total_generation_mwh=annual_total_generation,
-        )
-        financing_cash_flow_df = economics.build_financing_cash_flow_table(
-            annual_delivered,
-            annual_bess,
-            annual_pv_excess,
-            normalized_econ_inputs,
-            price_inputs,
-            annual_shortfall_mwh=annual_shortfall,
-            annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
-            annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
-            augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
-            annual_total_generation_mwh=annual_total_generation,
-        )
-        metrics_summary = pd.DataFrame(
-            [
-                {
-                    "Metric": "Project NPV (USD, WACC)",
-                    "Value": financing_outputs.project_npv_usd,
-                },
-                {
-                    "Metric": "IRR (%)",
-                    "Value": cash_outputs.irr_pct,
-                },
-                {
-                    "Metric": "PIRR (%)",
-                    "Value": financing_outputs.project_irr_pct,
-                },
-                {
-                    "Metric": "EIRR (%)",
-                    "Value": financing_outputs.equity_irr_pct,
-                },
-                {
-                    "Metric": "Discount rate (%)",
-                    "Value": normalized_econ_inputs.discount_rate * 100.0,
-                },
-                {
-                    "Metric": "WACC (%)",
-                    "Value": normalized_econ_inputs.wacc * 100.0,
-                },
-            ]
-        )
-        assumptions_df = _build_finance_assumptions_df(normalized_econ_inputs, price_inputs)
-        finance_workbook = _build_finance_audit_workbook(
-            assumptions_df,
-            metrics_summary,
-            res_df,
-            monthly_df,
-            daily_df,
-            operating_cash_flow_df,
-            financing_cash_flow_df,
+        def _build_finance_workbook() -> bytes:
+            daily_df = (
+                _build_daily_summary_df(hourly_logs_by_year, cfg.step_hours)
+                if hourly_logs_by_year
+                else pd.DataFrame()
+            )
+            operating_cash_flow_df = economics.build_operating_cash_flow_table(
+                annual_delivered,
+                annual_bess,
+                annual_pv_excess,
+                normalized_econ_inputs,
+                price_inputs,
+                annual_pv_delivered_mwh=annual_pv_delivered,
+                annual_shortfall_mwh=annual_shortfall,
+                annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
+                augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+                annual_total_generation_mwh=annual_total_generation,
+            )
+            financing_cash_flow_df = economics.build_financing_cash_flow_table(
+                annual_delivered,
+                annual_bess,
+                annual_pv_excess,
+                normalized_econ_inputs,
+                price_inputs,
+                annual_shortfall_mwh=annual_shortfall,
+                annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+                annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
+                augmentation_costs_usd=augmentation_costs_usd if augmentation_costs_usd else None,
+                annual_total_generation_mwh=annual_total_generation,
+            )
+            metrics_summary = pd.DataFrame(
+                [
+                    {
+                        "Metric": "Project NPV (USD, WACC)",
+                        "Value": financing_outputs.project_npv_usd,
+                    },
+                    {
+                        "Metric": "IRR (%)",
+                        "Value": cash_outputs.irr_pct,
+                    },
+                    {
+                        "Metric": "PIRR (%)",
+                        "Value": financing_outputs.project_irr_pct,
+                    },
+                    {
+                        "Metric": "EIRR (%)",
+                        "Value": financing_outputs.equity_irr_pct,
+                    },
+                    {
+                        "Metric": "Discount rate (%)",
+                        "Value": normalized_econ_inputs.discount_rate * 100.0,
+                    },
+                    {
+                        "Metric": "WACC (%)",
+                        "Value": normalized_econ_inputs.wacc * 100.0,
+                    },
+                ]
+            )
+            assumptions_df = _build_finance_assumptions_df(normalized_econ_inputs, price_inputs)
+            return _build_finance_audit_workbook(
+                assumptions_df,
+                metrics_summary,
+                res_df,
+                monthly_df,
+                daily_df,
+                operating_cash_flow_df,
+                financing_cash_flow_df,
+            )
+
+        finance_workbook = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="finance_audit_workbook",
+            label="finance audit workbook",
+            build_fn=_build_finance_workbook,
         )
         st.download_button(
             "Download finance audit workbook (Excel)",
@@ -2311,14 +2353,39 @@ def run_app():
             "Finance audit workbook unavailable: cash-flow helpers were not found. "
             "Please refresh the app to load the latest economics helpers."
         )
-    st.download_button("Download yearly summary (CSV)", res_df.to_csv(index=False).encode('utf-8'),
-                       file_name='bess_yearly_summary.csv', mime='text/csv')
+    yearly_summary_csv = _get_download_payload(
+        inputs_fingerprint=inputs_fingerprint,
+        cache_key="yearly_summary_csv",
+        label="yearly summary CSV",
+        build_fn=lambda: res_df.to_csv(index=False).encode("utf-8"),
+    )
+    st.download_button(
+        "Download yearly summary (CSV)",
+        yearly_summary_csv,
+        file_name="bess_yearly_summary.csv",
+        mime="text/csv",
+    )
 
-    st.download_button("Download monthly summary (CSV)", monthly_df.to_csv(index=False).encode('utf-8'),
-                       file_name='bess_monthly_summary.csv', mime='text/csv')
+    monthly_summary_csv = _get_download_payload(
+        inputs_fingerprint=inputs_fingerprint,
+        cache_key="monthly_summary_csv",
+        label="monthly summary CSV",
+        build_fn=lambda: monthly_df.to_csv(index=False).encode("utf-8"),
+    )
+    st.download_button(
+        "Download monthly summary (CSV)",
+        monthly_summary_csv,
+        file_name="bess_monthly_summary.csv",
+        mime="text/csv",
+    )
 
     if hourly_logs_by_year:
-        hourly_workbook = _build_hourly_summary_workbook(hourly_logs_by_year)
+        hourly_workbook = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="hourly_summary_workbook",
+            label="hourly summary workbook",
+            build_fn=lambda: _build_hourly_summary_workbook(hourly_logs_by_year),
+        )
         st.download_button(
             "Download hourly summary (Excel)",
             hourly_workbook,
@@ -2327,36 +2394,50 @@ def run_app():
         )
 
     if final_year_logs is not None:
-        hourly_df = _build_hourly_summary_df(final_year_logs)
-        st.download_button("Download final-year hourly logs (CSV)", hourly_df.to_csv(index=False).encode('utf-8'),
-                           file_name='final_year_hourly_logs.csv', mime='text/csv')
+        final_year_hourly_csv = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="final_year_hourly_csv",
+            label="final-year hourly logs CSV",
+            build_fn=lambda: _build_hourly_summary_df(final_year_logs).to_csv(index=False).encode("utf-8"),
+        )
+        st.download_button(
+            "Download final-year hourly logs (CSV)",
+            final_year_hourly_csv,
+            file_name="final_year_hourly_logs.csv",
+            mime="text/csv",
+        )
 
     pdf_bytes = None
     try:
-        pdf_bytes = build_pdf_summary(
-            cfg,
-            results,
-            kpis.compliance,
-            kpis.bess_share_of_firm,
-            kpis.charge_discharge_ratio,
-            kpis.pv_capture_ratio,
-            kpis.discharge_capacity_factor,
-            discharge_windows_text,
-            charge_windows_text,
-            hod_count,
-            hod_sum_pv_resource,
-            hod_sum_pv,
-            hod_sum_bess,
-            hod_sum_charge,
-            kpis.total_shortfall_mwh,
-            kpis.pv_excess_mwh,
-            kpis.total_project_generation_mwh,
-            kpis.bess_generation_mwh,
-            kpis.pv_generation_mwh,
-            kpis.bess_losses_mwh,
-            final_year_logs,
-            sim_output.augmentation_energy_added_mwh,
-            augmentation_retired,
+        pdf_bytes = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="pdf_snapshot",
+            label="PDF snapshot",
+            build_fn=lambda: build_pdf_summary(
+                cfg,
+                results,
+                kpis.compliance,
+                kpis.bess_share_of_firm,
+                kpis.charge_discharge_ratio,
+                kpis.pv_capture_ratio,
+                kpis.discharge_capacity_factor,
+                discharge_windows_text,
+                charge_windows_text,
+                hod_count,
+                hod_sum_pv_resource,
+                hod_sum_pv,
+                hod_sum_bess,
+                hod_sum_charge,
+                kpis.total_shortfall_mwh,
+                kpis.pv_excess_mwh,
+                kpis.total_project_generation_mwh,
+                kpis.bess_generation_mwh,
+                kpis.pv_generation_mwh,
+                kpis.bess_losses_mwh,
+                final_year_logs,
+                sim_output.augmentation_energy_added_mwh,
+                augmentation_retired,
+            ),
         )
     except Exception as exc:  # noqa: BLE001
         st.warning(f"PDF snapshot unavailable: {exc}")
