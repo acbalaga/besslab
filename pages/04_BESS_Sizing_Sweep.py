@@ -837,73 +837,97 @@ if sweep_df is not None:
     chart_df["is_best"] = sweep_df.get("is_best", False)
     chart_df = chart_df.sort_values("energy_mwh")
 
-    base_chart = alt.Chart(chart_df).encode(
-        x=alt.X("energy_mwh", title="BESS capacity (MWh)", axis=alt.Axis(format=",.0f"))
-    )
-
-    point_tooltip = [
-        alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
-        alt.Tooltip(npv_field, title=npv_axis_title, format=",.0f"),
-        alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
-    ]
-
-    npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
-        y=alt.Y(
-            npv_field,
-            title=npv_axis_title,
-            axis=alt.Axis(titleColor="#0b2c66", format=",.0f", orient="left"),
-        ),
-        tooltip=point_tooltip,
-    )
-
-    irr_line = base_chart.mark_line(color="#88c5de", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
-        y=alt.Y(
-            "irr_pct",
-            title="IRR (%)",
-            axis=alt.Axis(
-                titleColor="#88c5de",
-                orient="right",
-                format=",.2f",
-                labelExpr="datum.label + '%'",
-            ),
-        ),
-        tooltip=point_tooltip,
-    )
-
-    zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(
-        y=alt.Y("y:Q", axis=None)
-    )
-
-    best_point = (
-        base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
-        .mark_circle(color="#f57c00", size=120)
-        .encode(y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
-    )
-
-    convergence_overlay = None
-    if convergence_point:
-        convergence_df = pd.DataFrame(
-            {"energy_mwh": [convergence_point[0]], npv_field: [convergence_point[1]], "irr_pct": [convergence_point[2]]}
+    has_economics = chart_df[[npv_field, "irr_pct"]].notna().any().any()
+    if not has_economics:
+        st.warning(
+            "Economics outputs were not computed for this sweep. Verify pricing/economics inputs "
+            "(CAPEX, OPEX, discount rate, and contract price), or disable WESM pricing if the "
+            "hourly profile is missing.",
+            icon="⚠️",
         )
-        convergence_overlay = alt.Chart(convergence_df).mark_point(
-            color="#b3006e",
-            size=140,
-            shape="diamond",
-            filled=True,
-        ).encode(x="energy_mwh", y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
+        feasibility_fields = [
+            field
+            for field in ["energy_mwh", "compliance_pct", "total_shortfall_mwh", "total_project_generation_mwh"]
+            if field in sweep_df.columns
+        ]
+        if feasibility_fields:
+            st.dataframe(
+                sweep_df[feasibility_fields].sort_values("energy_mwh"),
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        base_chart = alt.Chart(chart_df).encode(
+            x=alt.X("energy_mwh", title="BESS capacity (MWh)", axis=alt.Axis(format=",.0f"))
+        )
 
-    layers = [zero_line, npv_line, irr_line, best_point]
-    if convergence_overlay is not None:
-        layers.append(convergence_overlay)
+        point_tooltip = [
+            alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
+            alt.Tooltip(npv_field, title=npv_axis_title, format=",.0f"),
+            alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
+        ]
 
-    st.altair_chart(
-        alt.layer(*layers).resolve_scale(y="independent"),
-        use_container_width=True,
-    )
-    st.caption(
-        "Dual-axis line chart overlays NPV and IRR across BESS capacities; IRR points are omitted when unavailable. "
-        "Net NPV is displayed when cash-flow assumptions are provided, otherwise discounted costs are shown."
-    )
+        npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
+            y=alt.Y(
+                npv_field,
+                title=npv_axis_title,
+                axis=alt.Axis(titleColor="#0b2c66", format=",.0f", orient="left"),
+            ),
+            tooltip=point_tooltip,
+        )
+
+        irr_line = base_chart.mark_line(color="#88c5de", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
+            y=alt.Y(
+                "irr_pct",
+                title="IRR (%)",
+                axis=alt.Axis(
+                    titleColor="#88c5de",
+                    orient="right",
+                    format=",.2f",
+                    labelExpr="datum.label + '%'",
+                ),
+            ),
+            tooltip=point_tooltip,
+        )
+
+        zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(
+            y=alt.Y("y:Q", axis=None)
+        )
+
+        best_point = (
+            base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
+            .mark_circle(color="#f57c00", size=120)
+            .encode(y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
+        )
+
+        convergence_overlay = None
+        if convergence_point:
+            convergence_df = pd.DataFrame(
+                {
+                    "energy_mwh": [convergence_point[0]],
+                    npv_field: [convergence_point[1]],
+                    "irr_pct": [convergence_point[2]],
+                }
+            )
+            convergence_overlay = alt.Chart(convergence_df).mark_point(
+                color="#b3006e",
+                size=140,
+                shape="diamond",
+                filled=True,
+            ).encode(x="energy_mwh", y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
+
+        layers = [zero_line, npv_line, irr_line, best_point]
+        if convergence_overlay is not None:
+            layers.append(convergence_overlay)
+
+        st.altair_chart(
+            alt.layer(*layers).resolve_scale(y="independent"),
+            use_container_width=True,
+        )
+        st.caption(
+            "Dual-axis line chart overlays NPV and IRR across BESS capacities; IRR points are omitted when unavailable. "
+            "Net NPV is displayed when cash-flow assumptions are provided, otherwise discounted costs are shown."
+        )
 else:
     st.info(
         "Run the sweep with your latest inputs. Results persist in the session for quick iteration.",
