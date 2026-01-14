@@ -674,6 +674,43 @@ def test_compute_candidate_economics_respects_overrides() -> None:
     assert math.isnan(irr_pct)
 
 
+def test_compute_candidate_economics_uses_wesm_profile_override() -> None:
+    sim_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=10.0, initial_power_mw=5.0),
+        results=[
+            _StubResult(
+                delivered_firm_mwh=0.0,
+                bess_to_contract_mwh=0.0,
+                pv_curtailed_mwh=0.0,
+                shortfall_mwh=0.0,
+            )
+        ],
+        augmentation_energy_added_mwh=[0.0],
+    )
+    econ_inputs = EconomicInputs(
+        capex_musd=0.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_inputs = PriceInputs(
+        contract_price_usd_per_mwh=0.0,
+        pv_market_price_usd_per_mwh=0.0,
+        wesm_deficit_price_usd_per_mwh=0.0,
+        apply_wesm_to_shortfall=True,
+    )
+
+    _, _, _, npv_usd = _compute_candidate_economics(
+        sim_output,
+        econ_inputs,
+        price_inputs,
+        annual_wesm_shortfall_cost_usd=[100.0],
+    )
+
+    assert npv_usd == pytest.approx(-100.0)
+
+
 def test_sweep_scales_economics_with_energy_size():
     pv_df = pd.DataFrame({"pv_mw": [0.0]})
     cycle_df = pd.DataFrame()
