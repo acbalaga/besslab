@@ -619,7 +619,6 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_forex_rate_php_per_usd",
                 )
             default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
-            default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
             with econ_col2:
                 capex_mode = st.radio(
                     "BESS CAPEX input",
@@ -736,41 +735,13 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                         f"PHP {devex_cost_php:,.0f} ≈ ${devex_cost_usd / 1_000_000:,.2f}M."
                     )
             with econ_col3:
-                use_blended_price = st.checkbox(
-                    "Use blended energy price",
-                    value=False,
-                    help=(
-                        "Apply a single price to all delivered firm energy and excess PV. "
-                        "Contract/PV-specific inputs are ignored while enabled."
-                    ),
-                    key="inputs_use_blended_price",
-                )
                 contract_price_php_per_kwh = st.number_input(
                     "Contract price (PHP/kWh for delivered energy)",
                     min_value=0.0,
                     value=default_contract_php_per_kwh,
                     step=0.05,
                     help="Price converted to USD/MWh using the FX rate above.",
-                    disabled=use_blended_price,
                     key="inputs_contract_price_php_per_kwh",
-                )
-                pv_market_price_php_per_kwh = st.number_input(
-                    "PV excess price (PHP/kWh for excess PV)",
-                    min_value=0.0,
-                    value=default_pv_php_per_kwh,
-                    step=0.05,
-                    help="Price converted to USD/MWh using the FX rate above.",
-                    disabled=use_blended_price,
-                    key="inputs_pv_market_price_php_per_kwh",
-                )
-                blended_price_php_per_kwh = st.number_input(
-                    "Blended energy price (PHP/kWh)",
-                    min_value=0.0,
-                    value=default_contract_php_per_kwh,
-                    step=0.05,
-                    help=("Applied to all delivered firm energy and marketed PV when blended pricing is enabled."),
-                    disabled=not use_blended_price,
-                    key="inputs_blended_price_php_per_kwh",
                 )
                 escalate_prices = st.checkbox(
                     "Escalate prices with inflation",
@@ -797,22 +768,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 )
 
                 contract_price = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-                pv_market_price = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-                blended_price_usd_per_mwh: Optional[float] = None
-                wesm_deficit_price_usd_per_mwh: Optional[float] = None
-                wesm_surplus_price_usd_per_mwh: Optional[float] = None
-                if use_blended_price:
-                    blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-                    st.caption(
-                        "Blended price active for revenues: "
-                        f"PHP {blended_price_php_per_kwh:,.2f}/kWh "
-                        f"(≈${blended_price_usd_per_mwh:,.2f}/MWh). Contract/PV prices are ignored."
-                    )
-                else:
-                    st.caption(
-                        f"Converted contract price: ${contract_price:,.2f}/MWh | "
-                        f"PV excess price: ${pv_market_price:,.2f}/MWh"
-                    )
+                st.caption(f"Converted contract price: ${contract_price:,.2f}/MWh.")
                 if wesm_pricing_enabled:
                     st.caption(
                         "WESM pricing uses the hourly profile (upload or bundled default) for both "
@@ -933,11 +889,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             )
             price_inputs = PriceInputs(
                 contract_price_usd_per_mwh=contract_price,
-                pv_market_price_usd_per_mwh=pv_market_price,
                 escalate_with_inflation=escalate_prices,
-                blended_price_usd_per_mwh=blended_price_usd_per_mwh,
-                wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
-                wesm_surplus_price_usd_per_mwh=wesm_surplus_price_usd_per_mwh if wesm_pricing_enabled and sell_to_wesm else None,
                 apply_wesm_to_shortfall=wesm_pricing_enabled,
                 sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
             )

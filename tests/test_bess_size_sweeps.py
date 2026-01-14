@@ -462,7 +462,6 @@ def test_sweep_uses_price_inputs_for_cashflow_npv() -> None:
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=0.0,
     )
 
     df = sweep_bess_sizes(
@@ -653,7 +652,6 @@ def test_compute_candidate_economics_respects_overrides() -> None:
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=100.0,
-        pv_market_price_usd_per_mwh=0.0,
     )
 
     lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
@@ -696,8 +694,6 @@ def test_compute_candidate_economics_uses_wesm_profile_override() -> None:
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=0.0,
-        pv_market_price_usd_per_mwh=0.0,
-        wesm_deficit_price_usd_per_mwh=0.0,
         apply_wesm_to_shortfall=True,
     )
 
@@ -909,7 +905,6 @@ def test_sweep_computes_normalized_kpis_and_ranks_new_metrics():
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=200.0,
-        pv_market_price_usd_per_mwh=0.0,
     )
 
     df = sweep_bess_sizes(
@@ -1187,8 +1182,8 @@ def test_sweep_supports_multiple_price_scenarios_without_extra_sims() -> None:
         discount_rate=0.0,
     )
     price_scenarios = [
-        PriceInputs(contract_price_usd_per_mwh=100.0, pv_market_price_usd_per_mwh=0.0),
-        PriceInputs(contract_price_usd_per_mwh=150.0, pv_market_price_usd_per_mwh=0.0),
+        PriceInputs(contract_price_usd_per_mwh=100.0),
+        PriceInputs(contract_price_usd_per_mwh=150.0),
     ]
     scenario_names = ["base", "upside"]
 
@@ -1219,100 +1214,7 @@ def test_sweep_supports_multiple_price_scenarios_without_extra_sims() -> None:
         assert df.loc[df["price_scenario"] == name, "is_best"].sum() == 1
 
 
-def test_static_economic_sweep_penalizes_deficits():
-    candidates = [
-        BessEconomicCandidate(
-            energy_mwh=50.0,
-            capex_musd=1.0,
-            fixed_opex_musd=0.05,
-            compliance_mwh=2500.0,
-            deficit_mwh=0.0,
-            surplus_mwh=200.0,
-        ),
-        BessEconomicCandidate(
-            energy_mwh=80.0,
-            capex_musd=1.0,
-            fixed_opex_musd=0.05,
-            compliance_mwh=2500.0,
-            deficit_mwh=-500.0,
-            surplus_mwh=200.0,
-        ),
-    ]
-
-    economics_template = EconomicInputs(
-        capex_musd=0.0,
-        fixed_opex_pct_of_capex=0.0,
-        fixed_opex_musd=0.0,
-        inflation_rate=0.0,
-        discount_rate=0.08,
-    )
-
-    price_inputs = PriceInputs(
-        contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=50.0,
-        apply_wesm_to_shortfall=True,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        sell_to_wesm=True,
-    )
-
-    df = compute_static_bess_sweep_economics(
-        candidates,
-        economics_template,
-        price_inputs,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        years=5,
-    )
-
-    base_npv = df.loc[df["deficit_mwh"] == 0.0, "npv_usd"].iloc[0]
-    deficit_npv = df.loc[df["deficit_mwh"] < 0.0, "npv_usd"].iloc[0]
-    base_irr = df.loc[df["deficit_mwh"] == 0.0, "irr_pct"].iloc[0]
-    deficit_irr = df.loc[df["deficit_mwh"] < 0.0, "irr_pct"].iloc[0]
-
-    assert base_npv > 0
-    assert deficit_npv < base_npv
-    assert base_irr > 0
-    assert deficit_irr < base_irr
-
-
-def test_static_economic_sweep_uses_blended_price() -> None:
-    candidates = [
-        BessEconomicCandidate(
-            energy_mwh=50.0,
-            capex_musd=0.0,
-            fixed_opex_musd=0.0,
-            compliance_mwh=100.0,
-            deficit_mwh=0.0,
-            surplus_mwh=50.0,
-        )
-    ]
-
-    economics_template = EconomicInputs(
-        capex_musd=0.0,
-        fixed_opex_pct_of_capex=0.0,
-        fixed_opex_musd=0.0,
-        inflation_rate=0.0,
-        discount_rate=0.0,
-    )
-
-    price_inputs = PriceInputs(
-        contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=60.0,
-        blended_price_usd_per_mwh=50.0,
-    )
-
-    df = compute_static_bess_sweep_economics(
-        candidates,
-        economics_template,
-        price_inputs,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        years=1,
-    )
-
-    expected_revenue = (100.0 + 50.0) * 50.0
-    assert math.isclose(df.loc[0, "npv_usd"], expected_revenue)
-
-
-def test_static_economic_sweep_applies_wesm_penalty_when_enabled() -> None:
+def test_static_economic_sweep_rejects_wesm_without_profile() -> None:
     candidates = [
         BessEconomicCandidate(
             energy_mwh=50.0,
@@ -1332,44 +1234,21 @@ def test_static_economic_sweep_applies_wesm_penalty_when_enabled() -> None:
         discount_rate=0.0,
     )
 
-    price_inputs_disabled = PriceInputs(
+    price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=50.0,
-        apply_wesm_to_shortfall=False,
-        wesm_deficit_price_usd_per_mwh=90.0,
-    )
-    price_inputs_enabled = PriceInputs(
-        contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=True,
-        wesm_deficit_price_usd_per_mwh=90.0,
     )
 
-    df_disabled = compute_static_bess_sweep_economics(
-        candidates,
-        economics_template,
-        price_inputs_disabled,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        years=1,
-    )
-    df_enabled = compute_static_bess_sweep_economics(
-        candidates,
-        economics_template,
-        price_inputs_enabled,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        years=1,
-    )
-
-    assert df_enabled.loc[0, "npv_usd"] < df_disabled.loc[0, "npv_usd"]
-    disabled_irr = df_disabled.loc[0, "irr_pct"]
-    enabled_irr = df_enabled.loc[0, "irr_pct"]
-    if math.isnan(disabled_irr):
-        assert math.isnan(enabled_irr) or enabled_irr <= disabled_irr
-    else:
-        assert enabled_irr < disabled_irr
+    with pytest.raises(ValueError, match="Static sweep economics require a WESM profile"):
+        compute_static_bess_sweep_economics(
+            candidates,
+            economics_template,
+            price_inputs,
+            years=1,
+        )
 
 
-def test_candidate_economics_honors_blended_price_and_wesm_shortfalls() -> None:
+def test_candidate_economics_uses_wesm_profile_values() -> None:
     sim_output = _StubSimOutput(
         cfg=_StubCfg(initial_usable_mwh=50.0, initial_power_mw=10.0),
         results=[
@@ -1388,21 +1267,20 @@ def test_candidate_economics_honors_blended_price_and_wesm_shortfalls() -> None:
         inflation_rate=0.0,
         discount_rate=0.0,
     )
-    price_inputs_blended = PriceInputs(
+    price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=60.0,
-        blended_price_usd_per_mwh=50.0,
         apply_wesm_to_shortfall=True,
-        wesm_deficit_price_usd_per_mwh=90.0,
         sell_to_wesm=True,
     )
 
-    revenue_expected = (100.0 * 50.0) + (20.0 * 90.0) - (10.0 * 90.0)
+    revenue_expected = (100.0 * 120.0) + (20.0 * 90.0) - (10.0 * 90.0)
     _, _, _, npv_usd = _compute_candidate_economics(
         sim_output,
         economics_inputs,
-        price_inputs_blended,
+        price_inputs,
         base_initial_energy_mwh=50.0,
+        annual_wesm_shortfall_cost_usd=[10.0 * 90.0],
+        annual_wesm_surplus_revenue_usd=[20.0 * 90.0],
     )
 
     assert math.isclose(npv_usd, revenue_expected)

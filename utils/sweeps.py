@@ -65,18 +65,6 @@ def generate_values(min_value: float, max_value: float, steps: int) -> List[floa
     return [float(min_value + i * step) for i in range(steps)]
 
 
-def _resolve_energy_prices(price_inputs: PriceInputs) -> tuple[float, float]:
-    """Return effective contract and PV prices, honoring a blended override."""
-
-    if price_inputs.blended_price_usd_per_mwh is not None:
-        blended_price = float(price_inputs.blended_price_usd_per_mwh)
-        return blended_price, blended_price
-    return (
-        float(price_inputs.contract_price_usd_per_mwh),
-        float(price_inputs.pv_market_price_usd_per_mwh),
-    )
-
-
 def _normalize_price_scenarios(
     price_inputs: PriceInputs | Sequence[PriceInputs] | None,
     price_scenario_names: Sequence[str] | None = None,
@@ -310,8 +298,6 @@ def compute_static_bess_sweep_economics(
     candidates: Sequence[BessEconomicCandidate],
     economics_template: EconomicInputs,
     price_inputs: PriceInputs,
-    wesm_deficit_price_usd_per_mwh: float,
-    wesm_surplus_price_usd_per_mwh: float | None = None,
     *,
     years: int = 1,
 ) -> pd.DataFrame:
@@ -320,8 +306,14 @@ def compute_static_bess_sweep_economics(
     This helper mirrors the economics applied during full simulations by
     delegating to :func:`utils.economics.compute_cash_flows_and_irr`. The
     provided generation volumes are assumed to repeat each year; callers can
-    pre-scale the inputs when modeling degradation or growth.
+    pre-scale the inputs when modeling degradation or growth. WESM pricing is
+    not supported here because it requires hourly profiles.
     """
+
+    if price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm:
+        raise ValueError(
+            "Static sweep economics require a WESM profile; disable WESM pricing for static candidates."
+        )
 
     rows: list[dict[str, float]] = []
 
@@ -330,15 +322,6 @@ def compute_static_bess_sweep_economics(
             economics_template,
             capex_musd=float(candidate.capex_musd),
             fixed_opex_musd=float(candidate.fixed_opex_musd),
-        )
-        price_inputs_for_run = replace(
-            price_inputs,
-            wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
-            wesm_surplus_price_usd_per_mwh=(
-                wesm_surplus_price_usd_per_mwh
-                if wesm_surplus_price_usd_per_mwh is not None
-                else price_inputs.wesm_surplus_price_usd_per_mwh
-            ),
         )
 
         annual_compliance = max(candidate.compliance_mwh, 0.0)
@@ -350,7 +333,7 @@ def compute_static_bess_sweep_economics(
             [annual_compliance for _ in range(years)],
             [annual_surplus for _ in range(years)],
             economics_inputs,
-            price_inputs_for_run,
+            price_inputs,
             annual_pv_delivered_mwh=[0.0 for _ in range(years)],
             annual_shortfall_mwh=[annual_shortfall for _ in range(years)],
         )
@@ -777,17 +760,15 @@ def _evaluate_candidate_row(
 ) -> list[dict[str, float | bool | str]]:
     """Run a single candidate simulation and compute derived KPIs for all price scenarios."""
 
-    needs_wesm_profile = (
-        wesm_profile_df is not None
-        and any(
-            scenario_price_inputs is not None
-            and (
-                scenario_price_inputs.apply_wesm_to_shortfall
-                or scenario_price_inputs.sell_to_wesm
-            )
-            for _, scenario_price_inputs in price_scenarios
-        )
+    wesm_requested = any(
+        scenario_price_inputs is not None
+        and (scenario_price_inputs.apply_wesm_to_shortfall or scenario_price_inputs.sell_to_wesm)
+        for _, scenario_price_inputs in price_scenarios
     )
+    if wesm_requested and wesm_profile_df is None:
+        raise ValueError("WESM pricing requires an hourly WESM profile.")
+
+    needs_wesm_profile = wesm_profile_df is not None and wesm_requested
 
     sim_output, summary = run_candidate_simulation(
         base_cfg,
@@ -821,7 +802,7 @@ def _evaluate_candidate_row(
             )
         except Exception as exc:  # noqa: BLE001
             logging.getLogger(__name__).warning(
-                "WESM profile aggregation failed; falling back to static pricing. (%s)",
+                "WESM profile aggregation failed; WESM economics will error if enabled. (%s)",
                 exc,
             )
 
@@ -1026,7 +1007,7 @@ def sweep_bess_sizes(
     wesm_profile_df
         Optional hourly WESM profile data. When supplied and WESM pricing is
         enabled in ``price_inputs``, hourly shortfall and surplus pricing is
-        aggregated and used instead of the static PHP/kWh overrides.
+        aggregated into annual cost/revenue streams.
     wesm_step_hours
         Time resolution (hours) for the hourly logs used in WESM aggregation.
     max_candidates
@@ -1216,9 +1197,7 @@ def _main_example() -> None:
     )
     price_inputs = PriceInputs(
         contract_price_usd_per_mwh=120.0,
-        pv_market_price_usd_per_mwh=40.0,
-        wesm_deficit_price_usd_per_mwh=90.0,
-        apply_wesm_to_shortfall=True,
+        apply_wesm_to_shortfall=False,
     )
 
     df = sweep_bess_sizes(

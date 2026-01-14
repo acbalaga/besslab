@@ -414,11 +414,6 @@ with st.expander("Economics (optional)", expanded=False):
         )
 
     default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
-    default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
-    wesm_surplus_reference_php_per_kwh = 3.29
-    default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
-    wesm_reference_php_per_mwh = 5_583.0
-    default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
 
     with econ_col2:
         capex_mode_default = "Total CAPEX (USD million)"
@@ -542,23 +537,7 @@ with st.expander("Economics (optional)", expanded=False):
                 f"PHP {devex_cost_php:,.0f} ≈ ${devex_cost_usd / 1_000_000:,.2f}M."
             )
 
-    blended_price_default_php_per_kwh = (
-        float(econ_price_default.blended_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
-        if econ_price_default and econ_price_default.blended_price_usd_per_mwh is not None
-        else default_contract_php_per_kwh
-    )
-    blended_price_default_active = bool(
-        econ_price_default and econ_price_default.blended_price_usd_per_mwh is not None
-    )
     with econ_col3:
-        use_blended_price = st.checkbox(
-            "Use blended energy price",
-            value=blended_price_default_active,
-            help=(
-                "Apply a single price to all delivered firm energy and excess PV. "
-                "Contract/PV-specific inputs are ignored while enabled."
-            ),
-        )
         contract_price_php_per_kwh = st.number_input(
             "Contract price (PHP/kWh for delivered energy)",
             min_value=0.0,
@@ -566,24 +545,6 @@ with st.expander("Economics (optional)", expanded=False):
             if econ_price_default
             else default_contract_php_per_kwh,
             step=0.05,
-            disabled=use_blended_price,
-        )
-        pv_market_price_php_per_kwh = st.number_input(
-            "PV excess price (PHP/kWh for excess PV)",
-            min_value=0.0,
-            value=float(econ_price_default.pv_market_price_usd_per_mwh * forex_rate_php_per_usd / 1000.0)
-            if econ_price_default
-            else default_pv_php_per_kwh,
-            step=0.05,
-            disabled=use_blended_price,
-        )
-        blended_price_php_per_kwh = st.number_input(
-            "Blended energy price (PHP/kWh)",
-            min_value=0.0,
-            value=blended_price_default_php_per_kwh,
-            step=0.05,
-            help="Applied to all delivered firm energy and marketed PV when blended pricing is enabled.",
-            disabled=not use_blended_price,
         )
         escalate_prices = st.checkbox(
             "Escalate prices with inflation",
@@ -596,23 +557,6 @@ with st.expander("Economics (optional)", expanded=False):
                 "Uses the uploaded (or bundled) hourly WESM profile to price contract shortfalls."
             ),
         )
-        wesm_deficit_price_php_per_kwh = st.number_input(
-            "WESM deficit price for contract shortfalls (PHP/kWh)",
-            min_value=0.0,
-            value=float(
-                econ_price_default.wesm_deficit_price_usd_per_mwh
-                * forex_rate_php_per_usd
-                / 1000.0
-            )
-            if econ_price_default and econ_price_default.wesm_deficit_price_usd_per_mwh is not None
-            else default_wesm_php_per_kwh,
-            step=0.05,
-            help=(
-                "Applied to contract shortfall MWh (annual_shortfall_mwh) as a purchase cost. "
-                "This is separate from the PV surplus sale price."
-            ),
-            disabled=not wesm_pricing_enabled,
-        )
         sell_to_wesm = st.checkbox(
             "Sell PV surplus to WESM",
             value=bool(econ_price_default.sell_to_wesm) if econ_price_default else False,
@@ -622,60 +566,13 @@ with st.expander("Economics (optional)", expanded=False):
             ),
             disabled=not wesm_pricing_enabled,
         )
-        wesm_surplus_price_php_per_kwh = st.number_input(
-            "WESM sale price for PV surplus (PHP/kWh)",
-            min_value=0.0,
-            value=float(
-                econ_price_default.wesm_surplus_price_usd_per_mwh
-                * forex_rate_php_per_usd
-                / 1000.0
-            )
-            if econ_price_default and econ_price_default.wesm_surplus_price_usd_per_mwh is not None
-            else default_wesm_surplus_php_per_kwh,
-            step=0.05,
-            help=(
-                "Used only when selling PV surplus. Defaults to PHP 3.29/kWh based on the 2025 weighted "
-                "average WESM price; adjust to use your own PHP/kWh rate. This does not affect shortfall pricing."
-            ),
-            disabled=not (wesm_pricing_enabled and sell_to_wesm),
-        )
-    blended_price_usd_per_mwh: Optional[float] = None
-    wesm_deficit_price_usd_per_mwh: Optional[float] = None
-    wesm_surplus_price_usd_per_mwh: Optional[float] = None
     contract_price_usd_per_mwh = contract_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-    pv_market_price_usd_per_mwh = pv_market_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-    if use_blended_price:
-        blended_price_usd_per_mwh = blended_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-        st.caption(
-            "Blended price active for revenues: "
-            f"PHP {blended_price_php_per_kwh:,.2f}/kWh "
-            f"(≈${blended_price_usd_per_mwh:,.2f}/MWh). Contract/PV prices are ignored."
-        )
-    else:
-        st.caption(
-            f"Converted contract price: ${contract_price_usd_per_mwh:,.2f}/MWh | "
-            f"PV excess price: ${pv_market_price_usd_per_mwh:,.2f}/MWh"
-        )
+    st.caption(f"Converted contract price: ${contract_price_usd_per_mwh:,.2f}/MWh.")
     if wesm_pricing_enabled:
-        wesm_deficit_price_usd_per_mwh = wesm_deficit_price_php_per_kwh / forex_rate_php_per_usd * 1000.0
-        wesm_surplus_price_usd_per_mwh = (
-            wesm_surplus_price_php_per_kwh / forex_rate_php_per_usd * 1000.0 if sell_to_wesm else None
-        )
         st.caption(
             "WESM pricing uses the hourly profile (upload or bundled default) for both "
             "shortfall costs and surplus revenue."
         )
-        st.caption(
-            "WESM deficit pricing active for contract shortfalls: "
-            f"PHP {wesm_deficit_price_php_per_kwh:,.2f}/kWh "
-            f"(≈${wesm_deficit_price_usd_per_mwh:,.2f}/MWh)."
-        )
-        if sell_to_wesm and wesm_surplus_price_usd_per_mwh is not None:
-            st.caption(
-                "PV surplus credited at a separate WESM sale rate: "
-                f"PHP {wesm_surplus_price_php_per_kwh:,.2f}/kWh "
-                f"(≈${wesm_surplus_price_usd_per_mwh:,.2f}/MWh)."
-            )
 
     wesm_file = st.file_uploader(
         "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
@@ -832,11 +729,7 @@ economic_inputs = EconomicInputs(
 )
 price_inputs = PriceInputs(
     contract_price_usd_per_mwh=contract_price_usd_per_mwh,
-    pv_market_price_usd_per_mwh=pv_market_price_usd_per_mwh,
     escalate_with_inflation=escalate_prices,
-    blended_price_usd_per_mwh=blended_price_usd_per_mwh,
-    wesm_deficit_price_usd_per_mwh=wesm_deficit_price_usd_per_mwh,
-    wesm_surplus_price_usd_per_mwh=wesm_surplus_price_usd_per_mwh if wesm_pricing_enabled and sell_to_wesm else None,
     apply_wesm_to_shortfall=wesm_pricing_enabled,
     sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
 )

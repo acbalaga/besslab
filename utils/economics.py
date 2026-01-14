@@ -79,21 +79,13 @@ class EconomicOutputs:
 class PriceInputs:
     """Energy price assumptions used for cash-flow based metrics.
 
-    When ``blended_price_usd_per_mwh`` is provided it overrides the individual
-    contract and PV excess rates so all delivered energy plus any excess PV is
-    monetized at the blended value. The optional WESM deficit price applies to
-    contract shortfalls when enabled, treated as a purchase cost. When
-    ``sell_to_wesm`` is enabled, PV surplus (excess energy) can be credited at a
-    dedicated WESM sale price; otherwise, surplus revenue is excluded from the
-    cash-flow stream.
+    Contract pricing is applied to delivered firm energy. WESM pricing for
+    shortfalls and PV surplus is expected to come from the hourly WESM profile
+    and supplied via the annual WESM cost/revenue arrays.
     """
 
     contract_price_usd_per_mwh: float
-    pv_market_price_usd_per_mwh: float
     escalate_with_inflation: bool = False
-    blended_price_usd_per_mwh: float | None = None
-    wesm_deficit_price_usd_per_mwh: float | None = None
-    wesm_surplus_price_usd_per_mwh: float | None = None
     apply_wesm_to_shortfall: bool = False
     sell_to_wesm: bool = False
 
@@ -173,11 +165,39 @@ def build_operating_cash_flow_table(
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
     use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
     use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
-    _validate_price_inputs(
-        price_inputs,
-        require_wesm_deficit_price=not use_wesm_shortfall_profile,
-        require_wesm_surplus_price=not use_wesm_surplus_profile,
-    )
+    _validate_price_inputs(price_inputs)
+    if price_inputs.apply_wesm_to_shortfall and not use_wesm_shortfall_profile:
+        raise ValueError(
+            "annual_wesm_shortfall_cost_usd is required when WESM shortfall pricing is enabled."
+        )
+    if price_inputs.sell_to_wesm and not use_wesm_surplus_profile:
+        raise ValueError(
+            "annual_wesm_surplus_revenue_usd is required when selling PV surplus to WESM."
+        )
+    if price_inputs.apply_wesm_to_shortfall and not use_wesm_shortfall_profile:
+        raise ValueError(
+            "annual_wesm_shortfall_cost_usd is required when WESM shortfall pricing is enabled."
+        )
+    if price_inputs.sell_to_wesm and not use_wesm_surplus_profile:
+        raise ValueError(
+            "annual_wesm_surplus_revenue_usd is required when selling PV surplus to WESM."
+        )
+    if price_inputs.apply_wesm_to_shortfall and not use_wesm_shortfall_profile:
+        raise ValueError(
+            "annual_wesm_shortfall_cost_usd is required when WESM shortfall pricing is enabled."
+        )
+    if price_inputs.sell_to_wesm and not use_wesm_surplus_profile:
+        raise ValueError(
+            "annual_wesm_surplus_revenue_usd is required when selling PV surplus to WESM."
+        )
+    if price_inputs.apply_wesm_to_shortfall and not use_wesm_shortfall_profile:
+        raise ValueError(
+            "annual_wesm_shortfall_cost_usd is required when WESM shortfall pricing is enabled."
+        )
+    if price_inputs.sell_to_wesm and not use_wesm_surplus_profile:
+        raise ValueError(
+            "annual_wesm_surplus_revenue_usd is required when selling PV surplus to WESM."
+        )
 
     if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
         annual_delivered_mwh
@@ -237,22 +257,7 @@ def build_operating_cash_flow_table(
 
     fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
-    blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
-    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
-    if blended_price is not None:
-        contract_price = float(blended_price)
-        pv_market_price = float(blended_price)
-    wesm_deficit_price = (
-        float(price_inputs.wesm_deficit_price_usd_per_mwh)
-        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        else None
-    )
-    wesm_surplus_price = (
-        float(price_inputs.wesm_surplus_price_usd_per_mwh)
-        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-        else None
-    )
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
@@ -282,47 +287,29 @@ def build_operating_cash_flow_table(
             float(augmentation_costs_usd[year_idx - 1]) if augmentation_costs_usd is not None else 0.0
         )
 
-        if blended_price is not None:
-            contract_revenue = firm_mwh * contract_price
-            pv_delivered_revenue = 0.0
-            pv_excess_revenue = pv_excess_mwh * pv_market_price
-        else:
-            contract_revenue = firm_mwh * contract_price
-            pv_delivered_revenue = 0.0
-            pv_excess_revenue = pv_excess_mwh * pv_market_price
+        contract_revenue = firm_mwh * contract_price
+        pv_excess_revenue = 0.0
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
             if use_wesm_shortfall_profile:
                 wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
-            elif wesm_deficit_price is not None:
-                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             if not price_inputs.sell_to_wesm:
                 pv_excess_revenue = 0.0
         if price_inputs.sell_to_wesm:
             if use_wesm_surplus_profile:
                 wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
                 pv_excess_revenue = wesm_surplus_revenue
-            else:
-                surplus_price = (
-                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                )
-                if surplus_price is not None:
-                    pv_excess_revenue = pv_excess_mwh * surplus_price
-                    wesm_surplus_revenue = pv_excess_revenue
 
         if price_inputs.escalate_with_inflation:
             contract_revenue *= inflation_multiplier
-            pv_delivered_revenue *= inflation_multiplier
             pv_excess_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
                 wesm_shortfall_cost *= inflation_multiplier
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = (
-            contract_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
-        )
+        total_revenue = contract_revenue + pv_excess_revenue - wesm_shortfall_cost
         cash_flow = total_revenue - annual_opex - augmentation_cost
 
         rows.append(
@@ -334,7 +321,6 @@ def build_operating_cash_flow_table(
                 "PV excess MWh": pv_excess_mwh,
                 "Shortfall MWh": shortfall_mwh,
                 "Contract revenue USD": contract_revenue,
-                "PV delivered revenue USD": pv_delivered_revenue,
                 "PV excess revenue USD": pv_excess_revenue,
                 "WESM shortfall cost USD": wesm_shortfall_cost,
                 "WESM surplus revenue USD": wesm_surplus_revenue,
@@ -379,11 +365,7 @@ def build_financing_cash_flow_table(
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
     use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
     use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
-    _validate_price_inputs(
-        price_inputs,
-        require_wesm_deficit_price=not use_wesm_shortfall_profile,
-        require_wesm_surplus_price=not use_wesm_surplus_profile,
-    )
+    _validate_price_inputs(price_inputs)
 
     if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
         annual_delivered_mwh
@@ -455,22 +437,7 @@ def build_financing_cash_flow_table(
 
     fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
-    blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
-    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
-    if blended_price is not None:
-        contract_price = float(blended_price)
-        pv_market_price = float(blended_price)
-    wesm_deficit_price = (
-        float(price_inputs.wesm_deficit_price_usd_per_mwh)
-        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        else None
-    )
-    wesm_surplus_price = (
-        float(price_inputs.wesm_surplus_price_usd_per_mwh)
-        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-        else None
-    )
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
@@ -500,32 +467,19 @@ def build_financing_cash_flow_table(
         )
 
         contract_revenue = firm_mwh * contract_price
-        pv_revenue = pv_excess_mwh * pv_market_price
+        pv_revenue = 0.0
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
             if use_wesm_shortfall_profile:
                 wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
-            elif wesm_deficit_price is not None:
-                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             pv_revenue = 0.0
             if price_inputs.sell_to_wesm:
                 if use_wesm_surplus_profile:
                     wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
-                else:
-                    surplus_price = (
-                        wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                    )
-                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
         elif price_inputs.sell_to_wesm:
             if use_wesm_surplus_profile:
                 wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
-            else:
-                surplus_price = (
-                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                )
-                if surplus_price is not None:
-                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
 
         if price_inputs.escalate_with_inflation:
             contract_revenue *= inflation_multiplier
@@ -713,50 +667,12 @@ def _validate_inputs(
         raise ValueError("variable_opex_basis must be 'delivered' or 'total_generation'")
 
 
-def _validate_price_inputs(
-    price_inputs: PriceInputs,
-    *,
-    require_wesm_deficit_price: bool = True,
-    require_wesm_surplus_price: bool = True,
-) -> None:
+def _validate_price_inputs(price_inputs: PriceInputs) -> None:
     """Raise ValueError when provided price assumptions are invalid."""
 
     _ensure_non_negative_finite(
         price_inputs.contract_price_usd_per_mwh, "contract_price_usd_per_mwh"
     )
-    _ensure_non_negative_finite(
-        price_inputs.pv_market_price_usd_per_mwh, "pv_market_price_usd_per_mwh"
-    )
-    if price_inputs.blended_price_usd_per_mwh is not None:
-        _ensure_non_negative_finite(
-            price_inputs.blended_price_usd_per_mwh, "blended_price_usd_per_mwh"
-        )
-    if price_inputs.wesm_deficit_price_usd_per_mwh is not None:
-        _ensure_non_negative_finite(
-            price_inputs.wesm_deficit_price_usd_per_mwh, "wesm_deficit_price_usd_per_mwh"
-        )
-    if price_inputs.wesm_surplus_price_usd_per_mwh is not None:
-        _ensure_non_negative_finite(
-            price_inputs.wesm_surplus_price_usd_per_mwh, "wesm_surplus_price_usd_per_mwh"
-        )
-    if (
-        require_wesm_deficit_price
-        and price_inputs.apply_wesm_to_shortfall
-        and price_inputs.wesm_deficit_price_usd_per_mwh is None
-    ):
-        raise ValueError(
-            "wesm_deficit_price_usd_per_mwh must be provided when applying WESM to shortfalls"
-        )
-    if (
-        require_wesm_surplus_price
-        and price_inputs.sell_to_wesm
-        and price_inputs.wesm_surplus_price_usd_per_mwh is None
-        and price_inputs.wesm_deficit_price_usd_per_mwh is None
-    ):
-        raise ValueError(
-            "wesm_surplus_price_usd_per_mwh or wesm_deficit_price_usd_per_mwh must be provided when "
-            "sell_to_wesm is enabled"
-        )
 
 
 def _resolve_variable_opex_schedule(years: int, inputs: EconomicInputs) -> list[float] | None:
@@ -1094,13 +1010,10 @@ def compute_cash_flows_and_irr(
     Revenue is split into two streams (plus optional WESM adjustments):
 
     * Contract revenue on total delivered firm energy using a fixed contract price.
-    * Market revenue on excess PV energy (when applicable).
     * Optional WESM sales or purchases tied to contract shortfalls.
 
-    Contract and market prices can optionally escalate with the same inflation
-    rate used for OPEX. When a blended energy price is provided, it overrides
-    the individual contract and PV excess rates and is applied to all delivered
-    energy plus any PV excess.
+    Contract prices can optionally escalate with the same inflation
+    rate used for OPEX.
     Augmentation costs are treated as a year-specific cash outflow alongside
     fixed OPEX. The IRR calculation uses the undiscounted cash-flow list to
     avoid dependence on the chosen discount rate.
@@ -1118,10 +1031,10 @@ def compute_cash_flows_and_irr(
     When provided, variable OPEX schedules override per-MWh costs, which in turn
     override fixed OPEX derived from CAPEX-based percentages and adders. When
     ``apply_wesm_to_shortfall`` is True, shortfall MWh are monetized using the
-    WESM deficit price as a purchase (cost). Surplus PV (``annual_pv_excess_mwh``)
-    is only credited at the WESM sale price (falling back to the deficit price
-    when no sale-specific rate is provided) when ``sell_to_wesm`` is True;
-    otherwise it is excluded from revenue when WESM pricing is enabled.
+    WESM profile costs as a purchase (cost). Surplus PV (``annual_pv_excess_mwh``)
+    is only credited when ``sell_to_wesm`` is True, using the WESM profile
+    revenue values; otherwise it is excluded from revenue when WESM pricing is
+    enabled.
 
     When ``annual_wesm_shortfall_cost_usd`` or ``annual_wesm_surplus_revenue_usd``
     is supplied, those per-year values override the scalar WESM pricing path
@@ -1161,11 +1074,7 @@ def compute_cash_flows_and_irr(
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
     use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
     use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
-    _validate_price_inputs(
-        price_inputs,
-        require_wesm_deficit_price=not use_wesm_shortfall_profile,
-        require_wesm_surplus_price=not use_wesm_surplus_profile,
-    )
+    _validate_price_inputs(price_inputs)
 
     if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
         annual_delivered_mwh
@@ -1210,22 +1119,7 @@ def compute_cash_flows_and_irr(
 
     fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
-    blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
-    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
-    if blended_price is not None:
-        contract_price = float(blended_price)
-        pv_market_price = float(blended_price)
-    wesm_deficit_price = (
-        float(price_inputs.wesm_deficit_price_usd_per_mwh)
-        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        else None
-    )
-    wesm_surplus_price = (
-        float(price_inputs.wesm_surplus_price_usd_per_mwh)
-        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-        else None
-    )
 
     for year_idx in range(1, years + 1):
         firm_mwh = float(annual_delivered_mwh[year_idx - 1])
@@ -1255,47 +1149,29 @@ def compute_cash_flows_and_irr(
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
-        if blended_price is not None:
-            contract_revenue = firm_mwh * contract_price
-            pv_delivered_revenue = 0.0
-            pv_excess_revenue = pv_excess_mwh * pv_market_price
-        else:
-            contract_revenue = firm_mwh * contract_price
-            pv_delivered_revenue = 0.0
-            pv_excess_revenue = pv_excess_mwh * pv_market_price
+        contract_revenue = firm_mwh * contract_price
+        pv_excess_revenue = 0.0
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
             if use_wesm_shortfall_profile:
                 wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
-            elif wesm_deficit_price is not None:
-                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             if not price_inputs.sell_to_wesm:
                 pv_excess_revenue = 0.0
         if price_inputs.sell_to_wesm:
             if use_wesm_surplus_profile:
                 wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
                 pv_excess_revenue = wesm_surplus_revenue
-            else:
-                surplus_price = (
-                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                )
-                if surplus_price is not None:
-                    pv_excess_revenue = pv_excess_mwh * surplus_price
-                    wesm_surplus_revenue = pv_excess_revenue
 
         if price_inputs.escalate_with_inflation:
             contract_revenue *= inflation_multiplier
-            pv_delivered_revenue *= inflation_multiplier
             pv_excess_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
                 wesm_shortfall_cost *= inflation_multiplier
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = (
-            contract_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
-        )
+        total_revenue = contract_revenue + pv_excess_revenue - wesm_shortfall_cost
         discounted_revenues += total_revenue * factor
         discounted_pv_revenue += pv_excess_revenue * factor
         discounted_wesm_value += (wesm_surplus_revenue - wesm_shortfall_cost) * factor
@@ -1350,11 +1226,7 @@ def compute_financing_cash_flows(
         _ensure_non_negative_finite(float(value), f"annual_shortfall_mwh[{idx}]")
     use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
     use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
-    _validate_price_inputs(
-        price_inputs,
-        require_wesm_deficit_price=not use_wesm_shortfall_profile,
-        require_wesm_surplus_price=not use_wesm_surplus_profile,
-    )
+    _validate_price_inputs(price_inputs)
 
     if annual_wesm_shortfall_cost_usd is not None and len(annual_wesm_shortfall_cost_usd) != len(
         annual_delivered_mwh
@@ -1411,22 +1283,7 @@ def compute_financing_cash_flows(
 
     fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
-    blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
-    pv_market_price = price_inputs.pv_market_price_usd_per_mwh
-    if blended_price is not None:
-        contract_price = float(blended_price)
-        pv_market_price = float(blended_price)
-    wesm_deficit_price = (
-        float(price_inputs.wesm_deficit_price_usd_per_mwh)
-        if price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        else None
-    )
-    wesm_surplus_price = (
-        float(price_inputs.wesm_surplus_price_usd_per_mwh)
-        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-        else None
-    )
 
     total_revenue = 0.0
     total_ebitda = 0.0
@@ -1461,32 +1318,19 @@ def compute_financing_cash_flows(
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
         contract_revenue = firm_mwh * contract_price
-        pv_revenue = pv_excess_mwh * pv_market_price
+        pv_revenue = 0.0
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
             if use_wesm_shortfall_profile:
                 wesm_shortfall_cost = float(annual_wesm_shortfall_cost_usd[year_idx - 1])
-            elif wesm_deficit_price is not None:
-                wesm_shortfall_cost = shortfall_mwh * wesm_deficit_price
             pv_revenue = 0.0
             if price_inputs.sell_to_wesm:
                 if use_wesm_surplus_profile:
                     wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
-                else:
-                    surplus_price = (
-                        wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                    )
-                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
         elif price_inputs.sell_to_wesm:
             if use_wesm_surplus_profile:
                 wesm_surplus_revenue = float(annual_wesm_surplus_revenue_usd[year_idx - 1])
-            else:
-                surplus_price = (
-                    wesm_surplus_price if wesm_surplus_price is not None else wesm_deficit_price
-                )
-                if surplus_price is not None:
-                    wesm_surplus_revenue = pv_excess_mwh * surplus_price
 
         if price_inputs.escalate_with_inflation:
             contract_revenue *= inflation_multiplier
