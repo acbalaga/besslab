@@ -22,10 +22,10 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 ### Run the workflow
 1) Upload your PV CSV (and optional cycle model) on the Landing page (or directly on Inputs & Results), or use the bundled samples.
 2) Set contracted MW, duration (hours), discharge windows, and any charge windows (minutes are preserved).
-3) Adjust efficiency (single RTE or split charge/discharge), SOC limits, availability, augmentation triggers (threshold, periodic, or manual schedules), rate-limit settings, and (optionally) enable the economics helper for LCOE/LCOS, NPV, and IRR. Set the contract energy price and optional WESM pricing to reflect your offtake structure.
+3) Adjust efficiency (single RTE or split charge/discharge), SOC limits, availability, augmentation triggers (threshold, periodic, or manual schedules), rate-limit settings, and (optionally) enable economics for LCOE/LCOS, NPV, and IRR. Set the contract energy price and optional WESM pricing to reflect your offtake structure.
 4) Run the simulation and review compliance, energy splits, end-of-year capability, daily profiles, and flag guidance.
 5) Use the physics-bounded Design Advisor and SOC/economics sensitivity sweeps to explore mitigations when targets are missed. Re-run sweeps after input changes to refresh results.
-6) Download yearly/monthly/hourly CSVs, export the config (JSON), or grab a PDF snapshot. Use the sweep and batch tools to compare scenarios in a structured way.
+6) Download yearly/monthly/hourly CSVs, export the inputs (JSON, including economics), grab a PDF snapshot, or pull the finance audit workbook for traceable cash-flow reviews. Use the sweep and batch tools to compare scenarios in a structured way.
 7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs.
 
 ### Units and conventions

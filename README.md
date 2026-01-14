@@ -9,8 +9,8 @@ An interactive Streamlit app for exploring **battery energy storage** sizing and
 - Use the **Design Advisor** for bounded suggestions when the system misses the target, plus run **sensitivity sweeps** on SOC windows and economics.
 - View clear charts for **end-of-year capability**, **PV vs. BESS energy delivered**, **typical daily profiles**, and **economics sensitivities**.
 - Compare multiple runs with the **BESS sizing sweep** and **Multi-scenario batch** tools seeded from cached inputs.
-- Download **yearly, monthly, hourly**, and **PDF** summaries for sharing, along with sensitivity tables where applicable.
-- Open the built-in **economics helper** page (LCOE/LCOS) from the sidebar, download the standalone module for offline use, and adjust contract pricing as needed.
+- Download **yearly, monthly, hourly**, **PDF**, and **finance audit** workbooks for sharing, along with sensitivity tables where applicable.
+- Use the built-in **economics module** (LCOE/LCOS/NPV/IRR) across pages, export auditable cash-flow tables, and adjust contract pricing as needed.
 - Reuse uploads across pages and sessions via the landing page cache; bypass the session rate limit with a password when deploying publicly.
 
 ## Quick start
@@ -30,7 +30,7 @@ Open the provided local URL in your browser to launch the app. To remove the ses
 - **Cycle-model (Excel, optional):** Override the built-in degradation table by uploading your own.
 - **Contract + dispatch windows:** Specify MW, duration, and window strings. Minutes are accepted and interpreted as fractional hours in the window parser (e.g., `05:30-09:00`).
 - **Assumptions:** Configure round-trip efficiency, availability, SOC min/max, augmentation triggers, rate limits, and Design-Advisor bounds.
-- **Economics inputs (optional):** Provide CAPEX/OPEX assumptions and the contract energy price, plus an FX rate when working in PHP.
+- **Economics inputs (optional):** Provide CAPEX/OPEX assumptions and the contract energy price, plus an FX rate when working in PHP. Export JSON inputs to reuse economics settings across pages.
 
 If no files are uploaded, the app uses the sample data in `./data/`.
 
@@ -44,10 +44,10 @@ If no files are uploaded, the app uses the sample data in `./data/`.
 ## Using the app
 1. **Upload or reuse defaults.** Provide a PV 8760 CSV (`hour_index, pv_mw`) and, optionally, a cycle-model Excel file. If you skip uploads, the app uses bundled sample data. The landing page caches uploads by hash so they can be reused across pages or fresh browser sessions until you clear the cache.
 2. **Set your target.** Enter the contracted power (MW) and desired duration (hours), plus discharge and optional charge windows. Minutes are preserved and parsed as fractional hours.
-3. **Adjust assumptions.** Use sidebar controls for efficiency (single or split), state-of-charge limits, availability, augmentation options (threshold, periodic, or explicit schedules), and calendar/cycle fade. Enable the economics helper to compute LCOE/LCOS, NPV, and IRR alongside the simulation, and configure contract pricing as needed.
+3. **Adjust assumptions.** Use sidebar controls for efficiency (single or split), state-of-charge limits, availability, augmentation options (threshold, periodic, or explicit schedules), and calendar/cycle fade. Enable economics to compute LCOE/LCOS, NPV, and IRR alongside the simulation, and configure contract pricing as needed.
 4. **Review results.** Check compliance, flags, end-of-year capability, daily profiles, PV capture, and energy splits between PV and the BESS.
 5. **Run sensitivities.** Generate SOC-window sweeps, economics heatmaps, and the physics-bounded Design Advisor suggestions when the system misses the target. Re-run sweeps after changing inputs.
-6. **Save & export.** Download yearly/monthly/hourly CSVs, export the simulation config (JSON), and grab a PDF snapshot for sharing. Use the sweep and batch tools for structured comparisons.
+6. **Save & export.** Download yearly/monthly/hourly CSVs, export the simulation inputs (JSON, including economics), grab a PDF snapshot for sharing, and pull the finance audit workbook for traceable cash-flow reviews. Use the sweep and batch tools for structured comparisons.
 
 ## App pages and workflows
 - **Landing:** Upload PV/cycle files once, warm the cache, and carry those uploads across other pages (or new sessions) without reloading defaults.

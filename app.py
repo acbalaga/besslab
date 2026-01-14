@@ -966,6 +966,7 @@ def _build_daily_summary_df(
 
 
 def _build_finance_audit_workbook(
+    assumptions_df: pd.DataFrame,
     metrics_summary: pd.DataFrame,
     yearly_df: pd.DataFrame,
     monthly_df: pd.DataFrame,
@@ -977,6 +978,7 @@ def _build_finance_audit_workbook(
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
         metrics_summary.to_excel(writer, sheet_name="Metrics summary", index=False)
         operating_cash_flow_df.to_excel(writer, sheet_name="Operating cash flows", index=False)
         financing_cash_flow_df.to_excel(writer, sheet_name="Financing cash flows", index=False)
@@ -991,6 +993,108 @@ def _build_finance_audit_workbook(
         else:
             daily_df.to_excel(writer, sheet_name="Daily energy", index=False)
     return output.getvalue()
+
+
+def _build_finance_assumptions_df(
+    normalized_econ_inputs: EconomicInputs,
+    price_inputs: PriceInputs,
+) -> pd.DataFrame:
+    """Summarize economics assumptions for the audit workbook."""
+
+    def _yes_no(flag: bool) -> str:
+        return "Yes" if flag else "No"
+
+    def _percent(value: float | None) -> float | None:
+        return None if value is None else value * 100.0
+
+    rows: list[dict[str, object]] = []
+
+    def add_row(category: str, label: str, value: object, notes: str = "") -> None:
+        rows.append(
+            {"Category": category, "Assumption": label, "Value": value, "Units/Notes": notes}
+        )
+
+    add_row("Capital", "BESS CAPEX", normalized_econ_inputs.capex_musd, "USD million")
+    if normalized_econ_inputs.capex_usd_per_kwh is not None:
+        add_row("Capital", "BESS CAPEX per kWh", normalized_econ_inputs.capex_usd_per_kwh, "USD/kWh")
+    if normalized_econ_inputs.capex_total_usd is not None:
+        add_row("Capital", "BESS CAPEX total", normalized_econ_inputs.capex_total_usd, "USD")
+    add_row("Capital", "PV CAPEX", normalized_econ_inputs.pv_capex_musd, "USD million")
+    if normalized_econ_inputs.total_capex_musd is not None:
+        add_row("Capital", "Total CAPEX", normalized_econ_inputs.total_capex_musd, "USD million")
+
+    add_row(
+        "OPEX",
+        "Fixed OPEX (% of CAPEX)",
+        _percent(normalized_econ_inputs.fixed_opex_pct_of_capex),
+        "% of CAPEX per year",
+    )
+    add_row("OPEX", "Fixed OPEX", normalized_econ_inputs.fixed_opex_musd, "USD million per year")
+    if normalized_econ_inputs.opex_php_per_kwh is not None:
+        add_row("OPEX", "Variable OPEX input", normalized_econ_inputs.opex_php_per_kwh, "PHP/kWh")
+    if normalized_econ_inputs.variable_opex_usd_per_mwh is not None:
+        add_row(
+            "OPEX",
+            "Variable OPEX",
+            normalized_econ_inputs.variable_opex_usd_per_mwh,
+            "USD/MWh",
+        )
+    if normalized_econ_inputs.variable_opex_schedule_usd is not None:
+        schedule_text = ", ".join(str(value) for value in normalized_econ_inputs.variable_opex_schedule_usd)
+        add_row("OPEX", "Variable OPEX schedule", schedule_text, "USD/MWh by year")
+    if normalized_econ_inputs.periodic_variable_opex_usd is not None:
+        add_row(
+            "OPEX",
+            "Periodic variable OPEX",
+            normalized_econ_inputs.periodic_variable_opex_usd,
+            "USD (lump sum)",
+        )
+    if normalized_econ_inputs.periodic_variable_opex_interval_years is not None:
+        add_row(
+            "OPEX",
+            "Periodic variable OPEX interval",
+            normalized_econ_inputs.periodic_variable_opex_interval_years,
+            "Years",
+        )
+    add_row("OPEX", "Variable OPEX basis", normalized_econ_inputs.variable_opex_basis, "")
+
+    add_row("Financing", "FX rate", normalized_econ_inputs.forex_rate_php_per_usd, "PHP per USD")
+    add_row("Financing", "Inflation rate", _percent(normalized_econ_inputs.inflation_rate), "%")
+    add_row("Financing", "Discount rate", _percent(normalized_econ_inputs.discount_rate), "%")
+    add_row("Financing", "WACC", _percent(normalized_econ_inputs.wacc), "%")
+    add_row("Financing", "Debt ratio", _percent(normalized_econ_inputs.debt_ratio), "% of total CAPEX")
+    add_row("Financing", "Cost of debt", _percent(normalized_econ_inputs.cost_of_debt), "%")
+    add_row("Financing", "Tenor", normalized_econ_inputs.tenor_years, "Years")
+    add_row("Financing", "Include DevEx year 0", _yes_no(normalized_econ_inputs.include_devex_year0), "")
+    add_row("Financing", "DevEx cost (PHP)", normalized_econ_inputs.devex_cost_php, "PHP")
+    add_row(
+        "Financing",
+        "DevEx cost (USD)",
+        normalized_econ_inputs.devex_cost_usd,
+        "USD (converted)",
+    )
+
+    add_row(
+        "Pricing",
+        "Contract price",
+        price_inputs.contract_price_usd_per_mwh,
+        "USD/MWh",
+    )
+    add_row(
+        "Pricing",
+        "Escalate with inflation",
+        _yes_no(price_inputs.escalate_with_inflation),
+        "",
+    )
+    add_row(
+        "Pricing",
+        "Apply WESM to shortfall",
+        _yes_no(price_inputs.apply_wesm_to_shortfall),
+        "",
+    )
+    add_row("Pricing", "Sell to WESM", _yes_no(price_inputs.sell_to_wesm), "")
+
+    return pd.DataFrame(rows)
 
 
 def run_app():
@@ -1036,10 +1140,11 @@ def run_app():
     cached_cfg, _ = get_cached_simulation_config()
     preload_cfg = cached_cfg or SimConfig()
 
-    with st.expander("Load/save inputs (JSON)", expanded=False):
+    with st.expander("Load/save inputs (JSON, includes economics)", expanded=False):
         st.caption(
             "Load a JSON payload to prefill the simulation inputs. Missing fields fall back to "
-            "current defaults, so older exports remain compatible."
+            "current defaults, so older exports remain compatible. Economics and pricing inputs "
+            "are optional but preserved when provided."
         )
         uploaded_inputs = st.file_uploader(
             "Upload inputs JSON",
@@ -1089,7 +1194,7 @@ def run_app():
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
 
-    with st.expander("Download inputs (JSON)", expanded=False):
+    with st.expander("Download inputs (JSON, includes economics)", expanded=False):
         inputs_payload = _build_inputs_payload(
             cfg=cfg,
             dod_override=dod_override,
@@ -2181,7 +2286,9 @@ def run_app():
                 },
             ]
         )
+        assumptions_df = _build_finance_assumptions_df(normalized_econ_inputs, price_inputs)
         finance_workbook = _build_finance_audit_workbook(
+            assumptions_df,
             metrics_summary,
             res_df,
             monthly_df,
@@ -2196,7 +2303,8 @@ def run_app():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         st.caption(
-            "Workbook includes yearly/monthly/daily energy traces plus operating and financing cash-flow tables."
+            "Workbook includes economics assumptions, yearly/monthly/daily energy traces, and "
+            "operating/financing cash-flow tables."
         )
     elif run_economics and not cash_flow_builders_available:
         st.warning(
