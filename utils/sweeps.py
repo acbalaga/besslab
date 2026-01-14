@@ -408,23 +408,22 @@ def _compute_candidate_economics(
     if base_initial_energy_mwh and base_initial_energy_mwh > 0:
         size_scale = max(sim_output.cfg.initial_usable_mwh / base_initial_energy_mwh, 0.0)
 
-    scaled_economics = EconomicInputs(
+    scaled_variable_opex_schedule_usd = (
+        tuple(v * size_scale for v in economics_inputs.variable_opex_schedule_usd)
+        if economics_inputs.variable_opex_schedule_usd is not None
+        else None
+    )
+    scaled_periodic_variable_opex_usd = (
+        economics_inputs.periodic_variable_opex_usd * size_scale
+        if economics_inputs.periodic_variable_opex_usd is not None
+        else None
+    )
+    scaled_economics = replace(
+        economics_inputs,
         capex_musd=economics_inputs.capex_musd * size_scale,
-        pv_capex_musd=economics_inputs.pv_capex_musd,
-        fixed_opex_pct_of_capex=economics_inputs.fixed_opex_pct_of_capex,
         fixed_opex_musd=economics_inputs.fixed_opex_musd * size_scale,
-        inflation_rate=economics_inputs.inflation_rate,
-        discount_rate=economics_inputs.discount_rate,
-        variable_opex_usd_per_mwh=economics_inputs.variable_opex_usd_per_mwh,
-        variable_opex_schedule_usd=
-            tuple(v * size_scale for v in economics_inputs.variable_opex_schedule_usd)
-            if economics_inputs.variable_opex_schedule_usd is not None
-            else None,
-        periodic_variable_opex_usd=
-            economics_inputs.periodic_variable_opex_usd * size_scale
-            if economics_inputs.periodic_variable_opex_usd is not None
-            else None,
-        periodic_variable_opex_interval_years=economics_inputs.periodic_variable_opex_interval_years,
+        variable_opex_schedule_usd=scaled_variable_opex_schedule_usd,
+        periodic_variable_opex_usd=scaled_periodic_variable_opex_usd,
     )
 
     def _override_or_results(
