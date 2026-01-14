@@ -2,11 +2,132 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from dataclasses import dataclass
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+
+@dataclass(frozen=True)
+class PVProfileSummary:
+    """Summary statistics and metadata for a PV profile."""
+
+    timestep_hours: Optional[float]
+    start_timestamp: Optional[pd.Timestamp]
+    end_timestamp: Optional[pd.Timestamp]
+    hour_index_range: Optional[Tuple[int, int]]
+    missing_steps: int
+    total_steps: int
+    pv_min_mw: float
+    pv_max_mw: float
+    pv_mean_mw: float
+    uses_timestamp: bool
+
+
+def summarize_pv_profile(df: pd.DataFrame, *, timestamp_col: str = "timestamp") -> PVProfileSummary:
+    """Summarize timestep, coverage, missing steps, and PV statistics.
+
+    Missing steps are computed against an inferred cadence. If the profile was
+    already gap-filled before loading, missing steps may legitimately be zero.
+    """
+
+    if df.empty:
+        raise ValueError("PV profile summary requires a non-empty DataFrame.")
+    if "pv_mw" not in df.columns:
+        raise ValueError("PV profile summary requires a pv_mw column.")
+
+    pv_series = pd.to_numeric(df["pv_mw"], errors="coerce").dropna()
+    if pv_series.empty:
+        pv_min = float("nan")
+        pv_max = float("nan")
+        pv_mean = float("nan")
+    else:
+        pv_min = float(pv_series.min())
+        pv_max = float(pv_series.max())
+        pv_mean = float(pv_series.mean())
+
+    uses_timestamp = timestamp_col in df.columns
+
+    if uses_timestamp:
+        ts_series = pd.to_datetime(df[timestamp_col], errors="coerce").dropna()
+        if ts_series.empty:
+            raise ValueError("PV profile summary requires valid timestamps.")
+
+        ts_series = ts_series.sort_values()
+        start_ts = ts_series.iloc[0]
+        end_ts = ts_series.iloc[-1]
+
+        diffs = ts_series.diff().dropna()
+        timestep_hours = None
+        if not diffs.empty:
+            median_diff = diffs.median()
+            if pd.notna(median_diff) and median_diff > pd.Timedelta(0):
+                timestep_hours = float(median_diff / pd.Timedelta(hours=1))
+
+        unique_ts = ts_series.drop_duplicates()
+        total_steps = len(unique_ts)
+        missing_steps = 0
+        if timestep_hours is not None:
+            expected_index = pd.date_range(
+                start_ts,
+                end_ts,
+                freq=pd.to_timedelta(timestep_hours, unit="h"),
+            )
+            total_steps = len(expected_index)
+            missing_steps = max(total_steps - len(unique_ts), 0)
+
+        return PVProfileSummary(
+            timestep_hours=timestep_hours,
+            start_timestamp=start_ts,
+            end_timestamp=end_ts,
+            hour_index_range=None,
+            missing_steps=missing_steps,
+            total_steps=total_steps,
+            pv_min_mw=pv_min,
+            pv_max_mw=pv_max,
+            pv_mean_mw=pv_mean,
+            uses_timestamp=True,
+        )
+
+    if "hour_index" not in df.columns:
+        raise ValueError("PV profile summary requires an hour_index column when timestamps are absent.")
+
+    hour_series = pd.to_numeric(df["hour_index"], errors="coerce").dropna()
+    if hour_series.empty:
+        raise ValueError("PV profile summary requires valid hour_index values.")
+
+    hour_series = hour_series.astype(int).sort_values().drop_duplicates()
+    start_hour = int(hour_series.iloc[0])
+    end_hour = int(hour_series.iloc[-1])
+
+    timestep_hours = None
+    missing_steps = 0
+    total_steps = len(hour_series)
+    if len(hour_series) > 1:
+        diffs = hour_series.diff().dropna()
+        median_step = diffs.median()
+        if pd.notna(median_step) and median_step > 0:
+            timestep_hours = float(median_step)
+            step_value = int(round(median_step))
+            if step_value > 0:
+                expected_steps = int(((end_hour - start_hour) // step_value) + 1)
+                total_steps = expected_steps
+                missing_steps = max(expected_steps - len(hour_series), 0)
+
+    return PVProfileSummary(
+        timestep_hours=timestep_hours,
+        start_timestamp=None,
+        end_timestamp=None,
+        hour_index_range=(start_hour, end_hour),
+        missing_steps=missing_steps,
+        total_steps=total_steps,
+        pv_min_mw=pv_min,
+        pv_max_mw=pv_max,
+        pv_mean_mw=pv_mean,
+        uses_timestamp=False,
+    )
 
 
 def read_pv_profile(
