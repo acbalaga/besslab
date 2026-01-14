@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from typing import Callable, Literal, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -85,6 +85,7 @@ def init_page_layout(
     main_title: str,
     description: Optional[str] = None,
     base_dir: Optional[Path] = None,
+    nav_location: Literal["header", "sidebar"] = "header",
 ) -> NavRenderer:
     """Initialize the page layout with shared navigation and status blocks.
 
@@ -92,12 +93,16 @@ def init_page_layout(
     the top of the page, and returns a renderer that can be called after data
     loading completes. Passing ``pv_df`` and ``cycle_df`` to the renderer avoids
     redundant reads when uploads are handled elsewhere; otherwise shared data is
-    fetched from session cache or defaults.
+    fetched from session cache or defaults. ``nav_location`` controls whether the
+    navigation links are shown in the header or the sidebar.
     """
 
     st.set_page_config(page_title=page_title, layout="wide")
     header_container = st.container()
     resolved_base_dir = base_dir or get_base_dir()
+    if nav_location == "sidebar":
+        with st.sidebar:
+            _render_navigation_block(st)
 
     def _render(
         pv_df: Optional[pd.DataFrame] = None,
@@ -112,9 +117,12 @@ def init_page_layout(
             if description:
                 st.caption(description)
 
-            nav_col, status_col = st.columns([3, 2])
-            _render_navigation_block(nav_col)
-            _render_status_block(status_col, shared_pv_df, shared_cycle_df)
+            if nav_location == "header":
+                nav_col, status_col = st.columns([3, 2])
+                _render_navigation_block(nav_col)
+                _render_status_block(status_col, shared_pv_df, shared_cycle_df)
+            else:
+                _render_status_block(st, shared_pv_df, shared_cycle_df)
 
         st.divider()
         return shared_pv_df, shared_cycle_df
