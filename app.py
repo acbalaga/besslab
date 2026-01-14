@@ -122,7 +122,7 @@ INPUTS_FORM_KEYS = {
     "forex_rate_php_per_usd": "inputs_forex_rate_php_per_usd",
     "capex_mode": "inputs_capex_mode",
     "capex_usd_per_kwh": "inputs_capex_usd_per_kwh",
-    "capex_total_usd": "inputs_capex_total_usd",
+    "capex_musd": "inputs_capex_musd",
     "pv_capex_musd": "inputs_pv_capex_musd",
     "opex_mode": "inputs_opex_mode",
     "fixed_opex_pct": "inputs_fixed_opex_pct",
@@ -463,22 +463,23 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     ) * 100.0
     st.session_state[INPUTS_FORM_KEYS["forex_rate_php_per_usd"]] = forex_rate_php_per_usd
 
-    capex_mode = "Total CAPEX (USD)"
+    capex_mode = "Total CAPEX (USD million)"
     if econ_payload.get("capex_usd_per_kwh") is not None:
         capex_mode = "USD/kWh (BOL)"
     st.session_state[INPUTS_FORM_KEYS["capex_mode"]] = _coerce_choice(
         econ_payload.get("capex_mode"),
-        ["USD/kWh (BOL)", "Total CAPEX (USD)"],
+        ["USD/kWh (BOL)", "Total CAPEX (USD million)"],
         capex_mode,
     )
     st.session_state[INPUTS_FORM_KEYS["capex_usd_per_kwh"]] = _coerce_float(
         econ_payload.get("capex_usd_per_kwh"),
         0.0,
     )
+    capex_musd = econ_payload.get("capex_musd")
     capex_total_usd = econ_payload.get("capex_total_usd")
-    if capex_total_usd is None and econ_payload.get("capex_musd"):
-        capex_total_usd = _coerce_float(econ_payload.get("capex_musd"), 0.0) * 1_000_000.0
-    st.session_state[INPUTS_FORM_KEYS["capex_total_usd"]] = _coerce_float(capex_total_usd, 40_000_000.0)
+    if capex_musd is None and capex_total_usd is not None:
+        capex_musd = _coerce_float(capex_total_usd, 0.0) / 1_000_000.0
+    st.session_state[INPUTS_FORM_KEYS["capex_musd"]] = _coerce_float(capex_musd, 40.0)
     st.session_state[INPUTS_FORM_KEYS["pv_capex_musd"]] = _coerce_float(
         econ_payload.get("pv_capex_musd"),
         0.0,
