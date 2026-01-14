@@ -100,7 +100,7 @@ def build_simple_lever_table() -> pd.DataFrame:
                 "High change": 5.0,
                 "Low impact (pp)": None,
                 "High impact (pp)": None,
-                "Notes": "Finance-only (% change to contract or blended price).",
+                "Notes": "Finance-only (% change to contract price).",
             },
             {
                 "Lever": "Availability",
@@ -196,17 +196,10 @@ def apply_opex_delta(inputs: EconomicInputs, delta_pct: float) -> EconomicInputs
 
 
 def apply_tariff_delta(inputs: PriceInputs, delta_pct: float) -> PriceInputs:
-    """Apply a percent delta to the active tariff (blended or contract/PV prices)."""
+    """Apply a percent delta to the contract tariff."""
 
     multiplier = 1.0 + delta_pct / 100.0
-    if inputs.blended_price_usd_per_mwh is not None:
-        return replace(
-            inputs,
-            blended_price_usd_per_mwh=max(inputs.blended_price_usd_per_mwh * multiplier, 0.0),
-        )
-
     return replace(
         inputs,
         contract_price_usd_per_mwh=max(inputs.contract_price_usd_per_mwh * multiplier, 0.0),
-        pv_market_price_usd_per_mwh=max(inputs.pv_market_price_usd_per_mwh * multiplier, 0.0),
     )

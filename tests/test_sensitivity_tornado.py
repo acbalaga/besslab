@@ -59,7 +59,6 @@ class SensitivityTornadoTests(unittest.TestCase):
         )
         price_inputs = PriceInputs(
             contract_price_usd_per_mwh=110.0,
-            pv_market_price_usd_per_mwh=40.0,
             escalate_with_inflation=False,
         )
 

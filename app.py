@@ -130,10 +130,7 @@ INPUTS_FORM_KEYS = {
     "fixed_opex_musd": "inputs_fixed_opex_musd",
     "include_devex_year0": "inputs_include_devex_year0",
     "devex_cost_php": "inputs_devex_cost_php",
-    "use_blended_price": "inputs_use_blended_price",
     "contract_price_php_per_kwh": "inputs_contract_price_php_per_kwh",
-    "pv_market_price_php_per_kwh": "inputs_pv_market_price_php_per_kwh",
-    "blended_price_php_per_kwh": "inputs_blended_price_php_per_kwh",
     "escalate_prices": "inputs_escalate_prices",
     "wesm_pricing_enabled": "inputs_wesm_pricing_enabled",
     "sell_to_wesm": "inputs_sell_to_wesm",
@@ -514,19 +511,10 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         economics.DEVEX_COST_PHP,
     )
 
-    blended_price_usd_per_mwh = price_payload.get("blended_price_usd_per_mwh")
-    use_blended_price = blended_price_usd_per_mwh is not None
-    st.session_state[INPUTS_FORM_KEYS["use_blended_price"]] = use_blended_price
     st.session_state[INPUTS_FORM_KEYS["contract_price_php_per_kwh"]] = _coerce_float(
         price_payload.get("contract_price_usd_per_mwh"),
         0.0,
     ) * forex_rate_php_per_usd / 1000.0
-    st.session_state[INPUTS_FORM_KEYS["pv_market_price_php_per_kwh"]] = _coerce_float(
-        price_payload.get("pv_market_price_usd_per_mwh"),
-        0.0,
-    ) * forex_rate_php_per_usd / 1000.0
-    blended_php_per_kwh = _coerce_float(blended_price_usd_per_mwh, 0.0) * forex_rate_php_per_usd / 1000.0
-    st.session_state[INPUTS_FORM_KEYS["blended_price_php_per_kwh"]] = blended_php_per_kwh
     st.session_state[INPUTS_FORM_KEYS["escalate_prices"]] = _coerce_bool(
         price_payload.get("escalate_with_inflation"),
         False,
@@ -1561,33 +1549,14 @@ def run_app():
         use_wesm_shortfall_profile = annual_wesm_shortfall_cost_usd is not None
         use_wesm_surplus_profile = annual_wesm_surplus_revenue_usd is not None
         wesm_profile_active = use_wesm_shortfall_profile or use_wesm_surplus_profile
-        revenue_help = (
-            "Revenues apply the blended energy price to all BESS deliveries and excess PV; "
-            "contract/PV-specific rates are ignored in this mode."
-            if price_inputs.blended_price_usd_per_mwh is not None
-            else "Contract revenue from BESS deliveries plus market revenue from excess PV."
-        )
+        revenue_help = "Contract revenue from delivered energy plus optional WESM adjustments."
         if price_inputs.apply_wesm_to_shortfall:
             if wesm_profile_active:
                 revenue_help += " Shortfall MWh are deducted using the hourly WESM profile."
-            elif price_inputs.wesm_deficit_price_usd_per_mwh is not None:
-                revenue_help += (
-                    " Shortfall MWh are deducted as a WESM deficit cost at "
-                    f"${price_inputs.wesm_deficit_price_usd_per_mwh:,.2f}/MWh."
-                )
             if price_inputs.sell_to_wesm:
                 if wesm_profile_active:
                     revenue_help += (
                         " PV surplus is credited using the hourly WESM profile; otherwise surplus is excluded from revenue."
-                    )
-                elif price_inputs.wesm_deficit_price_usd_per_mwh is not None:
-                    surplus_sale_rate = (
-                        price_inputs.wesm_surplus_price_usd_per_mwh
-                        if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-                        else price_inputs.wesm_deficit_price_usd_per_mwh
-                    )
-                    revenue_help += (
-                        f" PV surplus is credited at ${surplus_sale_rate:,.2f}/MWh while selling to WESM; otherwise surplus is excluded from revenue."
                     )
         cash_specs = [
             MetricSpec(
@@ -1647,36 +1616,6 @@ def run_app():
                 "WESM shortfall costs derived from the hourly profile."
                 f" Discounted WESM impact on revenues/NPV/IRR: {wesm_impact_musd:,.2f} USD million."
                 + surplus_note
-            )
-        elif (
-            price_inputs.apply_wesm_to_shortfall
-            and price_inputs.wesm_deficit_price_usd_per_mwh is not None
-        ):
-            wesm_deficit_price_php_per_kwh = (
-                price_inputs.wesm_deficit_price_usd_per_mwh / forex_rate_php_per_usd * 1000.0
-            )
-            wesm_surplus_price_php_per_kwh = (
-                price_inputs.wesm_surplus_price_usd_per_mwh / forex_rate_php_per_usd * 1000.0
-                if price_inputs.sell_to_wesm and price_inputs.wesm_surplus_price_usd_per_mwh is not None
-                else float("nan")
-            )
-            wesm_impact_musd = cash_outputs.discounted_wesm_value_usd / 1_000_000
-            surplus_rate_usd = (
-                price_inputs.wesm_surplus_price_usd_per_mwh
-                if price_inputs.wesm_surplus_price_usd_per_mwh is not None
-                else price_inputs.wesm_deficit_price_usd_per_mwh
-            )
-            surplus_note = (
-                " PV surplus credited at the WESM sale rate due to the sell toggle"
-                f" (PHP {wesm_surplus_price_php_per_kwh:,.2f}/kWh ≈ ${surplus_rate_usd:,.2f}/MWh)."
-                if price_inputs.sell_to_wesm
-                else " PV surplus excluded from revenue while WESM pricing is active."
-            )
-            wesm_caption = (
-                "WESM shortfall cost applied at PHP "
-                f"{wesm_deficit_price_php_per_kwh:,.2f}/kWh "
-                f"(≈${price_inputs.wesm_deficit_price_usd_per_mwh:,.2f}/MWh)."
-                f" Discounted WESM impact on revenues/NPV/IRR: {wesm_impact_musd:,.2f} USD million." + surplus_note
             )
 
         st.caption(wesm_caption)
