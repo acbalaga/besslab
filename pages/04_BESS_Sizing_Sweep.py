@@ -67,6 +67,10 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
     normalized["fixed_power"] = _coerce_float(payload.get("fixed_power"), defaults["fixed_power"])
     normalized["wacc_pct"] = _coerce_float(payload.get("wacc_pct"), defaults["wacc_pct"])
     normalized["inflation_pct"] = _coerce_float(payload.get("inflation_pct"), defaults["inflation_pct"])
+    normalized["forex_rate_php_per_usd"] = _coerce_float(
+        payload.get("forex_rate_php_per_usd"),
+        defaults["forex_rate_php_per_usd"],
+    )
     normalized["capex_musd"] = _coerce_float(payload.get("capex_musd"), defaults["capex_musd"])
     normalized["pv_capex_musd"] = _coerce_float(payload.get("pv_capex_musd"), defaults["pv_capex_musd"])
     normalized["fixed_opex_pct"] = _coerce_float(payload.get("fixed_opex_pct"), defaults["fixed_opex_pct"])
@@ -84,18 +88,33 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         payload.get("use_blended_price"),
         defaults["use_blended_price"],
     )
-    normalized["contract_price_php_per_kwh"] = _coerce_float(
-        payload.get("contract_price_php_per_kwh"),
-        defaults["contract_price_php_per_kwh"],
-    )
-    normalized["pv_market_price_php_per_kwh"] = _coerce_float(
-        payload.get("pv_market_price_php_per_kwh"),
-        defaults["pv_market_price_php_per_kwh"],
-    )
-    normalized["blended_price_php_per_kwh"] = _coerce_float(
-        payload.get("blended_price_php_per_kwh"),
-        defaults["blended_price_php_per_kwh"],
-    )
+    if "contract_price_php_per_kwh" in payload:
+        normalized["contract_price_php_per_kwh"] = _coerce_float(
+            payload.get("contract_price_php_per_kwh"),
+            defaults["contract_price_php_per_kwh"],
+        )
+    else:
+        normalized["contract_price_php_per_kwh"] = round(
+            120.0 / 1000.0 * normalized["forex_rate_php_per_usd"],
+            2,
+        )
+    if "pv_market_price_php_per_kwh" in payload:
+        normalized["pv_market_price_php_per_kwh"] = _coerce_float(
+            payload.get("pv_market_price_php_per_kwh"),
+            defaults["pv_market_price_php_per_kwh"],
+        )
+    else:
+        normalized["pv_market_price_php_per_kwh"] = round(
+            55.0 / 1000.0 * normalized["forex_rate_php_per_usd"],
+            2,
+        )
+    if "blended_price_php_per_kwh" in payload:
+        normalized["blended_price_php_per_kwh"] = _coerce_float(
+            payload.get("blended_price_php_per_kwh"),
+            defaults["blended_price_php_per_kwh"],
+        )
+    else:
+        normalized["blended_price_php_per_kwh"] = normalized["contract_price_php_per_kwh"]
     normalized["escalate_prices"] = _coerce_bool(
         payload.get("escalate_prices"),
         defaults["escalate_prices"],
@@ -185,14 +204,13 @@ def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float
 
 cfg, dod_override = get_cached_simulation_config()
 bootstrap_session_state(cfg)
-forex_rate_php_per_usd = 58.0
-default_contract_php_per_kwh = round(120.0 / 1000.0 * forex_rate_php_per_usd, 2)
-default_pv_php_per_kwh = round(55.0 / 1000.0 * forex_rate_php_per_usd, 2)
+default_forex_rate_php_per_usd = 58.0
+default_contract_php_per_kwh = round(120.0 / 1000.0 * default_forex_rate_php_per_usd, 2)
+default_pv_php_per_kwh = round(55.0 / 1000.0 * default_forex_rate_php_per_usd, 2)
 wesm_surplus_reference_php_per_kwh = 3.29  # Weighted average WESM price (2025)
 wesm_reference_php_per_mwh = 5_583.0  # 2024 Annual Market Assessment Report, PEMC
 default_wesm_php_per_kwh = round(wesm_reference_php_per_mwh / 1000.0, 2)
 default_wesm_surplus_php_per_kwh = round(wesm_surplus_reference_php_per_kwh, 2)
-devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd
 
 # Rehydrate PV/cycle inputs from the shared session cache (no external fetches).
 pv_df, cycle_df = render_layout()
@@ -217,6 +235,7 @@ default_inputs: Dict[str, Any] = {
     "fixed_power": float(cfg.initial_power_mw),
     "wacc_pct": 8.0,
     "inflation_pct": 3.0,
+    "forex_rate_php_per_usd": default_forex_rate_php_per_usd,
     "capex_musd": 40.0,
     "pv_capex_musd": 0.0,
     "fixed_opex_pct": 2.0,
@@ -328,6 +347,13 @@ with st.container():
             help="Inflation assumption used to derive the real discount rate.",
         )
         discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
+        forex_rate_php_per_usd = st.number_input(
+            "FX rate (PHP/USD)",
+            min_value=1.0,
+            value=float(default_inputs["forex_rate_php_per_usd"]),
+            step=0.5,
+            help="Used to convert PHP-denominated inputs (prices, OPEX, DevEx) to USD.",
+        )
         capex_musd = st.number_input(
             "BESS CAPEX (USD million)",
             min_value=0.0,
@@ -359,6 +385,7 @@ with st.container():
             step=0.1,
             help="Extra fixed OPEX not tied to CAPEX percentage.",
         )
+        devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
         include_devex_year0 = st.checkbox(
             "Include ₱100M DevEx at year 0",
             value=bool(default_inputs["include_devex_year0"]),
@@ -440,7 +467,7 @@ with st.container():
             min_value=0.0,
             value=float(default_inputs["contract_price_php_per_kwh"]),
             step=0.05,
-            help="Price converted to USD/MWh internally using PHP 58/USD.",
+            help="Price converted to USD/MWh internally using the FX rate above.",
             disabled=use_blended_price,
         )
         pv_market_price_php_per_kwh = st.number_input(
@@ -448,7 +475,7 @@ with st.container():
             min_value=0.0,
             value=float(default_inputs["pv_market_price_php_per_kwh"]),
             step=0.05,
-            help="Price converted to USD/MWh internally using PHP 58/USD.",
+            help="Price converted to USD/MWh internally using the FX rate above.",
             disabled=use_blended_price,
         )
         blended_price_php_per_kwh = st.number_input(
@@ -629,6 +656,7 @@ with st.container():
         "fixed_power": float(fixed_power),
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
+        "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
         "capex_musd": float(capex_musd),
         "pv_capex_musd": float(pv_capex_musd),
         "fixed_opex_pct": float(fixed_opex_pct * 100.0),
