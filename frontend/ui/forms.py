@@ -705,22 +705,27 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     step=0.1,
                     key="inputs_fixed_opex_musd",
                 )
-                include_devex_year0 = st.checkbox(
-                    "Include DevEx at year 0",
-                    value=False,
+                include_devex_default = bool(st.session_state.get("inputs_include_devex_year0", False))
+                devex_choice = st.radio(
+                    "DevEx at year 0",
+                    options=["Exclude", "Include"],
+                    index=1 if include_devex_default else 0,
+                    horizontal=True,
                     help=(
-                        "Adds a PHP-denominated development expenditure upfront; "
-                        "enter the amount to convert it using the FX rate. "
-                        "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+                        "Include or exclude the development expenditure at year 0. The PHP amount is "
+                        "converted to USD using the FX rate and flows through discounted costs, "
+                        "LCOE/LCOS, NPV, and IRR."
                     ),
-                    key="inputs_include_devex_year0",
+                    key="inputs_devex_choice",
                 )
+                include_devex_year0 = devex_choice == "Include"
+                st.session_state["inputs_include_devex_year0"] = include_devex_year0
                 devex_cost_php = st.number_input(
                     "DevEx amount (PHP)",
                     min_value=0.0,
                     value=float(DEVEX_COST_PHP),
                     step=1_000_000.0,
-                    help="Used only when the DevEx toggle is enabled.",
+                    help="Used only when DevEx is included.",
                     disabled=not include_devex_year0,
                     key="inputs_devex_cost_php",
                 )

@@ -96,6 +96,10 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         payload.get("include_devex_year0"),
         defaults["include_devex_year0"],
     )
+    normalized["devex_cost_php"] = _coerce_float(
+        payload.get("devex_cost_php"),
+        defaults["devex_cost_php"],
+    )
     normalized["ranking_choice"] = payload.get("ranking_choice", defaults["ranking_choice"])
     normalized["min_soh"] = _coerce_float(payload.get("min_soh"), defaults["min_soh"])
     normalized["use_blended_price"] = _coerce_bool(
@@ -276,6 +280,7 @@ default_inputs: Dict[str, Any] = {
     "opex_mode": "% of CAPEX per year",
     "opex_php_per_kwh": 0.0,
     "include_devex_year0": False,
+    "devex_cost_php": float(DEVEX_COST_PHP),
     "ranking_choice": "compliance_pct",
     "min_soh": 0.6,
     "use_blended_price": False,
@@ -448,16 +453,32 @@ with st.container():
             step=0.1,
             help="Extra fixed OPEX not tied to CAPEX percentage.",
         )
-        devex_cost_usd = DEVEX_COST_PHP / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
-        include_devex_year0 = st.checkbox(
-            "Include ₱100M DevEx at year 0",
-            value=bool(default_inputs["include_devex_year0"]),
+        devex_choice = st.radio(
+            "DevEx at year 0",
+            options=["Exclude", "Include"],
+            index=1 if default_inputs["include_devex_year0"] else 0,
+            horizontal=True,
             help=(
-                "Adds a fixed ₱100 million development expenditure upfront (≈"
-                f"${devex_cost_usd / 1_000_000:,.2f}M using PHP {forex_rate_php_per_usd:,.0f}/USD). "
-                "Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+                "Include or exclude the development expenditure at year 0. The PHP amount is "
+                "converted to USD using the FX rate and flows through discounted costs, "
+                "LCOE/LCOS, NPV, and IRR."
             ),
         )
+        include_devex_year0 = devex_choice == "Include"
+        devex_cost_php = st.number_input(
+            "DevEx amount (PHP)",
+            min_value=0.0,
+            value=float(default_inputs["devex_cost_php"]),
+            step=1_000_000.0,
+            help="Used only when DevEx is included.",
+            disabled=not include_devex_year0,
+        )
+        devex_cost_usd = devex_cost_php / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
+        if include_devex_year0:
+            st.caption(
+                "DevEx conversion: "
+                f"PHP {devex_cost_php:,.0f} ≈ ${devex_cost_usd / 1_000_000:,.2f}M."
+            )
 
     with size_col3:
         ranking_choice = st.selectbox(
@@ -770,6 +791,7 @@ with st.container():
         "opex_mode": opex_mode,
         "opex_php_per_kwh": float(opex_php_per_kwh or 0.0),
         "include_devex_year0": bool(include_devex_year0),
+        "devex_cost_php": float(devex_cost_php),
         "ranking_choice": ranking_choice,
         "min_soh": float(min_soh),
         "use_blended_price": bool(use_blended_price),
@@ -820,7 +842,8 @@ if submitted:
         variable_opex_schedule_usd=variable_opex_schedule_usd,
         periodic_variable_opex_usd=periodic_variable_opex_usd,
         periodic_variable_opex_interval_years=periodic_variable_opex_interval_years,
-        devex_cost_usd=devex_cost_usd,
+        forex_rate_php_per_usd=forex_rate_php_per_usd,
+        devex_cost_php=devex_cost_php,
         include_devex_year0=include_devex_year0,
     )
     price_inputs = PriceInputs(

@@ -513,20 +513,26 @@ with st.expander("Economics (optional)", expanded=False):
             value=float(econ_inputs_default.fixed_opex_musd) if econ_inputs_default else 0.0,
             step=0.1,
         )
-        include_devex_year0 = st.checkbox(
-            "Include DevEx at year 0",
-            value=bool(econ_inputs_default.include_devex_year0) if econ_inputs_default else False,
+        devex_choice = st.radio(
+            "DevEx at year 0",
+            options=["Exclude", "Include"],
+            index=1
+            if econ_inputs_default and econ_inputs_default.include_devex_year0
+            else 0,
+            horizontal=True,
             help=(
-                "Adds a PHP-denominated development expenditure upfront; enter the amount to convert it "
-                "using the FX rate. Flows through discounted costs, LCOE/LCOS, NPV, and IRR."
+                "Include or exclude the development expenditure at year 0. The PHP amount is "
+                "converted to USD using the FX rate and flows through discounted costs, "
+                "LCOE/LCOS, NPV, and IRR."
             ),
         )
+        include_devex_year0 = devex_choice == "Include"
         devex_cost_php = st.number_input(
             "DevEx amount (PHP)",
             min_value=0.0,
             value=float(econ_inputs_default.devex_cost_php) if econ_inputs_default else float(DEVEX_COST_PHP),
             step=1_000_000.0,
-            help="Used only when the DevEx toggle is enabled.",
+            help="Used only when DevEx is included.",
             disabled=not include_devex_year0,
         )
         devex_cost_usd = devex_cost_php / forex_rate_php_per_usd if forex_rate_php_per_usd else 0.0
