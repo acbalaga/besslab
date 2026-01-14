@@ -628,6 +628,150 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
     return df[existing_columns]
 
 
+def _hourly_summary_column_units() -> Dict[str, str]:
+    """Define units for hourly summary exports to keep metadata consistent."""
+
+    return {
+        "timestamp": "datetime",
+        "hour_index": "index",
+        "hod": "hour",
+        "pv_mw": "MW",
+        "pv_to_contract_mw": "MW",
+        "bess_to_contract_mw": "MW",
+        "delivered_mw": "MW",
+        "shortfall_mw": "MW",
+        "charge_mw": "MW",
+        "discharge_mw": "MW",
+        "soc_mwh": "MWh",
+        "pv_surplus_mw": "MW",
+    }
+
+
+def _yearly_summary_column_units() -> Dict[str, str]:
+    """Define units for yearly summary exports."""
+
+    return {
+        "Year": "year_index",
+        "Expected firm MWh": "MWh",
+        "Delivered firm MWh": "MWh",
+        "Shortfall MWh": "MWh",
+        "Breach days (has any shortfall)": "days",
+        "Charge MWh": "MWh",
+        "Discharge MWh (from BESS)": "MWh",
+        "Available PV MWh": "MWh",
+        "PV→Contract MWh": "MWh",
+        "BESS→Contract MWh": "MWh",
+        "Avg RTE": "fraction",
+        "Eq cycles (year)": "cycles/year",
+        "Cum cycles": "cycles",
+        "SOH_cycle": "fraction",
+        "SOH_calendar": "fraction",
+        "SOH_total": "fraction",
+        "EOY usable MWh": "MWh",
+        "EOY power MW (avail-adjusted)": "MW",
+        "PV curtailed MWh": "MWh",
+    }
+
+
+def _monthly_summary_column_units() -> Dict[str, str]:
+    """Define units for monthly summary exports."""
+
+    return {
+        "Year": "year_index",
+        "Month": "month",
+        "Expected firm MWh": "MWh",
+        "Delivered firm MWh": "MWh",
+        "Shortfall MWh": "MWh",
+        "Breach days (has any shortfall)": "days",
+        "Charge MWh": "MWh",
+        "Discharge MWh (from BESS)": "MWh",
+        "Available PV MWh": "MWh",
+        "PV→Contract MWh": "MWh",
+        "BESS→Contract MWh": "MWh",
+        "Avg RTE": "fraction",
+        "Eq cycles (year)": "cycles/year",
+        "Cum cycles": "cycles",
+        "SOH_cycle": "fraction",
+        "SOH_calendar": "fraction",
+        "SOH_total": "fraction",
+        "EOY usable MWh": "MWh",
+        "EOY power MW (avail-adjusted)": "MW",
+        "PV curtailed MWh": "MWh",
+    }
+
+
+def _daily_summary_column_units() -> Dict[str, str]:
+    """Define units for daily summary exports."""
+
+    return {
+        "Year": "year_index",
+        "Day": "day",
+        "PV MWh": "MWh",
+        "PV→Contract MWh": "MWh",
+        "BESS→Contract MWh": "MWh",
+        "Delivered MWh": "MWh",
+        "Shortfall MWh": "MWh",
+        "Charge MWh": "MWh",
+        "Discharge MWh": "MWh",
+        "PV surplus MWh": "MWh",
+    }
+
+
+def _build_export_inputs_metadata(
+    cfg: SimConfig,
+    normalized_econ_inputs: Optional[EconomicInputs],
+) -> Dict[str, Any]:
+    """Capture key inputs for audit metadata exports."""
+
+    return {
+        "project_years": cfg.years,
+        "step_hours": cfg.step_hours,
+        "power_unit": "MW",
+        "energy_unit": "MWh",
+        "fx_rate_php_per_usd": (
+            normalized_econ_inputs.forex_rate_php_per_usd if normalized_econ_inputs else None
+        ),
+    }
+
+
+def _build_metadata_json(
+    table_name: str,
+    inputs_metadata: Dict[str, Any],
+    column_units: Dict[str, str],
+) -> bytes:
+    payload = {
+        "table": table_name,
+        "inputs": inputs_metadata,
+        "column_units": column_units,
+    }
+    return json.dumps(payload, indent=2).encode("utf-8")
+
+
+def _write_metadata_sheet(
+    writer: pd.ExcelWriter,
+    inputs_metadata: Dict[str, Any],
+    column_units_by_table: Dict[str, Dict[str, str]],
+) -> None:
+    """Write a metadata worksheet with inputs and per-column units."""
+
+    input_rows = [{"Key": key, "Value": value} for key, value in inputs_metadata.items()]
+    inputs_df = pd.DataFrame(input_rows)
+    units_rows: list[dict[str, str]] = []
+    for table, units in column_units_by_table.items():
+        for column, unit in units.items():
+            units_rows.append({"Table": table, "Column": column, "Unit": unit})
+    units_df = pd.DataFrame(units_rows)
+    inputs_df.to_excel(writer, sheet_name="Metadata", index=False)
+    start_row = len(inputs_df) + 2
+    units_df.to_excel(writer, sheet_name="Metadata", index=False, startrow=start_row)
+
+
+def _build_column_units_map_from_df(df: pd.DataFrame, default_unit: str) -> Dict[str, str]:
+    """Return a uniform unit mapping for a table with mixed units."""
+
+    return {column: default_unit for column in df.columns}
+
+
 @dataclass(frozen=True)
 class TornadoLever:
     label: str
@@ -929,10 +1073,19 @@ def _run_simple_tornado(
     return updated_table, sorted(set(warnings))
 
 
-def _build_hourly_summary_workbook(hourly_logs_by_year: Dict[int, HourlyLog]) -> bytes:
+def _build_hourly_summary_workbook(
+    hourly_logs_by_year: Dict[int, HourlyLog],
+    cfg: SimConfig,
+    normalized_econ_inputs: Optional[EconomicInputs],
+) -> bytes:
     """Create an Excel workbook with one worksheet per project year."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        _write_metadata_sheet(
+            writer,
+            _build_export_inputs_metadata(cfg, normalized_econ_inputs),
+            {"Hourly summary": _hourly_summary_column_units()},
+        )
         for year_index in sorted(hourly_logs_by_year):
             sheet_name = f"Year {year_index}"
             df = _build_hourly_summary_df(hourly_logs_by_year[year_index])
@@ -994,11 +1147,14 @@ def _build_finance_audit_workbook(
     daily_df: pd.DataFrame,
     operating_cash_flow_df: pd.DataFrame,
     financing_cash_flow_df: pd.DataFrame,
+    inputs_metadata: Dict[str, Any],
+    column_units_by_table: Dict[str, Dict[str, str]],
 ) -> bytes:
     """Create an Excel workbook with cash-flow audit tables and energy traces."""
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        _write_metadata_sheet(writer, inputs_metadata, column_units_by_table)
         assumptions_df.to_excel(writer, sheet_name="Assumptions", index=False)
         metrics_summary.to_excel(writer, sheet_name="Metrics summary", index=False)
         operating_cash_flow_df.to_excel(writer, sheet_name="Operating cash flows", index=False)
@@ -2232,6 +2388,7 @@ def run_app():
 
     # ---------- Downloads ----------
     st.subheader("Downloads")
+    export_inputs_metadata = _build_export_inputs_metadata(cfg, normalized_econ_inputs)
     cfg_download = _get_download_payload(
         inputs_fingerprint=inputs_fingerprint,
         cache_key="simulation_config_json",
@@ -2322,6 +2479,33 @@ def run_app():
                 ]
             )
             assumptions_df = _build_finance_assumptions_df(normalized_econ_inputs, price_inputs)
+            column_units_by_table = {
+                "Assumptions": {
+                    "Category": "text",
+                    "Assumption": "text",
+                    "Value": "varies (see Units/Notes)",
+                    "Units/Notes": "text",
+                },
+                "Metrics summary": {
+                    "Metric": "text",
+                    "Value": "varies (see Metric)",
+                },
+                "Operating cash flows": _build_column_units_map_from_df(
+                    operating_cash_flow_df,
+                    "varies (see column names)",
+                ),
+                "Financing cash flows": _build_column_units_map_from_df(
+                    financing_cash_flow_df,
+                    "varies (see column names)",
+                ),
+                "Yearly energy": _yearly_summary_column_units(),
+                "Monthly energy": _monthly_summary_column_units(),
+                "Daily energy": (
+                    _daily_summary_column_units()
+                    if not daily_df.empty
+                    else _build_column_units_map_from_df(daily_df, "N/A")
+                ),
+            }
             return _build_finance_audit_workbook(
                 assumptions_df,
                 metrics_summary,
@@ -2330,6 +2514,8 @@ def run_app():
                 daily_df,
                 operating_cash_flow_df,
                 financing_cash_flow_df,
+                export_inputs_metadata,
+                column_units_by_table,
             )
 
         finance_workbook = _get_download_payload(
@@ -2365,6 +2551,22 @@ def run_app():
         file_name="bess_yearly_summary.csv",
         mime="text/csv",
     )
+    yearly_summary_metadata = _get_download_payload(
+        inputs_fingerprint=inputs_fingerprint,
+        cache_key="yearly_summary_metadata_json",
+        label="yearly summary metadata",
+        build_fn=lambda: _build_metadata_json(
+            "yearly_summary",
+            export_inputs_metadata,
+            _yearly_summary_column_units(),
+        ),
+    )
+    st.download_button(
+        "Download yearly summary metadata (JSON)",
+        yearly_summary_metadata,
+        file_name="bess_yearly_summary_metadata.json",
+        mime="application/json",
+    )
 
     monthly_summary_csv = _get_download_payload(
         inputs_fingerprint=inputs_fingerprint,
@@ -2378,13 +2580,33 @@ def run_app():
         file_name="bess_monthly_summary.csv",
         mime="text/csv",
     )
+    monthly_summary_metadata = _get_download_payload(
+        inputs_fingerprint=inputs_fingerprint,
+        cache_key="monthly_summary_metadata_json",
+        label="monthly summary metadata",
+        build_fn=lambda: _build_metadata_json(
+            "monthly_summary",
+            export_inputs_metadata,
+            _monthly_summary_column_units(),
+        ),
+    )
+    st.download_button(
+        "Download monthly summary metadata (JSON)",
+        monthly_summary_metadata,
+        file_name="bess_monthly_summary_metadata.json",
+        mime="application/json",
+    )
 
     if hourly_logs_by_year:
         hourly_workbook = _get_download_payload(
             inputs_fingerprint=inputs_fingerprint,
             cache_key="hourly_summary_workbook",
             label="hourly summary workbook",
-            build_fn=lambda: _build_hourly_summary_workbook(hourly_logs_by_year),
+            build_fn=lambda: _build_hourly_summary_workbook(
+                hourly_logs_by_year,
+                cfg,
+                normalized_econ_inputs,
+            ),
         )
         st.download_button(
             "Download hourly summary (Excel)",
@@ -2405,6 +2627,22 @@ def run_app():
             final_year_hourly_csv,
             file_name="final_year_hourly_logs.csv",
             mime="text/csv",
+        )
+        final_year_hourly_metadata = _get_download_payload(
+            inputs_fingerprint=inputs_fingerprint,
+            cache_key="final_year_hourly_metadata_json",
+            label="final-year hourly logs metadata",
+            build_fn=lambda: _build_metadata_json(
+                "final_year_hourly_logs",
+                export_inputs_metadata,
+                _hourly_summary_column_units(),
+            ),
+        )
+        st.download_button(
+            "Download final-year hourly metadata (JSON)",
+            final_year_hourly_metadata,
+            file_name="final_year_hourly_logs_metadata.json",
+            mime="application/json",
         )
 
     pdf_bytes = None
