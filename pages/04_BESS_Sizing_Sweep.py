@@ -68,6 +68,7 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
     normalized["wacc_pct"] = _coerce_float(payload.get("wacc_pct"), defaults["wacc_pct"])
     normalized["inflation_pct"] = _coerce_float(payload.get("inflation_pct"), defaults["inflation_pct"])
     normalized["capex_musd"] = _coerce_float(payload.get("capex_musd"), defaults["capex_musd"])
+    normalized["pv_capex_musd"] = _coerce_float(payload.get("pv_capex_musd"), defaults["pv_capex_musd"])
     normalized["fixed_opex_pct"] = _coerce_float(payload.get("fixed_opex_pct"), defaults["fixed_opex_pct"])
     normalized["fixed_opex_musd"] = _coerce_float(
         payload.get("fixed_opex_musd"),
@@ -217,6 +218,7 @@ default_inputs: Dict[str, Any] = {
     "wacc_pct": 8.0,
     "inflation_pct": 3.0,
     "capex_musd": 40.0,
+    "pv_capex_musd": 0.0,
     "fixed_opex_pct": 2.0,
     "fixed_opex_musd": 0.0,
     "include_devex_year0": False,
@@ -327,12 +329,21 @@ with st.container():
         )
         discount_rate = max((1 + wacc_pct / 100.0) / (1 + inflation_pct / 100.0) - 1, 0.0)
         capex_musd = st.number_input(
-            "Total CAPEX (USD million)",
+            "BESS CAPEX (USD million)",
             min_value=0.0,
             value=float(default_inputs["capex_musd"]),
             step=0.1,
-            help="All-in CAPEX for the project. Expressed in USD millions for compact entry.",
+            help="BESS-only CAPEX. Combined with PV CAPEX for total project spend.",
         )
+        pv_capex_musd = st.number_input(
+            "PV CAPEX (USD million)",
+            min_value=0.0,
+            value=float(default_inputs["pv_capex_musd"]),
+            step=0.1,
+            help="Standalone PV CAPEX added to the BESS CAPEX input above.",
+        )
+        total_capex_musd = capex_musd + pv_capex_musd
+        st.caption(f"Total project CAPEX (BESS + PV): ${total_capex_musd:,.2f}M.")
         fixed_opex_pct = st.number_input(
             "Fixed OPEX (% of CAPEX per year)",
             min_value=0.0,
@@ -619,6 +630,7 @@ with st.container():
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
         "capex_musd": float(capex_musd),
+        "pv_capex_musd": float(pv_capex_musd),
         "fixed_opex_pct": float(fixed_opex_pct * 100.0),
         "fixed_opex_musd": float(fixed_opex_musd),
         "include_devex_year0": bool(include_devex_year0),
@@ -662,6 +674,7 @@ if submitted:
     energy_values = generate_values(energy_range[0], energy_range[1], int(energy_steps))
     economics_inputs = EconomicInputs(
         capex_musd=capex_musd,
+        pv_capex_musd=pv_capex_musd,
         fixed_opex_pct_of_capex=fixed_opex_pct,
         fixed_opex_musd=fixed_opex_musd,
         inflation_rate=inflation_pct / 100.0,

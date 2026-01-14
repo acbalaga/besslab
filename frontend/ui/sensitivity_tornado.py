@@ -153,6 +153,7 @@ def apply_capex_delta(inputs: EconomicInputs, delta_pct: float) -> EconomicInput
     capex_total_usd = inputs.capex_total_usd
     capex_usd_per_kwh = inputs.capex_usd_per_kwh
     capex_musd = inputs.capex_musd
+    pv_capex_musd = inputs.pv_capex_musd
     if capex_total_usd is not None:
         capex_total_usd = max(capex_total_usd * multiplier, 0.0)
         capex_musd = capex_total_usd / 1_000_000.0
@@ -161,11 +162,13 @@ def apply_capex_delta(inputs: EconomicInputs, delta_pct: float) -> EconomicInput
         capex_musd = capex_musd * multiplier
     else:
         capex_musd = max(capex_musd * multiplier, 0.0)
+    pv_capex_musd = max(pv_capex_musd * multiplier, 0.0)
     return replace(
         inputs,
         capex_total_usd=capex_total_usd,
         capex_usd_per_kwh=capex_usd_per_kwh,
         capex_musd=capex_musd,
+        pv_capex_musd=pv_capex_musd,
     )
 
 

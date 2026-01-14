@@ -21,8 +21,11 @@ class EconomicInputs:
     """High-level project economics.
 
     Unit conventions:
-    - CAPEX can be entered as USD/kWh (with a BOL size in kWh) or as a total USD override.
-      Canonical CAPEX is stored in ``capex_musd`` (USD millions).
+    - BESS CAPEX can be entered as USD/kWh (with a BOL size in kWh) or as a total USD override.
+      Canonical BESS CAPEX is stored in ``capex_musd`` (USD millions).
+    - PV CAPEX is entered separately in ``pv_capex_musd`` (USD millions).
+      ``total_capex_musd`` stores the combined CAPEX used for year-0 spend and
+      fixed OPEX calculations.
     - Fixed OPEX may be entered as % of CAPEX per year (percent value, e.g., 2.0 for 2%).
     - Variable OPEX may be entered in PHP/kWh on total generation and is converted to USD/MWh.
     - FX conversion uses ``forex_rate_php_per_usd`` (PHP per 1 USD).
@@ -33,6 +36,8 @@ class EconomicInputs:
     capex_usd_per_kwh: float | None = None
     capex_total_usd: float | None = None
     bess_bol_kwh: float | None = None
+    pv_capex_musd: float = 0.0
+    total_capex_musd: float | None = None
     fixed_opex_pct_of_capex: float = 0.0
     fixed_opex_musd: float = 0.0
     opex_php_per_kwh: float | None = None
@@ -203,13 +208,17 @@ def build_operating_cash_flow_table(
     years = len(annual_delivered_mwh)
     rows: list[dict[str, float | int | None]] = []
 
-    base_capex_usd = inputs.capex_musd * 1_000_000.0
+    bess_capex_usd = inputs.capex_musd * 1_000_000.0
+    pv_capex_usd = inputs.pv_capex_musd * 1_000_000.0
+    base_capex_usd = _resolve_total_capex_usd(inputs)
     devex_usd = inputs.devex_cost_usd if inputs.include_devex_year0 else 0.0
     initial_spend = -_initial_project_spend(inputs)
     rows.append(
         {
             "Year": 0,
             "CAPEX USD": base_capex_usd,
+            "BESS CAPEX USD": bess_capex_usd,
+            "PV CAPEX USD": pv_capex_usd,
             "DevEx USD": devex_usd,
             "Net cash flow USD": initial_spend,
             "Discount factor": 1.0,
@@ -220,7 +229,7 @@ def build_operating_cash_flow_table(
     if years == 0:
         return pd.DataFrame(rows)
 
-    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
     blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
@@ -404,6 +413,9 @@ def build_financing_cash_flow_table(
     rows: list[dict[str, float | int | None]] = []
 
     total_capex = _initial_project_spend(inputs)
+    bess_capex_usd = inputs.capex_musd * 1_000_000.0
+    pv_capex_usd = inputs.pv_capex_musd * 1_000_000.0
+    devex_usd = inputs.devex_cost_usd if inputs.include_devex_year0 else 0.0
     debt_principal = total_capex * inputs.debt_ratio
     equity_contribution = total_capex - debt_principal
     debt_schedule = (
@@ -418,6 +430,9 @@ def build_financing_cash_flow_table(
         {
             "Year": 0,
             "CAPEX USD": total_capex,
+            "BESS CAPEX USD": bess_capex_usd,
+            "PV CAPEX USD": pv_capex_usd,
+            "DevEx USD": devex_usd,
             "Debt principal USD": debt_principal,
             "Equity contribution USD": equity_contribution,
             "Project cash flow USD": -total_capex,
@@ -430,7 +445,7 @@ def build_financing_cash_flow_table(
     if years == 0:
         return pd.DataFrame(rows)
 
-    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
     blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
@@ -552,6 +567,23 @@ def _ensure_non_negative_finite(value: float, name: str) -> None:
         raise ValueError(f"{name} must be non-negative")
 
 
+def _resolve_total_capex_musd(inputs: EconomicInputs) -> float:
+    """Return the combined PV + BESS CAPEX in USD millions."""
+
+    if inputs.total_capex_musd is not None:
+        total = float(inputs.total_capex_musd)
+    else:
+        total = float(inputs.capex_musd) + float(inputs.pv_capex_musd)
+    _ensure_non_negative_finite(total, "total_capex_musd")
+    return total
+
+
+def _resolve_total_capex_usd(inputs: EconomicInputs) -> float:
+    """Return the combined PV + BESS CAPEX in USD."""
+
+    return _resolve_total_capex_musd(inputs) * 1_000_000.0
+
+
 def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
     """Normalize economic inputs to canonical USD-based values.
 
@@ -582,6 +614,11 @@ def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
         capex_total_usd = float(inputs.capex_musd) * 1_000_000.0
         _ensure_non_negative_finite(capex_total_usd, "capex_musd")
 
+    pv_capex_musd = float(inputs.pv_capex_musd)
+    _ensure_non_negative_finite(pv_capex_musd, "pv_capex_musd")
+    total_capex_usd = capex_total_usd + pv_capex_musd * 1_000_000.0
+    total_capex_musd = total_capex_usd / 1_000_000.0
+
     devex_cost_usd = inputs.devex_cost_usd
     if devex_cost_usd is None:
         devex_cost_php = float(inputs.devex_cost_php)
@@ -605,6 +642,8 @@ def normalize_economic_inputs(inputs: EconomicInputs) -> EconomicInputs:
     return replace(
         inputs,
         capex_musd=capex_total_usd / 1_000_000.0,
+        pv_capex_musd=pv_capex_musd,
+        total_capex_musd=total_capex_musd,
         variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
         variable_opex_basis=variable_opex_basis,
         forex_rate_php_per_usd=forex_rate,
@@ -630,6 +669,9 @@ def _validate_inputs(
         _ensure_non_negative_finite(float(value), f"annual_bess_mwh[{idx}]")
 
     _ensure_non_negative_finite(inputs.capex_musd, "capex_musd")
+    _ensure_non_negative_finite(inputs.pv_capex_musd, "pv_capex_musd")
+    if inputs.total_capex_musd is not None:
+        _ensure_non_negative_finite(inputs.total_capex_musd, "total_capex_musd")
     _ensure_non_negative_finite(inputs.fixed_opex_pct_of_capex, "fixed_opex_pct_of_capex")
     _ensure_non_negative_finite(inputs.fixed_opex_musd, "fixed_opex_musd")
     _ensure_non_negative_finite(inputs.inflation_rate, "inflation_rate")
@@ -780,9 +822,9 @@ def _build_debt_service_schedule(
 
 
 def _initial_project_spend(inputs: EconomicInputs) -> float:
-    """Return the upfront spend applied at year 0 including optional DevEx."""
+    """Return the upfront spend applied at year 0 (BESS + PV) including optional DevEx."""
 
-    base_capex_usd = inputs.capex_musd * 1_000_000.0
+    base_capex_usd = _resolve_total_capex_usd(inputs)
     if inputs.include_devex_year0:
         return base_capex_usd + inputs.devex_cost_usd
     return base_capex_usd
@@ -849,7 +891,7 @@ def compute_lcoe_lcos(
     discounted_energy = 0.0
     discounted_bess_energy = 0.0
     # fixed_opex_pct_of_capex is expressed as a percent (e.g., 2.5 = 2.5%)
-    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
 
     for year_idx in range(1, years + 1):
@@ -1156,7 +1198,7 @@ def compute_cash_flows_and_irr(
     discounted_wesm_value = 0.0
     cash_flows = [-_initial_project_spend(inputs)]
 
-    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
     blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh
@@ -1355,7 +1397,7 @@ def compute_financing_cash_flows(
         else [0.0 for _ in range(years)]
     )
 
-    fixed_opex_from_capex = inputs.capex_musd * (inputs.fixed_opex_pct_of_capex / 100.0)
+    fixed_opex_from_capex = _resolve_total_capex_musd(inputs) * (inputs.fixed_opex_pct_of_capex / 100.0)
     variable_opex_schedule = _resolve_variable_opex_schedule(years, inputs)
     blended_price = price_inputs.blended_price_usd_per_mwh
     contract_price = price_inputs.contract_price_usd_per_mwh

@@ -395,6 +395,7 @@ def _compute_candidate_economics(
 
     scaled_economics = EconomicInputs(
         capex_musd=economics_inputs.capex_musd * size_scale,
+        pv_capex_musd=economics_inputs.pv_capex_musd,
         fixed_opex_pct_of_capex=economics_inputs.fixed_opex_pct_of_capex,
         fixed_opex_musd=economics_inputs.fixed_opex_musd * size_scale,
         inflation_rate=economics_inputs.inflation_rate,
@@ -482,9 +483,10 @@ def _compute_candidate_economics(
     else:
         # Use LCOE as an implied tariff to create a revenue stream that balances costs.
         # This keeps the IRR interpretable without requiring a separate price input.
-        capex_usd = scaled_economics.capex_musd * 1_000_000.0
+        total_capex_musd = scaled_economics.capex_musd + scaled_economics.pv_capex_musd
+        capex_usd = total_capex_musd * 1_000_000.0
         inflation_rate = scaled_economics.inflation_rate
-        fixed_opex_from_capex = scaled_economics.capex_musd * (
+        fixed_opex_from_capex = total_capex_musd * (
             scaled_economics.fixed_opex_pct_of_capex / 100.0
         )
 
@@ -801,7 +803,8 @@ def _evaluate_candidate_row(
                 else 1.0
             )
             # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
-            capex_usd = economics_inputs.capex_musd * size_scale * 1_000_000.0
+            total_capex_musd = economics_inputs.capex_musd * size_scale + economics_inputs.pv_capex_musd
+            capex_usd = total_capex_musd * 1_000_000.0
             if power_mw > 0:
                 capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)
             # NPV is normalized to usable BESS energy (USD/MWh) to make rankings resilient to duration changes.

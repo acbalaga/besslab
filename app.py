@@ -123,6 +123,7 @@ INPUTS_FORM_KEYS = {
     "capex_mode": "inputs_capex_mode",
     "capex_usd_per_kwh": "inputs_capex_usd_per_kwh",
     "capex_total_usd": "inputs_capex_total_usd",
+    "pv_capex_musd": "inputs_pv_capex_musd",
     "opex_mode": "inputs_opex_mode",
     "fixed_opex_pct": "inputs_fixed_opex_pct",
     "opex_php_per_kwh": "inputs_opex_php_per_kwh",
@@ -478,6 +479,10 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     if capex_total_usd is None and econ_payload.get("capex_musd"):
         capex_total_usd = _coerce_float(econ_payload.get("capex_musd"), 0.0) * 1_000_000.0
     st.session_state[INPUTS_FORM_KEYS["capex_total_usd"]] = _coerce_float(capex_total_usd, 40_000_000.0)
+    st.session_state[INPUTS_FORM_KEYS["pv_capex_musd"]] = _coerce_float(
+        econ_payload.get("pv_capex_musd"),
+        0.0,
+    )
 
     opex_mode = "% of CAPEX per year"
     if econ_payload.get("opex_php_per_kwh") is not None:
@@ -1526,6 +1531,20 @@ def run_app():
             ),
         ]
         render_metrics(st.columns(3), econ_specs)
+
+        if normalized_econ_inputs:
+            bess_capex_musd = normalized_econ_inputs.capex_musd
+            pv_capex_musd = normalized_econ_inputs.pv_capex_musd
+            total_capex_musd = (
+                normalized_econ_inputs.total_capex_musd
+                if normalized_econ_inputs.total_capex_musd is not None
+                else bess_capex_musd + pv_capex_musd
+            )
+            st.caption(
+                "CAPEX breakdown: "
+                f"BESS ${bess_capex_musd:,.2f}M + PV ${pv_capex_musd:,.2f}M "
+                f"= ${total_capex_musd:,.2f}M."
+            )
 
         if normalized_econ_inputs and normalized_econ_inputs.include_devex_year0:
             st.caption(
