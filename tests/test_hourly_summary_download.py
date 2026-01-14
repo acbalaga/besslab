@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app import _build_hourly_summary_workbook
-from services.simulation_core import HourlyLog
+from services.simulation_core import HourlyLog, SimConfig
 
 
 def test_hourly_summary_workbook_contains_year_sheets():
@@ -22,11 +22,14 @@ def test_hourly_summary_workbook_contains_year_sheets():
         pv_mw=np.ones(hours),
         pv_to_contract_mw=np.ones(hours),
         bess_to_contract_mw=np.zeros(hours),
+        delivered_mw=np.ones(hours),
+        shortfall_mw=np.zeros(hours),
         charge_mw=np.zeros(hours),
         discharge_mw=np.zeros(hours),
         soc_mwh=np.linspace(0.0, 10.0, hours),
         timestamp=timestamp.to_numpy(),
     )
-    workbook_bytes = _build_hourly_summary_workbook({1: logs, 2: logs})
+    cfg = SimConfig()
+    workbook_bytes = _build_hourly_summary_workbook({1: logs, 2: logs}, cfg, None, None, None)
     workbook = load_workbook(BytesIO(workbook_bytes))
-    assert workbook.sheetnames == ["Year 1", "Year 2"]
+    assert workbook.sheetnames == ["Metadata", "Year 1", "Year 2", "Summary"]

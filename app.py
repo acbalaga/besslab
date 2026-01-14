@@ -15,6 +15,7 @@ from services.simulation_core import (
     SimConfig,
     Window,
     YearResult,
+    in_any_window,
     resolve_efficiencies,
     simulate_project,
     summarize_simulation,
@@ -47,6 +48,7 @@ from utils import (
     build_flag_insights,
     enforce_rate_limit,
     read_wesm_profile,
+    read_wesm_profile_bands,
 )
 from utils.economics import (
     CashFlowOutputs,
@@ -628,6 +630,140 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
     return df[existing_columns]
 
 
+def _build_expected_contract_mw(
+    hod: np.ndarray,
+    discharge_windows: List[Window],
+    contracted_mw: float,
+) -> np.ndarray:
+    """Return expected contract dispatch (MW) based on discharge windows."""
+
+    return np.array(
+        [
+            contracted_mw if in_any_window(int(hour), discharge_windows) else 0.0
+            for hour in hod
+        ],
+        dtype=float,
+    )
+
+
+def _merge_wesm_price_profile(
+    hourly_df: pd.DataFrame,
+    wesm_profile_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Attach WESM price bands to hourly data when an aligned profile is available."""
+
+    price_columns = [
+        "wesm_price_high_usd_per_mwh",
+        "wesm_price_central_usd_per_mwh",
+        "wesm_price_low_usd_per_mwh",
+    ]
+    if wesm_profile_df is None or wesm_profile_df.empty:
+        for col in price_columns:
+            hourly_df[col] = np.nan
+        return hourly_df
+
+    has_timestamp = "timestamp" in hourly_df.columns and "timestamp" in wesm_profile_df.columns
+    has_hour_index = "hour_index" in hourly_df.columns and "hour_index" in wesm_profile_df.columns
+
+    if has_timestamp:
+        join_key = "timestamp"
+        fallback_key = "hour_index" if has_hour_index else None
+    elif has_hour_index:
+        join_key = "hour_index"
+        fallback_key = None
+    else:
+        for col in price_columns:
+            hourly_df[col] = np.nan
+        return hourly_df
+
+    merged = hourly_df.merge(
+        wesm_profile_df[[join_key, *price_columns]],
+        on=join_key,
+        how="left",
+        validate="many_to_one",
+    )
+
+    if fallback_key and merged[price_columns].isna().any().any():
+        fallback_merge = hourly_df.merge(
+            wesm_profile_df[[fallback_key, *price_columns]],
+            on=fallback_key,
+            how="left",
+            validate="many_to_one",
+        )
+        for col in price_columns:
+            merged[col] = merged[col].fillna(fallback_merge[col])
+
+    return merged
+
+
+def _build_hourly_inputs_results_df(
+    logs: HourlyLog,
+    cfg: SimConfig,
+    price_inputs: Optional[PriceInputs],
+    wesm_profile_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Return hourly inputs/results with WESM pricing and revenue products."""
+
+    hour_index = np.arange(len(logs.hod), dtype=int)
+    expected_mw = _build_expected_contract_mw(
+        logs.hod,
+        cfg.discharge_windows,
+        cfg.contracted_mw,
+    )
+    pv_surplus_mw = np.maximum(
+        logs.pv_mw - logs.pv_to_contract_mw - logs.charge_mw,
+        0.0,
+    )
+
+    data = {
+        "hour_index": hour_index,
+        "hod": logs.hod,
+        "expected_mwh": expected_mw * cfg.step_hours,
+        "delivered_mwh": logs.delivered_mw * cfg.step_hours,
+        "shortfall_mwh": logs.shortfall_mw * cfg.step_hours,
+        "surplus_mwh": pv_surplus_mw * cfg.step_hours,
+        "available_mwh": logs.pv_mw * cfg.step_hours,
+    }
+    if logs.timestamp is not None:
+        data["timestamp"] = pd.to_datetime(logs.timestamp)
+    df = pd.DataFrame(data)
+
+    df = _merge_wesm_price_profile(df, wesm_profile_df)
+    tariff = price_inputs.contract_price_usd_per_mwh if price_inputs else np.nan
+    df["delivered_x_tariff_usd"] = df["delivered_mwh"] * tariff
+    df["shortfall_x_wesm_high_usd"] = df["shortfall_mwh"] * df["wesm_price_high_usd_per_mwh"]
+    df["shortfall_x_wesm_central_usd"] = (
+        df["shortfall_mwh"] * df["wesm_price_central_usd_per_mwh"]
+    )
+    df["shortfall_x_wesm_low_usd"] = df["shortfall_mwh"] * df["wesm_price_low_usd_per_mwh"]
+    df["surplus_x_wesm_high_usd"] = df["surplus_mwh"] * df["wesm_price_high_usd_per_mwh"]
+    df["surplus_x_wesm_central_usd"] = df["surplus_mwh"] * df["wesm_price_central_usd_per_mwh"]
+    df["surplus_x_wesm_low_usd"] = df["surplus_mwh"] * df["wesm_price_low_usd_per_mwh"]
+
+    column_order = [
+        "timestamp",
+        "hour_index",
+        "hod",
+        "expected_mwh",
+        "delivered_mwh",
+        "shortfall_mwh",
+        "surplus_mwh",
+        "available_mwh",
+        "wesm_price_high_usd_per_mwh",
+        "wesm_price_central_usd_per_mwh",
+        "wesm_price_low_usd_per_mwh",
+        "delivered_x_tariff_usd",
+        "shortfall_x_wesm_high_usd",
+        "shortfall_x_wesm_central_usd",
+        "shortfall_x_wesm_low_usd",
+        "surplus_x_wesm_high_usd",
+        "surplus_x_wesm_central_usd",
+        "surplus_x_wesm_low_usd",
+    ]
+    existing_columns = [col for col in column_order if col in df.columns]
+    return df[existing_columns]
+
+
 def _hourly_summary_column_units() -> Dict[str, str]:
     """Define units for hourly summary exports to keep metadata consistent."""
 
@@ -644,6 +780,51 @@ def _hourly_summary_column_units() -> Dict[str, str]:
         "discharge_mw": "MW",
         "soc_mwh": "MWh",
         "pv_surplus_mw": "MW",
+    }
+
+
+def _hourly_inputs_results_column_units() -> Dict[str, str]:
+    """Define units for the hourly inputs & results workbook."""
+
+    return {
+        "timestamp": "datetime",
+        "hour_index": "index",
+        "hod": "hour",
+        "expected_mwh": "MWh",
+        "delivered_mwh": "MWh",
+        "shortfall_mwh": "MWh",
+        "surplus_mwh": "MWh",
+        "available_mwh": "MWh",
+        "wesm_price_high_usd_per_mwh": "USD/MWh",
+        "wesm_price_central_usd_per_mwh": "USD/MWh",
+        "wesm_price_low_usd_per_mwh": "USD/MWh",
+        "delivered_x_tariff_usd": "USD",
+        "shortfall_x_wesm_high_usd": "USD",
+        "shortfall_x_wesm_central_usd": "USD",
+        "shortfall_x_wesm_low_usd": "USD",
+        "surplus_x_wesm_high_usd": "USD",
+        "surplus_x_wesm_central_usd": "USD",
+        "surplus_x_wesm_low_usd": "USD",
+    }
+
+
+def _hourly_inputs_results_summary_column_units() -> Dict[str, str]:
+    """Define units for the hourly summary roll-up sheet."""
+
+    return {
+        "Year": "year_index",
+        "Expected MWh": "MWh",
+        "Delivered MWh": "MWh",
+        "Shortfall MWh": "MWh",
+        "Surplus MWh": "MWh",
+        "Available MWh": "MWh",
+        "Delivered x Tariff USD": "USD",
+        "Shortfall x WESM High USD": "USD",
+        "Shortfall x WESM Central USD": "USD",
+        "Shortfall x WESM Low USD": "USD",
+        "Surplus x WESM High USD": "USD",
+        "Surplus x WESM Central USD": "USD",
+        "Surplus x WESM Low USD": "USD",
     }
 
 
@@ -1077,19 +1258,64 @@ def _build_hourly_summary_workbook(
     hourly_logs_by_year: Dict[int, HourlyLog],
     cfg: SimConfig,
     normalized_econ_inputs: Optional[EconomicInputs],
+    price_inputs: Optional[PriceInputs],
+    wesm_profile_source: Optional[str],
 ) -> bytes:
-    """Create an Excel workbook with one worksheet per project year."""
+    """Create an Excel workbook with hourly inputs, WESM pricing, and roll-ups."""
     output = io.BytesIO()
+    wesm_profile_df: Optional[pd.DataFrame] = None
+    if wesm_profile_source and normalized_econ_inputs is not None:
+        try:
+            wesm_profile_df = read_wesm_profile_bands(
+                [wesm_profile_source],
+                forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
+            )
+        except ValueError:
+            wesm_profile_df = None
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         _write_metadata_sheet(
             writer,
             _build_export_inputs_metadata(cfg, normalized_econ_inputs),
-            {"Hourly summary": _hourly_summary_column_units()},
+            {
+                "Hourly inputs & results": _hourly_inputs_results_column_units(),
+                "Hourly summary rollup": _hourly_inputs_results_summary_column_units(),
+            },
         )
+        summary_rows: list[dict[str, float | int | str]] = []
         for year_index in sorted(hourly_logs_by_year):
             sheet_name = f"Year {year_index}"
-            df = _build_hourly_summary_df(hourly_logs_by_year[year_index])
+            df = _build_hourly_inputs_results_df(
+                hourly_logs_by_year[year_index],
+                cfg,
+                price_inputs,
+                wesm_profile_df,
+            )
             df.to_excel(writer, sheet_name=sheet_name, index=False)
+            summary_rows.append(
+                {
+                    "Year": year_index,
+                    "Expected MWh": df["expected_mwh"].sum(),
+                    "Delivered MWh": df["delivered_mwh"].sum(),
+                    "Shortfall MWh": df["shortfall_mwh"].sum(),
+                    "Surplus MWh": df["surplus_mwh"].sum(),
+                    "Available MWh": df["available_mwh"].sum(),
+                    "Delivered x Tariff USD": df["delivered_x_tariff_usd"].sum(),
+                    "Shortfall x WESM High USD": df["shortfall_x_wesm_high_usd"].sum(),
+                    "Shortfall x WESM Central USD": df["shortfall_x_wesm_central_usd"].sum(),
+                    "Shortfall x WESM Low USD": df["shortfall_x_wesm_low_usd"].sum(),
+                    "Surplus x WESM High USD": df["surplus_x_wesm_high_usd"].sum(),
+                    "Surplus x WESM Central USD": df["surplus_x_wesm_central_usd"].sum(),
+                    "Surplus x WESM Low USD": df["surplus_x_wesm_low_usd"].sum(),
+                }
+            )
+        summary_df = pd.DataFrame(summary_rows)
+        if not summary_df.empty:
+            total_row = summary_df.drop(columns=["Year"]).sum(numeric_only=True).to_dict()
+            summary_df = pd.concat(
+                [summary_df, pd.DataFrame([{"Year": "Total", **total_row}])],
+                ignore_index=True,
+            )
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
     return output.getvalue()
 
 
@@ -1555,6 +1781,7 @@ def run_app():
     annual_total_generation: Optional[List[float]] = None
     annual_wesm_shortfall_cost_usd: Optional[List[float]] = None
     annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
+    wesm_profile_source: Optional[str] = None
 
     if run_economics and econ_inputs and price_inputs:
         cache_latest_economics_payload(
@@ -1651,6 +1878,13 @@ def run_app():
         except Exception as exc:  # noqa: BLE001
             render_exception_alert("Unexpected error while computing economics. Please retry.", exc)
             return
+
+    if wesm_file is not None:
+        wesm_profile_source = wesm_file
+    elif price_inputs and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+        default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+        if default_wesm_profile.exists():
+            wesm_profile_source = str(default_wesm_profile)
 
     save_simulation_snapshot({
         "Contracted MW": cfg.contracted_mw,
@@ -2606,6 +2840,8 @@ def run_app():
                 hourly_logs_by_year,
                 cfg,
                 normalized_econ_inputs,
+                price_inputs,
+                wesm_profile_source,
             ),
         )
         st.download_button(
