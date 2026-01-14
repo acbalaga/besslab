@@ -140,6 +140,9 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         help="Show validation details and recent inputs without exposing stack traces to all users.",
         key="inputs_debug_mode",
     )
+    validation_errors: List[str] = []
+    validation_warnings: List[str] = []
+    validation_details: List[str] = []
 
     with st.expander("Technical", expanded=True):
         # Project & PV
@@ -861,8 +864,10 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                                 parse_numeric_series("Variable expense schedule", custom_variable_text)
                             )
                         except ValueError as exc:
-                            st.error(str(exc))
-                            st.stop()
+                            error_message = str(exc)
+                            st.error(error_message)
+                            validation_errors.append(error_message)
+                            variable_opex_schedule_usd = None
 
             econ_inputs = EconomicInputs(
                 capex_musd=capex_musd,
@@ -894,7 +899,6 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
             )
 
-    validation_errors, validation_warnings, validation_details = [], [], []
     dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
     validation_warnings.extend(dispatch_validation.warnings)
     manual_errors, manual_details = validate_manual_augmentation_schedule(
