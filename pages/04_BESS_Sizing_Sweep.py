@@ -78,6 +78,16 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         payload.get("fixed_opex_musd"),
         defaults["fixed_opex_musd"],
     )
+    opex_mode_payload = payload.get("opex_mode", defaults["opex_mode"])
+    if opex_mode_payload not in {"% of CAPEX per year", "PHP/kWh on total generation"}:
+        opex_mode_payload = defaults["opex_mode"]
+    normalized["opex_mode"] = opex_mode_payload
+    normalized["opex_php_per_kwh"] = _coerce_float(
+        payload.get("opex_php_per_kwh"),
+        defaults["opex_php_per_kwh"],
+    )
+    if "opex_mode" not in payload and normalized["opex_php_per_kwh"] > 0:
+        normalized["opex_mode"] = "PHP/kWh on total generation"
     normalized["include_devex_year0"] = _coerce_bool(
         payload.get("include_devex_year0"),
         defaults["include_devex_year0"],
@@ -240,6 +250,8 @@ default_inputs: Dict[str, Any] = {
     "pv_capex_musd": 0.0,
     "fixed_opex_pct": 2.0,
     "fixed_opex_musd": 0.0,
+    "opex_mode": "% of CAPEX per year",
+    "opex_php_per_kwh": 0.0,
     "include_devex_year0": False,
     "ranking_choice": "compliance_pct",
     "min_soh": 0.6,
@@ -370,14 +382,39 @@ with st.container():
         )
         total_capex_musd = capex_musd + pv_capex_musd
         st.caption(f"Total project CAPEX (BESS + PV): ${total_capex_musd:,.2f}M.")
-        fixed_opex_pct = st.number_input(
-            "Fixed OPEX (% of CAPEX per year)",
-            min_value=0.0,
-            max_value=20.0,
-            value=float(default_inputs["fixed_opex_pct"]),
-            step=0.1,
-            help="Annual fixed OPEX expressed as % of CAPEX.",
-        ) / 100.0
+        opex_mode = st.radio(
+            "OPEX input",
+            options=["% of CAPEX per year", "PHP/kWh on total generation"],
+            horizontal=True,
+            help="Choose a fixed % of CAPEX/year or a PHP/kWh rate applied to total generation.",
+            index=["% of CAPEX per year", "PHP/kWh on total generation"].index(
+                default_inputs["opex_mode"]
+                if default_inputs["opex_mode"] in {"% of CAPEX per year", "PHP/kWh on total generation"}
+                else "% of CAPEX per year"
+            ),
+        )
+        fixed_opex_pct = 0.0
+        opex_php_per_kwh: Optional[float] = None
+        if opex_mode == "% of CAPEX per year":
+            fixed_opex_pct = st.number_input(
+                "Fixed OPEX (% of CAPEX per year)",
+                min_value=0.0,
+                max_value=20.0,
+                value=float(default_inputs["fixed_opex_pct"]),
+                step=0.1,
+                help="Annual fixed OPEX expressed as % of CAPEX.",
+            ) / 100.0
+        else:
+            opex_php_per_kwh = st.number_input(
+                "OPEX (PHP/kWh on total generation)",
+                min_value=0.0,
+                value=float(default_inputs["opex_php_per_kwh"]),
+                step=0.05,
+                help="Converted to USD/MWh using the FX rate; applied to total generation.",
+            )
+            if opex_php_per_kwh > 0:
+                opex_usd_per_mwh = opex_php_per_kwh / forex_rate_php_per_usd * 1000.0
+                st.caption(f"Converted OPEX: ${opex_usd_per_mwh:,.2f}/MWh.")
         fixed_opex_musd = st.number_input(
             "Additional fixed OPEX (USD million/yr)",
             min_value=0.0,
@@ -575,14 +612,18 @@ with st.container():
 
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
+        st.markdown("**Variable OPEX overrides**")
+        st.caption(
+            "Schedule overrides supersede the base OPEX mode selection above (CAPEX % or PHP/kWh)."
+        )
         variable_opex_php_per_kwh = st.number_input(
-            "Variable OPEX (PHP/kWh)",
+            "Variable OPEX (PHP/kWh on delivered energy)",
             min_value=0.0,
             value=float(default_inputs["variable_opex_php_per_kwh"]),
             step=0.05,
             help=(
                 "Optional per-kWh operating expense applied to annual firm energy. "
-                "Escalates with inflation and overrides fixed OPEX when provided."
+                "Escalates with inflation and overrides the base OPEX selection when provided."
             ),
         )
         variable_opex_usd_per_mwh: Optional[float] = None
@@ -597,8 +638,8 @@ with st.container():
             options=["None", "Periodic", "Custom"],
             horizontal=True,
             help=(
-                "Custom or periodic schedules override per-kWh and fixed OPEX assumptions. "
-                "Per-kWh costs override fixed percentages and adders."
+                "Custom or periodic schedules override the base OPEX mode and per-kWh overrides. "
+                "Per-kWh overrides supersede fixed percentages and adders."
             ),
             index=["None", "Periodic", "Custom"].index(
                 default_inputs["variable_schedule_choice"]
@@ -661,6 +702,8 @@ with st.container():
         "pv_capex_musd": float(pv_capex_musd),
         "fixed_opex_pct": float(fixed_opex_pct * 100.0),
         "fixed_opex_musd": float(fixed_opex_musd),
+        "opex_mode": opex_mode,
+        "opex_php_per_kwh": float(opex_php_per_kwh or 0.0),
         "include_devex_year0": bool(include_devex_year0),
         "ranking_choice": ranking_choice,
         "min_soh": float(min_soh),
@@ -705,6 +748,7 @@ if submitted:
         pv_capex_musd=pv_capex_musd,
         fixed_opex_pct_of_capex=fixed_opex_pct,
         fixed_opex_musd=fixed_opex_musd,
+        opex_php_per_kwh=opex_php_per_kwh if opex_mode == "PHP/kWh on total generation" else None,
         inflation_rate=inflation_pct / 100.0,
         discount_rate=discount_rate,
         variable_opex_usd_per_mwh=variable_opex_usd_per_mwh,
