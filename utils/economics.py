@@ -77,11 +77,12 @@ class PriceInputs:
     """Energy price assumptions used for cash-flow based metrics.
 
     When ``blended_price_usd_per_mwh`` is provided it overrides the individual
-    contract and PV rates so all energy is monetized at the blended value. The
-    optional WESM deficit price applies to contract shortfalls when enabled,
-    treated as a purchase cost. When ``sell_to_wesm`` is enabled, PV surplus
-    (excess energy) can be credited at a dedicated WESM sale price; otherwise,
-    surplus revenue is excluded from the cash-flow stream.
+    contract and PV excess rates so all delivered energy plus any excess PV is
+    monetized at the blended value. The optional WESM deficit price applies to
+    contract shortfalls when enabled, treated as a purchase cost. When
+    ``sell_to_wesm`` is enabled, PV surplus (excess energy) can be credited at a
+    dedicated WESM sale price; otherwise, surplus revenue is excluded from the
+    cash-flow stream.
     """
 
     contract_price_usd_per_mwh: float
@@ -279,13 +280,13 @@ def build_operating_cash_flow_table(
         )
 
         if blended_price is not None:
-            bess_revenue = firm_mwh * contract_price
+            contract_revenue = firm_mwh * contract_price
             pv_delivered_revenue = 0.0
             pv_excess_revenue = pv_excess_mwh * pv_market_price
         else:
-            bess_revenue = bess_mwh * contract_price
-            pv_delivered_revenue = pv_delivered_mwh * pv_market_price
-            pv_excess_revenue = 0.0
+            contract_revenue = firm_mwh * contract_price
+            pv_delivered_revenue = 0.0
+            pv_excess_revenue = pv_excess_mwh * pv_market_price
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
@@ -308,7 +309,7 @@ def build_operating_cash_flow_table(
                     wesm_surplus_revenue = pv_excess_revenue
 
         if price_inputs.escalate_with_inflation:
-            bess_revenue *= inflation_multiplier
+            contract_revenue *= inflation_multiplier
             pv_delivered_revenue *= inflation_multiplier
             pv_excess_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
@@ -316,7 +317,9 @@ def build_operating_cash_flow_table(
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = bess_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
+        total_revenue = (
+            contract_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
+        )
         cash_flow = total_revenue - annual_opex - augmentation_cost
 
         rows.append(
@@ -327,8 +330,8 @@ def build_operating_cash_flow_table(
                 "PV→Contract MWh": pv_delivered_mwh,
                 "PV excess MWh": pv_excess_mwh,
                 "Shortfall MWh": shortfall_mwh,
-                "BESS revenue USD": bess_revenue,
-                "PV contract revenue USD": pv_delivered_revenue,
+                "Contract revenue USD": contract_revenue,
+                "PV delivered revenue USD": pv_delivered_revenue,
                 "PV excess revenue USD": pv_excess_revenue,
                 "WESM shortfall cost USD": wesm_shortfall_cost,
                 "WESM surplus revenue USD": wesm_surplus_revenue,
@@ -493,7 +496,7 @@ def build_financing_cash_flow_table(
             float(augmentation_costs_usd[year_idx - 1]) if augmentation_costs_usd is not None else 0.0
         )
 
-        bess_revenue = firm_mwh * contract_price if blended_price is not None else bess_mwh * contract_price
+        contract_revenue = firm_mwh * contract_price
         pv_revenue = pv_excess_mwh * pv_market_price
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
@@ -522,14 +525,14 @@ def build_financing_cash_flow_table(
                     wesm_surplus_revenue = pv_excess_mwh * surplus_price
 
         if price_inputs.escalate_with_inflation:
-            bess_revenue *= inflation_multiplier
+            contract_revenue *= inflation_multiplier
             pv_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
                 wesm_shortfall_cost *= inflation_multiplier
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
+        total_revenue = contract_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
         ebitda = total_revenue - annual_opex
         debt_service = debt_schedule[year_idx - 1] if year_idx - 1 < len(debt_schedule) else 0.0
         project_cash_flow = ebitda - augmentation_cost
@@ -1087,14 +1090,14 @@ def compute_cash_flows_and_irr(
 
     Revenue is split into two streams (plus optional WESM adjustments):
 
-    * Contract revenue from BESS-originated energy using a fixed contract price.
-    * Market revenue from PV energy delivered to the firm contract.
+    * Contract revenue on total delivered firm energy using a fixed contract price.
+    * Market revenue on excess PV energy (when applicable).
     * Optional WESM sales or purchases tied to contract shortfalls.
 
     Contract and market prices can optionally escalate with the same inflation
     rate used for OPEX. When a blended energy price is provided, it overrides
-    the individual contract and PV rates and is applied to all delivered and
-    marketed energy streams (including PV that serves the firm contract).
+    the individual contract and PV excess rates and is applied to all delivered
+    energy plus any PV excess.
     Augmentation costs are treated as a year-specific cash outflow alongside
     fixed OPEX. The IRR calculation uses the undiscounted cash-flow list to
     avoid dependence on the chosen discount rate.
@@ -1250,13 +1253,13 @@ def compute_cash_flows_and_irr(
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
         if blended_price is not None:
-            bess_revenue = firm_mwh * contract_price
+            contract_revenue = firm_mwh * contract_price
             pv_delivered_revenue = 0.0
             pv_excess_revenue = pv_excess_mwh * pv_market_price
         else:
-            bess_revenue = bess_mwh * contract_price
-            pv_delivered_revenue = pv_delivered_mwh * pv_market_price
-            pv_excess_revenue = 0.0
+            contract_revenue = firm_mwh * contract_price
+            pv_delivered_revenue = 0.0
+            pv_excess_revenue = pv_excess_mwh * pv_market_price
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
         if price_inputs.apply_wesm_to_shortfall:
@@ -1279,7 +1282,7 @@ def compute_cash_flows_and_irr(
                     wesm_surplus_revenue = pv_excess_revenue
 
         if price_inputs.escalate_with_inflation:
-            bess_revenue *= inflation_multiplier
+            contract_revenue *= inflation_multiplier
             pv_delivered_revenue *= inflation_multiplier
             pv_excess_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
@@ -1287,7 +1290,9 @@ def compute_cash_flows_and_irr(
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        total_revenue = bess_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
+        total_revenue = (
+            contract_revenue + pv_delivered_revenue + pv_excess_revenue - wesm_shortfall_cost
+        )
         discounted_revenues += total_revenue * factor
         discounted_pv_revenue += pv_excess_revenue * factor
         discounted_wesm_value += (wesm_surplus_revenue - wesm_shortfall_cost) * factor
@@ -1452,7 +1457,7 @@ def compute_financing_cash_flows(
         if augmentation_costs_usd is not None:
             augmentation_cost = float(augmentation_costs_usd[year_idx - 1])
 
-        bess_revenue = firm_mwh * contract_price if blended_price is not None else bess_mwh * contract_price
+        contract_revenue = firm_mwh * contract_price
         pv_revenue = pv_excess_mwh * pv_market_price
         wesm_shortfall_cost = 0.0
         wesm_surplus_revenue = 0.0
@@ -1481,14 +1486,14 @@ def compute_financing_cash_flows(
                     wesm_surplus_revenue = pv_excess_mwh * surplus_price
 
         if price_inputs.escalate_with_inflation:
-            bess_revenue *= inflation_multiplier
+            contract_revenue *= inflation_multiplier
             pv_revenue *= inflation_multiplier
             if not use_wesm_shortfall_profile:
                 wesm_shortfall_cost *= inflation_multiplier
             if not use_wesm_surplus_profile:
                 wesm_surplus_revenue *= inflation_multiplier
 
-        revenue = bess_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
+        revenue = contract_revenue + pv_revenue + wesm_surplus_revenue - wesm_shortfall_cost
         ebitda = revenue - annual_opex
         total_revenue += revenue
         total_ebitda += ebitda
