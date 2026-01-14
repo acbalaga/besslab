@@ -1006,6 +1006,7 @@ def run_app():
         main_title="BESS LAB — PV-only charging, AC-coupled",
         description="Configure inputs, run the simulation, and review per-year results and sensitivities.",
         base_dir=BASE_DIR,
+        nav_location="sidebar",
     )
     with st.sidebar:
         st.header("Data Sources")
