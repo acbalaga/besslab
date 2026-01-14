@@ -13,6 +13,7 @@ from pandas.tseries.frequencies import to_offset
 class Window:
     start: float  # hour-of-day, inclusive
     end: float  # hour-of-day, exclusive
+    source: Optional[str] = None  # original user-entered string for warnings
 
     def contains(self, hod: float) -> bool:
         if self.start <= self.end:
@@ -75,7 +76,7 @@ def parse_windows(text: str) -> Tuple[List[Window], List[str]]:
             if not (0.0 <= h1 < 24.0 and 0.0 <= h2 < 24.0):
                 warnings.append(f"Invalid window hour in '{part}' (00:00-23:59). Skipped.")
                 continue
-            windows.append(Window(h1, h2))
+            windows.append(Window(h1, h2, source=part))
         except Exception:
             warnings.append(f"Could not parse window '{part}'. Use 'HH:MM-HH:MM'. Skipped.")
 

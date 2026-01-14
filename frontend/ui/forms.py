@@ -15,6 +15,7 @@ from services.simulation_core import (
     AUGMENTATION_SCHEDULE_BASIS,
     AugmentationScheduleEntry,
     SimConfig,
+    Window,
     build_schedule_from_editor,
     infer_step_hours_from_pv,
     parse_windows,
@@ -77,6 +78,62 @@ def validate_dispatch_windows(discharge_text: str, charge_text: str) -> Dispatch
         f"Parsed discharge windows: {discharge_windows or 'none'}",
         f"Parsed charge windows: {charge_windows or 'none'}",
     ]
+
+    def _format_window(window: Window) -> str:
+        if window.source:
+            return window.source
+        start_hour = int(window.start)
+        start_minute = int(round((window.start - start_hour) * 60))
+        end_hour = int(window.end)
+        end_minute = int(round((window.end - end_hour) * 60))
+        return f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"
+
+    def _intervals(window: Window) -> List[Tuple[float, float]]:
+        if window.start <= window.end:
+            return [(window.start, window.end)]
+        return [(window.start, 24.0), (0.0, window.end)]
+
+    def _collect_window_warnings(window_type: str, windows: List[Window]) -> List[str]:
+        """Return warnings about zero-length, duplicate, or overlapping windows."""
+        local_warnings: List[str] = []
+        seen: Dict[Tuple[float, float], List[Window]] = {}
+
+        for window in windows:
+            key = (window.start, window.end)
+            seen.setdefault(key, []).append(window)
+            if window.start == window.end:
+                window_label = _format_window(window)
+                local_warnings.append(
+                    f"{window_type} window '{window_label}' has zero length (start == end). "
+                    "Adjust the end time or remove the window."
+                )
+
+        for key, matches in seen.items():
+            if len(matches) > 1:
+                window_label = _format_window(matches[0])
+                local_warnings.append(
+                    f"Duplicate {window_type} window '{window_label}' detected ({len(matches)} occurrences). "
+                    "Remove duplicates or adjust the times."
+                )
+
+        for idx, left in enumerate(windows):
+            for right in windows[idx + 1 :]:
+                for left_interval in _intervals(left):
+                    for right_interval in _intervals(right):
+                        if max(left_interval[0], right_interval[0]) < min(left_interval[1], right_interval[1]):
+                            local_warnings.append(
+                                f"{window_type} windows '{_format_window(left)}' and "
+                                f"'{_format_window(right)}' overlap. Split or adjust end times to avoid overlap."
+                            )
+                            break
+                    else:
+                        continue
+                    break
+
+        return local_warnings
+
+    warnings.extend(_collect_window_warnings("Discharge", discharge_windows))
+    warnings.extend(_collect_window_warnings("Charge", charge_windows))
 
     if not discharge_windows:
         errors.append("Provide at least one discharge window in HH:MM-HH:MM format (e.g., 10:00-14:00).")
