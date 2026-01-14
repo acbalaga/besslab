@@ -21,7 +21,15 @@ from services.simulation_core import (
     validate_pv_profile_duration,
 )
 from utils import get_rate_limit_password, parse_numeric_series
-from utils.economics import DEFAULT_FOREX_RATE_PHP_PER_USD, DEVEX_COST_PHP, EconomicInputs, PriceInputs
+from utils.economics import (
+    DEFAULT_COST_OF_DEBT_PCT,
+    DEFAULT_DEBT_EQUITY_RATIO,
+    DEFAULT_FOREX_RATE_PHP_PER_USD,
+    DEFAULT_TENOR_YEARS,
+    DEVEX_COST_PHP,
+    EconomicInputs,
+    PriceInputs,
+)
 from utils.ui_state import (
     get_manual_aug_schedule_rows,
     get_rate_limit_state,
@@ -811,9 +819,12 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 debt_equity_ratio = st.number_input(
                     "Debt/Equity ratio (D/E)",
                     min_value=0.0,
-                    value=1.0,
+                    value=DEFAULT_DEBT_EQUITY_RATIO,
                     step=0.1,
-                    help="Debt divided by equity; 1.0 implies 50% debt and 50% equity.",
+                    help=(
+                        "Debt divided by equity; 1.0 implies 50% debt and 50% equity. "
+                        f"Default: {DEFAULT_DEBT_EQUITY_RATIO:.1f} D/E."
+                    ),
                     key="inputs_debt_equity_ratio",
                 )
                 debt_ratio = debt_equity_ratio / (1.0 + debt_equity_ratio) if debt_equity_ratio > 0 else 0.0
@@ -823,18 +834,18 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "Cost of debt (%)",
                     min_value=0.0,
                     max_value=30.0,
-                    value=6.0,
+                    value=DEFAULT_COST_OF_DEBT_PCT,
                     step=0.1,
-                    help="Annual interest rate applied to the debt balance.",
+                    help=f"Annual interest rate applied to the debt balance. Default: {DEFAULT_COST_OF_DEBT_PCT:.1f}%.",
                     key="inputs_cost_of_debt_pct",
                 )
             with financing_col3:
                 tenor_years = st.number_input(
                     "Debt tenor (years)",
                     min_value=1,
-                    value=10,
+                    value=DEFAULT_TENOR_YEARS,
                     step=1,
-                    help="Years over which debt is amortized using level payments.",
+                    help=f"Years over which debt is amortized using level payments. Default: {DEFAULT_TENOR_YEARS}.",
                     key="inputs_tenor_years",
                 )
 
