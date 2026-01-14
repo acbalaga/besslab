@@ -18,6 +18,7 @@ from utils.economics import (
     EconomicInputs,
     PriceInputs,
     _compute_npv,
+    aggregate_wesm_profile_to_annual,
     compute_cash_flows_and_irr,
     compute_lcoe_lcos_with_augmentation_fallback,
 )
@@ -247,6 +248,7 @@ def run_candidate_simulation(
     duration_h: float,
     simulate_fn: Callable[..., "SimulationOutput"] | None = None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None = None,
+    need_logs: bool = False,
     seed: int | None = None,
     deterministic: bool | None = None,
 ) -> Tuple["SimulationOutput", "SimulationSummary"]:
@@ -271,9 +273,37 @@ def run_candidate_simulation(
     )
 
     simulate_kwargs = _collect_optional_simulation_kwargs(simulate_fn, seed, deterministic)
-    sim_output = simulate_fn(cfg_for_run, pv_df, cycle_df, dod_override, False, **simulate_kwargs)
+    sim_output = simulate_fn(
+        cfg_for_run, pv_df, cycle_df, dod_override, need_logs, **simulate_kwargs
+    )
     summary = summarize_fn(sim_output)
     return sim_output, summary
+
+
+def _build_hourly_summary_df(logs: Any) -> pd.DataFrame:
+    """Build an hourly summary table for WESM profile aggregation."""
+
+    hour_index = np.arange(len(logs.hod), dtype=int)
+    data: dict[str, Any] = {
+        "hour_index": hour_index,
+        "hod": logs.hod,
+        "pv_mw": logs.pv_mw,
+        "pv_to_contract_mw": logs.pv_to_contract_mw,
+        "bess_to_contract_mw": logs.bess_to_contract_mw,
+        "delivered_mw": logs.delivered_mw,
+        "shortfall_mw": logs.shortfall_mw,
+        "charge_mw": logs.charge_mw,
+        "discharge_mw": logs.discharge_mw,
+        "soc_mwh": logs.soc_mwh,
+    }
+    if logs.timestamp is not None:
+        data["timestamp"] = pd.to_datetime(logs.timestamp)
+    df = pd.DataFrame(data)
+    df["pv_surplus_mw"] = np.maximum(
+        df["pv_mw"] - df["pv_to_contract_mw"] - df["charge_mw"],
+        0.0,
+    )
+    return df
 
 
 def compute_static_bess_sweep_economics(
@@ -351,6 +381,8 @@ def _compute_candidate_economics(
     bess_to_contract_mwh: Sequence[float] | None = None,
     pv_curtailed_mwh: Sequence[float] | None = None,
     shortfall_mwh: Sequence[float] | None = None,
+    annual_wesm_shortfall_cost_usd: Sequence[float] | None = None,
+    annual_wesm_surplus_revenue_usd: Sequence[float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Return LCOE, discounted-cost NPV, implied IRR, and net-project NPV.
 
@@ -476,6 +508,8 @@ def _compute_candidate_economics(
             price_inputs,
             annual_pv_delivered_mwh=pv_delivered_series,
             annual_shortfall_mwh=shortfall_series,
+            annual_wesm_shortfall_cost_usd=annual_wesm_shortfall_cost_usd,
+            annual_wesm_surplus_revenue_usd=annual_wesm_surplus_revenue_usd,
             augmentation_costs_usd=augmentation_costs_usd,
         )
         irr_pct = cash_outputs.irr_pct
@@ -734,12 +768,26 @@ def _evaluate_candidate_row(
     economics_inputs: EconomicInputs | None,
     price_scenarios: Sequence[tuple[str | None, PriceInputs | None]],
     base_initial_energy_mwh: float,
+    wesm_profile_df: pd.DataFrame | None,
+    wesm_step_hours: float | None,
     simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
     max_shortfall_mwh: float | None,
 ) -> list[dict[str, float | bool | str]]:
     """Run a single candidate simulation and compute derived KPIs for all price scenarios."""
+
+    needs_wesm_profile = (
+        wesm_profile_df is not None
+        and any(
+            scenario_price_inputs is not None
+            and (
+                scenario_price_inputs.apply_wesm_to_shortfall
+                or scenario_price_inputs.sell_to_wesm
+            )
+            for _, scenario_price_inputs in price_scenarios
+        )
+    )
 
     sim_output, summary = run_candidate_simulation(
         base_cfg,
@@ -750,7 +798,32 @@ def _evaluate_candidate_row(
         duration_h,
         simulate_fn=simulate_fn,
         summarize_fn=summarize_fn,
+        need_logs=needs_wesm_profile,
     )
+
+    annual_wesm_shortfall_cost_usd: list[float] | None = None
+    annual_wesm_surplus_revenue_usd: list[float] | None = None
+    if needs_wesm_profile and sim_output.hourly_logs_by_year:
+        hourly_summary_by_year = {
+            year_index: _build_hourly_summary_df(logs)
+            for year_index, logs in sim_output.hourly_logs_by_year.items()
+        }
+        try:
+            (
+                annual_wesm_shortfall_cost_usd,
+                annual_wesm_surplus_revenue_usd,
+            ) = aggregate_wesm_profile_to_annual(
+                hourly_summary_by_year,
+                wesm_profile_df,
+                step_hours=wesm_step_hours or getattr(sim_output.cfg, "step_hours", 1.0),
+                apply_inflation=False,
+                inflation_rate=economics_inputs.inflation_rate if economics_inputs else 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "WESM profile aggregation failed; falling back to static pricing. (%s)",
+                exc,
+            )
 
     (
         max_eq_cycles,
@@ -791,11 +864,24 @@ def _evaluate_candidate_row(
         npv_per_mwh_usd = float("nan")
         capex_per_kw_usd = float("nan")
         if economics_inputs is not None and status == "evaluated":
+            use_wesm_profile = (
+                scenario_price_inputs is not None
+                and (
+                    scenario_price_inputs.apply_wesm_to_shortfall
+                    or scenario_price_inputs.sell_to_wesm
+                )
+            )
             lcoe, discounted_costs, irr_pct, npv_usd = _compute_candidate_economics(
                 sim_output,
                 economics_inputs,
                 scenario_price_inputs,
                 base_initial_energy_mwh=base_initial_energy_mwh,
+                annual_wesm_shortfall_cost_usd=(
+                    annual_wesm_shortfall_cost_usd if use_wesm_profile else None
+                ),
+                annual_wesm_surplus_revenue_usd=(
+                    annual_wesm_surplus_revenue_usd if use_wesm_profile else None
+                ),
             )
             size_scale = (
                 candidate_energy_mwh / base_initial_energy_mwh
@@ -859,6 +945,8 @@ def _evaluate_candidate_tuple(
     economics_inputs: EconomicInputs | None,
     price_scenarios: Sequence[tuple[str | None, PriceInputs | None]],
     base_initial_energy_mwh: float,
+    wesm_profile_df: pd.DataFrame | None,
+    wesm_step_hours: float | None,
     simulate_fn: Callable[..., "SimulationOutput"] | None,
     summarize_fn: Callable[["SimulationOutput"], "SimulationSummary"] | None,
     min_compliance_pct: float | None,
@@ -879,6 +967,8 @@ def _evaluate_candidate_tuple(
         economics_inputs,
         price_scenarios,
         base_initial_energy_mwh,
+        wesm_profile_df,
+        wesm_step_hours,
         simulate_fn,
         summarize_fn,
         min_compliance_pct,
@@ -899,6 +989,8 @@ def sweep_bess_sizes(
     economics_inputs: EconomicInputs | None = None,
     price_inputs: PriceInputs | Sequence[PriceInputs] | None = None,
     price_scenario_names: Sequence[str] | None = None,
+    wesm_profile_df: pd.DataFrame | None = None,
+    wesm_step_hours: float | None = None,
     use_case: str = "reliability",
     ranking_kpi: str | None = None,
     min_soh: float = 0.6,
@@ -931,6 +1023,12 @@ def sweep_bess_sizes(
         Optional names for each price scenario. When provided, the length must
         match ``price_inputs``. Names are added to the ``price_scenario`` column
         in the returned DataFrame to support pivoting or grouping.
+    wesm_profile_df
+        Optional hourly WESM profile data. When supplied and WESM pricing is
+        enabled in ``price_inputs``, hourly shortfall and surplus pricing is
+        aggregated and used instead of the static PHP/kWh overrides.
+    wesm_step_hours
+        Time resolution (hours) for the hourly logs used in WESM aggregation.
     max_candidates
         Optional limit on the total candidate count. When provided the function will
         either raise, return an empty DataFrame, or process the sweep in batches
@@ -1014,6 +1112,8 @@ def sweep_bess_sizes(
                     economics_inputs,
                     price_scenarios,
                     base_initial_energy_mwh,
+                    wesm_profile_df,
+                    wesm_step_hours,
                     simulate_fn,
                     summarize_fn,
                     min_compliance_pct,
@@ -1032,6 +1132,8 @@ def sweep_bess_sizes(
                 economics_inputs=economics_inputs,
                 price_scenarios=price_scenarios,
                 base_initial_energy_mwh=base_initial_energy_mwh,
+                wesm_profile_df=wesm_profile_df,
+                wesm_step_hours=wesm_step_hours,
                 simulate_fn=simulate_fn,
                 summarize_fn=summarize_fn,
                 min_compliance_pct=min_compliance_pct,

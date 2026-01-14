@@ -8,11 +8,15 @@ import streamlit as st
 
 from app import BASE_DIR
 from services.simulation_core import SimConfig
-from utils import enforce_rate_limit, parse_numeric_series
+from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
-from utils.ui_state import bootstrap_session_state, get_cached_simulation_config
+from utils.ui_state import (
+    bootstrap_session_state,
+    get_cached_simulation_config,
+    get_latest_economics_payload,
+)
 
 bootstrap_session_state()
 
@@ -169,6 +173,25 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
     return normalized
 
 
+def _resolve_wesm_profile_source(
+    uploaded_file: Any,
+    cached_payload: Optional[Dict[str, Any]],
+    default_profile_path: Any,
+) -> tuple[Optional[Any], Optional[str]]:
+    """Select a WESM profile source, favoring explicit uploads and cached inputs."""
+
+    if uploaded_file is not None:
+        return uploaded_file, "uploaded for this sweep"
+    if isinstance(cached_payload, dict) and cached_payload.get("wesm_profile_source") is not None:
+        return cached_payload["wesm_profile_source"], "cached from Inputs & Results"
+    cached_inputs_upload = st.session_state.get("inputs_wesm_upload")
+    if cached_inputs_upload is not None:
+        return cached_inputs_upload, "cached from Inputs & Results sidebar"
+    if default_profile_path is not None and default_profile_path.exists():
+        return str(default_profile_path), f"default profile ({default_profile_path})"
+    return None, None
+
+
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
     """Identify the BESS capacity where NPV and IRR curves overlap after scaling.
 
@@ -274,6 +297,8 @@ stored_inputs = st.session_state.get("bess_sweep_inputs", {})
 if isinstance(stored_inputs, dict):
     default_inputs = _normalize_sweep_inputs(stored_inputs, default_inputs)
 
+cached_econ_payload = get_latest_economics_payload()
+
 with st.expander("Load/save sweep inputs (JSON)", expanded=False):
     st.caption(
         "Upload or paste JSON to restore sweep inputs. Use the download button to save "
@@ -316,6 +341,7 @@ with st.expander("Load/save sweep inputs (JSON)", expanded=False):
 
 with st.container():
     size_col1, size_col2, size_col3, price_col = st.columns(4)
+    wesm_profile_df: Optional[pd.DataFrame] = None
     with size_col1:
         energy_range = st.slider(
             "Usable energy range (MWh)",
@@ -611,6 +637,44 @@ with st.container():
                 " Defaults to PHP 5,583/MWh from the 2024 Annual Market Assessment Report (PEMC)."
             )
 
+        wesm_file = st.file_uploader(
+            "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
+            type=["csv"],
+            key="bess_sweep_wesm_upload",
+        )
+        if wesm_pricing_enabled:
+            default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+            wesm_profile_source, wesm_profile_label = _resolve_wesm_profile_source(
+                wesm_file,
+                cached_econ_payload if isinstance(cached_econ_payload, dict) else None,
+                default_wesm_profile,
+            )
+            if wesm_profile_source is not None:
+                try:
+                    wesm_profile_df = read_wesm_profile(
+                        [wesm_profile_source],
+                        forex_rate_php_per_usd=forex_rate_php_per_usd,
+                    )
+                    st.caption(
+                        "WESM hourly profile loaded "
+                        f"({wesm_profile_label}). "
+                        "Sweep cash flows will use hourly WESM pricing for shortfall costs and "
+                        "surplus revenue; the PHP/kWh fields above are retained as a fallback."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(
+                        "WESM profile could not be read; falling back to the static WESM prices "
+                        f"above. ({exc})"
+                    )
+                    wesm_profile_df = None
+            else:
+                st.warning(
+                    "WESM pricing is enabled but no hourly profile is available. "
+                    "The sweep will fall back to the static WESM price inputs above. "
+                    "Upload a CSV or run Inputs & Results to cache a profile.",
+                    icon="⚠️",
+                )
+
     variable_col1, variable_col2 = st.columns(2)
     with variable_col1:
         st.markdown("**Variable OPEX overrides**")
@@ -782,6 +846,8 @@ if submitted:
             fixed_power_mw=fixed_power,
             economics_inputs=economics_inputs,
             price_inputs=price_inputs,
+            wesm_profile_df=wesm_profile_df if wesm_pricing_enabled else None,
+            wesm_step_hours=getattr(cfg, "step_hours", 1.0),
             ranking_kpi=ranking_choice,
             min_soh=min_soh,
             use_case="reliability",
@@ -793,7 +859,19 @@ if submitted:
             # Backwards-compatibility for environments still running an older sweep implementation
             # that lacks newer keyword arguments. Gracefully retry without the missing inputs.
             message = str(exc)
-            if "price_inputs" in message:
+            if "wesm_profile_df" in message:
+                sweep_kwargs.pop("wesm_profile_df", None)
+                sweep_kwargs.pop("wesm_step_hours", None)
+                try:
+                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
+                except TypeError as inner_exc:
+                    if "price_inputs" not in str(inner_exc):
+                        raise
+                    sweep_kwargs.pop("price_inputs", None)
+                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
+                sweep_kwargs["wesm_profile_df"] = wesm_profile_df
+                sweep_kwargs["wesm_step_hours"] = getattr(cfg, "step_hours", 1.0)
+            elif "price_inputs" in message:
                 sweep_kwargs.pop("price_inputs", None)
                 try:
                     sweep_df = sweep_bess_sizes(**sweep_kwargs)
