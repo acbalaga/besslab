@@ -1,7 +1,7 @@
 import streamlit as st
 
 from app import BASE_DIR
-from utils.ui_layout import init_page_layout
+from utils.ui_layout import init_page_layout, render_pv_profile_summary
 from utils.ui_state import bootstrap_session_state, load_shared_data
 
 bootstrap_session_state()
@@ -37,6 +37,8 @@ with st.expander("Upload your data", expanded=True):
 
 pv_df, cycle_df = load_shared_data(BASE_DIR, pv_file, cycle_file)
 pv_df, cycle_df = render_layout(pv_df, cycle_df)
+
+render_pv_profile_summary(st, pv_df, title="#### PV profile summary")
 
 st.success(
     f"PV profile loaded with {len(pv_df):,} rows; cycle model contains {len(cycle_df)} rows."
