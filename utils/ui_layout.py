@@ -80,8 +80,8 @@ def _render_status_block(
     container.caption(f"Data source: PV ({pv_source}), cycle ({cycle_source}).")
     container.caption(f"Rate limit: {rate_limit_state} ({rate_limit_detail})")
 
-    with container.expander("PV profile summary", expanded=False) as summary_container:
-        _render_pv_summary_table(summary_container, pv_summary)
+    summary_container = container.expander("PV profile summary", expanded=False)
+    _render_pv_summary_table(summary_container, pv_summary)
 
 
 def _format_pv_summary_value(
