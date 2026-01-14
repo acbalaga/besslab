@@ -547,3 +547,218 @@ def read_wesm_profile(
         "Failed to read WESM profile. "
         f"Looked for: {path_candidates}. Last error: {last_err}"
     )
+
+
+def read_wesm_profile_bands(
+    path_candidates: List[Any],
+    *,
+    forex_rate_php_per_usd: float,
+    timestamp_col: str = "timestamp",
+) -> pd.DataFrame:
+    """Read WESM price bands (high/central/low) and return USD/MWh values.
+
+    Expected schema (hourly resolution):
+    - timestamp or hour_index column for alignment
+    - high/central/low price columns in USD/MWh or PHP/MWh (or PHP/kWh)
+
+    Month/hour average profiles are expanded to hourly timestamps for alignment.
+    """
+
+    if forex_rate_php_per_usd <= 0:
+        raise ValueError("forex_rate_php_per_usd must be greater than zero")
+
+    def _normalize_column_name(name: str) -> str:
+        return str(name).strip().replace("\ufeff", "").lower()
+
+    def _expand_month_hour_profile(df: pd.DataFrame) -> pd.DataFrame:
+        """Expand a month/hour average profile to an hourly profile."""
+
+        month_map = {
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
+        }
+        month_labels = df["month"].astype(str).str.strip().str.lower().str[:3]
+        month_num = month_labels.map(month_map)
+        if month_num.isna().any():
+            raise ValueError("WESM profile month values must use standard month names.")
+
+        hour_col = pd.to_numeric(df["hr"], errors="coerce")
+        if hour_col.isna().any():
+            raise ValueError("WESM profile hr values must be numeric.")
+        hour_of_day = hour_col.astype(int) - 1
+        if (hour_of_day < 0).any() or (hour_of_day > 23).any():
+            raise ValueError("WESM profile hr values must be in the 1-24 range.")
+
+        month_hour_prices = df.assign(
+            month_num=month_num.astype(int),
+            hour_of_day=hour_of_day,
+        )[
+            [
+                "month_num",
+                "hour_of_day",
+                "wesm_price_high_usd_per_mwh",
+                "wesm_price_central_usd_per_mwh",
+                "wesm_price_low_usd_per_mwh",
+            ]
+        ]
+
+        hourly_index = pd.date_range(
+            "2023-01-01 00:00:00",
+            "2023-12-31 23:00:00",
+            freq="h",
+        )
+        hourly_frame = pd.DataFrame(
+            {
+                "timestamp": hourly_index,
+                "month_num": hourly_index.month,
+                "hour_of_day": hourly_index.hour,
+            }
+        )
+        expanded = hourly_frame.merge(
+            month_hour_prices,
+            on=["month_num", "hour_of_day"],
+            how="left",
+            validate="many_to_one",
+        )
+        if expanded[["wesm_price_high_usd_per_mwh", "wesm_price_central_usd_per_mwh", "wesm_price_low_usd_per_mwh"]].isna().any().any():
+            raise ValueError("Month/hour WESM profile did not cover all hours.")
+        expanded["hour_index"] = range(len(expanded))
+        return expanded[
+            [
+                "timestamp",
+                "hour_index",
+                "wesm_price_high_usd_per_mwh",
+                "wesm_price_central_usd_per_mwh",
+                "wesm_price_low_usd_per_mwh",
+            ]
+        ]
+
+    def _find_band_column(columns: list[str], band: str, unit_token: str) -> str | None:
+        for col in columns:
+            normalized = _normalize_column_name(col).replace(" ", "")
+            if band in normalized and unit_token in normalized:
+                return col
+        return None
+
+    def _clean_profile(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.rename(columns={col: _normalize_column_name(col) for col in df.columns})
+        has_timestamp = timestamp_col in df.columns
+        has_hour_index = "hour_index" in df.columns
+        has_month_hour = "month" in df.columns and "hr" in df.columns
+        if not (has_timestamp or has_hour_index or has_month_hour):
+            raise ValueError(
+                "WESM profile must include timestamp/hour_index or month/hr columns."
+            )
+
+        if has_timestamp:
+            df[timestamp_col] = pd.to_datetime(df[timestamp_col], errors="coerce")
+        if has_hour_index:
+            df["hour_index"] = pd.to_numeric(df["hour_index"], errors="coerce")
+
+        raw_columns = list(df.columns)
+        bands = ("high", "central", "low")
+        price_map: dict[str, str] = {}
+        for band in bands:
+            usd_col = _find_band_column(raw_columns, band, "usd/mwh")
+            if usd_col is None:
+                usd_col = _find_band_column(raw_columns, band, "usdpermwh")
+            php_mwh_col = _find_band_column(raw_columns, band, "php/mwh")
+            if php_mwh_col is None:
+                php_mwh_col = _find_band_column(raw_columns, band, "phppermwh")
+            php_kwh_col = _find_band_column(raw_columns, band, "php/kwh")
+            if php_kwh_col is None:
+                php_kwh_col = _find_band_column(raw_columns, band, "phpperkwh")
+
+            if usd_col is not None:
+                price_map[f"wesm_price_{band}_usd_per_mwh"] = usd_col
+            elif php_mwh_col is not None:
+                df[f"wesm_price_{band}_usd_per_mwh"] = (
+                    pd.to_numeric(df[php_mwh_col], errors="coerce") / forex_rate_php_per_usd
+                )
+            elif php_kwh_col is not None:
+                df[f"wesm_price_{band}_usd_per_mwh"] = (
+                    pd.to_numeric(df[php_kwh_col], errors="coerce") / forex_rate_php_per_usd * 1000.0
+                )
+            else:
+                df[f"wesm_price_{band}_usd_per_mwh"] = np.nan
+
+        for target_col, source_col in price_map.items():
+            df[target_col] = pd.to_numeric(df[source_col], errors="coerce")
+
+        price_cols = [
+            "wesm_price_high_usd_per_mwh",
+            "wesm_price_central_usd_per_mwh",
+            "wesm_price_low_usd_per_mwh",
+        ]
+        if df[price_cols].isna().all().all():
+            raise ValueError("WESM profile must include high/central/low price columns.")
+
+        invalid_rows = False
+        if has_timestamp and df[timestamp_col].isna().any():
+            invalid_rows = True
+        if has_hour_index and df["hour_index"].isna().any():
+            invalid_rows = True
+        if df[price_cols].isna().any().any():
+            invalid_rows = True
+
+        if invalid_rows:
+            st.error("WESM profile contains invalid timestamps, hour_index values, or prices.")
+            drop_cols = price_cols[:]
+            if has_timestamp:
+                drop_cols.append(timestamp_col)
+            if has_hour_index:
+                drop_cols.append("hour_index")
+            df = df.dropna(subset=drop_cols)
+
+        if df.empty:
+            raise ValueError("No valid WESM price rows after cleaning.")
+
+        if has_timestamp:
+            df = (
+                df.groupby(timestamp_col, as_index=False)
+                .mean(numeric_only=True)
+                .sort_values(timestamp_col)
+                .reset_index(drop=True)
+            )
+        if has_hour_index:
+            df = (
+                df.groupby("hour_index", as_index=False)
+                .mean(numeric_only=True)
+                .sort_values("hour_index")
+                .reset_index(drop=True)
+            )
+            if (df["hour_index"] % 1 != 0).any():
+                raise ValueError("hour_index must be integer hours.")
+            df["hour_index"] = df["hour_index"].astype(int)
+
+        if has_month_hour and not (has_timestamp or has_hour_index):
+            df = _expand_month_hour_profile(df)
+
+        return df[
+            [col for col in [timestamp_col, "hour_index"] if col in df.columns]
+            + price_cols
+        ]
+
+    last_err = None
+    for candidate in path_candidates:
+        try:
+            if hasattr(candidate, "seek"):
+                candidate.seek(0)
+            df = pd.read_csv(candidate)
+            return _clean_profile(df)
+        except Exception as e:  # pragma: no cover - errors handled via last_err
+            last_err = e
+    raise ValueError(
+        "Failed to read WESM price bands. "
+        f"Looked for: {path_candidates}. Last error: {last_err}"
+    )
