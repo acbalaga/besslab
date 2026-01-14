@@ -170,7 +170,7 @@ class EconomicModuleTests(unittest.TestCase):
             annual_pv_delivered_mwh=[200.0],
         )
 
-        expected_revenue = (1_000.0 * 110.0) + (200.0 * 35.0) + (100.0 * 25.0)
+        expected_revenue = (1_200.0 * 110.0) + (100.0 * 25.0)
         expected_pv_revenue = 100.0 * 25.0
         expected_discounted_revenue = expected_revenue / 1.05
         expected_npv = -100_000.0 + expected_discounted_revenue
@@ -184,7 +184,7 @@ class EconomicModuleTests(unittest.TestCase):
             cashflow_outputs.discounted_wesm_value_usd, expected_pv_revenue / 1.05
         )
         self.assertAlmostEqual(cashflow_outputs.npv_usd, expected_npv)
-        self.assertAlmostEqual(cashflow_outputs.irr_pct, 19.5, places=3)
+        self.assertAlmostEqual(cashflow_outputs.irr_pct, 34.5, places=3)
 
     def test_cash_flows_and_irr_respects_blended_price_override(self) -> None:
         inputs = EconomicInputs(

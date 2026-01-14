@@ -500,7 +500,7 @@ with st.container():
             ),
         )
         contract_price_php_per_kwh = st.number_input(
-            "Contract price (PHP/kWh from BESS)",
+            "Contract price (PHP/kWh for delivered energy)",
             min_value=0.0,
             value=float(default_inputs["contract_price_php_per_kwh"]),
             step=0.05,
@@ -508,7 +508,7 @@ with st.container():
             disabled=use_blended_price,
         )
         pv_market_price_php_per_kwh = st.number_input(
-            "PV market price (PHP/kWh for excess PV)",
+            "PV excess price (PHP/kWh for excess PV)",
             min_value=0.0,
             value=float(default_inputs["pv_market_price_php_per_kwh"]),
             step=0.05,
@@ -582,7 +582,8 @@ with st.container():
             )
         else:
             st.caption(
-                f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+                f"Converted contract price: ${contract_price:,.2f}/MWh | "
+                f"PV excess price: ${pv_market_price:,.2f}/MWh"
             )
         if wesm_pricing_enabled:
             wesm_deficit_price_usd_per_mwh = (

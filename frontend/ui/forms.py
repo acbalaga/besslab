@@ -733,7 +733,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_use_blended_price",
                 )
                 contract_price_php_per_kwh = st.number_input(
-                    "Contract price (PHP/kWh from BESS)",
+                    "Contract price (PHP/kWh for delivered energy)",
                     min_value=0.0,
                     value=default_contract_php_per_kwh,
                     step=0.05,
@@ -742,7 +742,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_contract_price_php_per_kwh",
                 )
                 pv_market_price_php_per_kwh = st.number_input(
-                    "PV market price (PHP/kWh for excess PV)",
+                    "PV excess price (PHP/kWh for excess PV)",
                     min_value=0.0,
                     value=default_pv_php_per_kwh,
                     step=0.05,
@@ -797,7 +797,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     )
                 else:
                     st.caption(
-                        f"Converted contract price: ${contract_price:,.2f}/MWh | PV market price: ${pv_market_price:,.2f}/MWh"
+                        f"Converted contract price: ${contract_price:,.2f}/MWh | "
+                        f"PV excess price: ${pv_market_price:,.2f}/MWh"
                     )
                 if wesm_pricing_enabled:
                     st.caption(
