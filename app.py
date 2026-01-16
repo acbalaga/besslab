@@ -51,6 +51,7 @@ from utils import (
     read_wesm_profile,
     read_wesm_profile_bands,
 )
+from utils.io import read_wesm_forecast_profile_average
 from utils.economics import (
     CashFlowOutputs,
     EconomicInputs,

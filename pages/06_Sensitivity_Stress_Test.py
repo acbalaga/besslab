@@ -9,7 +9,8 @@ import pandas as pd
 import streamlit as st
 
 from services.simulation_core import HourlyLog, SimConfig, Window, simulate_project, summarize_simulation
-from utils import read_wesm_forecast_profile_average, read_wesm_profile
+from utils import read_wesm_profile
+from utils.io import read_wesm_forecast_profile_average
 from frontend.ui.sensitivity_tornado import build_tornado_chart, prepare_tornado_data
 from utils.economics import (
     EconomicInputs,

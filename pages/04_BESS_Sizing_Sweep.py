@@ -8,12 +8,8 @@ import streamlit as st
 
 from app import BASE_DIR
 from services.simulation_core import SimConfig
-from utils import (
-    enforce_rate_limit,
-    parse_numeric_series,
-    read_wesm_forecast_profile_average,
-    read_wesm_profile,
-)
+from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
+from utils.io import read_wesm_forecast_profile_average
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout

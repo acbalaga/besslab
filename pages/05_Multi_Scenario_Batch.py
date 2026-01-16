@@ -11,12 +11,8 @@ import streamlit as st
 
 from app import BASE_DIR
 from services.simulation_core import HourlyLog, SimConfig, Window, parse_windows, simulate_project, summarize_simulation
-from utils import (
-    enforce_rate_limit,
-    parse_numeric_series,
-    read_wesm_forecast_profile_average,
-    read_wesm_profile,
-)
+from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
+from utils.io import read_wesm_forecast_profile_average
 from utils.economics import (
     DEFAULT_COST_OF_DEBT_PCT,
     DEFAULT_DEBT_EQUITY_RATIO,
