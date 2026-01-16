@@ -50,6 +50,7 @@ from utils import (
     read_wesm_profile,
     read_wesm_profile_bands,
 )
+from utils.io import read_wesm_forecast_profile_average
 from utils.economics import (
     CashFlowOutputs,
     EconomicInputs,
@@ -144,6 +145,15 @@ INPUTS_FORM_KEYS = {
     "periodic_variable_opex_interval_years": "inputs_periodic_variable_opex_interval_years",
     "variable_opex_custom_text": "inputs_variable_opex_custom_text",
 }
+
+
+def _default_wesm_profile_path(use_wesm_forecast: bool) -> Any:
+    filename = (
+        "wesm_price_profile_forecast.csv"
+        if use_wesm_forecast
+        else "wesm_price_profile_historical.csv"
+    )
+    return BASE_DIR / "data" / filename
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -1528,6 +1538,15 @@ def run_app():
             type=["csv"],
             key="inputs_wesm_upload",
         )
+        use_wesm_forecast = st.checkbox(
+            "Use forecast WESM profile (8760-hr average) when no file is uploaded",
+            value=False,
+            key="inputs_wesm_use_forecast",
+            help=(
+                "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
+                "forecast years. Uploaded files always take priority."
+            ),
+        )
         st.caption(
             "If no files are uploaded, built-in defaults are read from ./data/. "
             "Current session caches the latest uploads."
@@ -1789,6 +1808,7 @@ def run_app():
                 "economic_inputs": econ_inputs,
                 "price_inputs": price_inputs,
                 "wesm_profile_source": wesm_file,
+                "wesm_profile_variant": "forecast" if use_wesm_forecast else "historical",
             }
         )
         normalized_econ_inputs = normalize_economic_inputs(econ_inputs)
@@ -1815,16 +1835,24 @@ def run_app():
 
         try:
             wesm_profile_source = wesm_file
+            wesm_profile_is_forecast = False
             if wesm_profile_source is None and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
-                default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+                default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
                 if default_wesm_profile.exists():
                     wesm_profile_source = str(default_wesm_profile)
+                    wesm_profile_is_forecast = use_wesm_forecast
 
             if wesm_profile_source is not None and hourly_logs_by_year:
-                wesm_profile_df = read_wesm_profile(
-                    [wesm_profile_source],
-                    forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
-                )
+                if wesm_profile_is_forecast:
+                    wesm_profile_df = read_wesm_forecast_profile_average(
+                        [wesm_profile_source],
+                        forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
+                    )
+                else:
+                    wesm_profile_df = read_wesm_profile(
+                        [wesm_profile_source],
+                        forex_rate_php_per_usd=normalized_econ_inputs.forex_rate_php_per_usd,
+                    )
                 hourly_summary_by_year = {
                     year_index: _build_hourly_summary_df(hourly_logs_by_year[year_index])
                     for year_index in sorted(hourly_logs_by_year)
@@ -1882,7 +1910,7 @@ def run_app():
     if wesm_file is not None:
         wesm_profile_source = wesm_file
     elif price_inputs and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
-        default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+        default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
         if default_wesm_profile.exists():
             wesm_profile_source = str(default_wesm_profile)
 

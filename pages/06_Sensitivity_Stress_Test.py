@@ -10,6 +10,7 @@ import streamlit as st
 
 from services.simulation_core import HourlyLog, SimConfig, Window, simulate_project, summarize_simulation
 from utils import read_wesm_profile
+from utils.io import read_wesm_forecast_profile_average
 from frontend.ui.sensitivity_tornado import build_tornado_chart, prepare_tornado_data
 from utils.economics import (
     EconomicInputs,
@@ -27,6 +28,18 @@ from utils.ui_state import (
     get_simulation_results,
     get_simulation_snapshot,
 )
+
+
+BASE_DIR = get_base_dir()
+
+
+def _default_wesm_profile_path(use_wesm_forecast: bool) -> Any:
+    filename = (
+        "wesm_price_profile_forecast.csv"
+        if use_wesm_forecast
+        else "wesm_price_profile_historical.csv"
+    )
+    return BASE_DIR / "data" / filename
 
 
 @dataclass(frozen=True)
@@ -481,6 +494,8 @@ def _compute_pirr(
     econ_inputs: EconomicInputs,
     price_inputs: PriceInputs,
     wesm_profile_source: Optional[str],
+    *,
+    wesm_profile_is_forecast: bool,
 ) -> Optional[float]:
     if econ_inputs.capex_usd_per_kwh is not None and econ_inputs.bess_bol_kwh is None:
         econ_inputs = econ_inputs.__class__(
@@ -499,10 +514,16 @@ def _compute_pirr(
     annual_wesm_surplus_revenue_usd: Optional[List[float]] = None
 
     if wesm_profile_source and sim_output.hourly_logs_by_year:
-        wesm_profile_df = read_wesm_profile(
-            [wesm_profile_source],
-            forex_rate_php_per_usd=normalized_inputs.forex_rate_php_per_usd,
-        )
+        if wesm_profile_is_forecast:
+            wesm_profile_df = read_wesm_forecast_profile_average(
+                [wesm_profile_source],
+                forex_rate_php_per_usd=normalized_inputs.forex_rate_php_per_usd,
+            )
+        else:
+            wesm_profile_df = read_wesm_profile(
+                [wesm_profile_source],
+                forex_rate_php_per_usd=normalized_inputs.forex_rate_php_per_usd,
+            )
         hourly_summary_by_year = {
             year_index: _build_hourly_summary_df(logs)
             for year_index, logs in sim_output.hourly_logs_by_year.items()
@@ -544,6 +565,8 @@ def _run_sensitivity(
     econ_inputs: Optional[EconomicInputs],
     price_inputs: Optional[PriceInputs],
     wesm_profile_source: Optional[str],
+    *,
+    wesm_profile_is_forecast: bool,
 ) -> Tuple[pd.DataFrame, List[str]]:
     """Run low/high deltas for mapped levers and return the updated impact table."""
     updated_table = lever_table.copy()
@@ -555,7 +578,13 @@ def _run_sensitivity(
         if metric_key == "pirr_pct":
             if econ_inputs is None or price_inputs is None:
                 return None
-            return _compute_pirr(sim_output, econ_inputs, price_inputs, wesm_profile_source)
+            return _compute_pirr(
+                sim_output,
+                econ_inputs,
+                price_inputs,
+                wesm_profile_source,
+                wesm_profile_is_forecast=wesm_profile_is_forecast,
+            )
         return _compute_metric_value(metric_key, sim_output)
 
     if metric_key == "pirr_pct" and (econ_inputs is None or price_inputs is None):
@@ -801,10 +830,20 @@ if run_sensitivity:
         econ_inputs = econ_payload.get("economic_inputs")
         price_inputs = econ_payload.get("price_inputs")
         wesm_profile_source = econ_payload.get("wesm_profile_source")
+        wesm_profile_variant = econ_payload.get("wesm_profile_variant", "historical")
+        use_wesm_forecast = wesm_profile_variant == "forecast"
+        wesm_profile_is_forecast = False
 
         cached_cfg, cached_dod_override = get_cached_simulation_config()
         base_cfg = cached_cfg or SimConfig()
         dod_override = cached_dod_override or "Auto (infer)"
+
+        if price_inputs and (price_inputs.apply_wesm_to_shortfall or price_inputs.sell_to_wesm):
+            if wesm_profile_source is None:
+                default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
+                if default_wesm_profile.exists():
+                    wesm_profile_source = str(default_wesm_profile)
+                    wesm_profile_is_forecast = use_wesm_forecast
 
         baseline_output = cached_results.sim_output if cached_results else simulate_project(
             base_cfg,
@@ -830,6 +869,7 @@ if run_sensitivity:
             econ_inputs=econ_inputs,
             price_inputs=price_inputs,
             wesm_profile_source=wesm_profile_source,
+            wesm_profile_is_forecast=wesm_profile_is_forecast,
         )
         _save_impact_table(selected_metric.key, updated_table)
         edited_table = updated_table
