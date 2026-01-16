@@ -549,6 +549,119 @@ def read_wesm_profile(
     )
 
 
+def read_wesm_forecast_profile_average(
+    path_candidates: List[Any],
+    *,
+    forex_rate_php_per_usd: float,
+    hours_in_year: int = 8760,
+) -> pd.DataFrame:
+    """Read a multi-year WESM forecast and return an 8760-hour average profile.
+
+    The forecast CSV is expected to contain sequential hourly rows across
+    multiple years. We average each hour-of-year across all years to generate
+    a single 8760-hour profile for pricing. Forecast files commonly supply
+    banded prices; we map the central price to both deficit and surplus to
+    align with the shortfall/surplus pricing workflow.
+    """
+
+    if forex_rate_php_per_usd <= 0:
+        raise ValueError("forex_rate_php_per_usd must be greater than zero")
+    if hours_in_year <= 0:
+        raise ValueError("hours_in_year must be greater than zero")
+
+    def _normalize_column_name(name: str) -> str:
+        return str(name).strip().replace("\ufeff", "").lower()
+
+    def _find_central_column(columns: list[str], unit_token: str) -> str | None:
+        for col in columns:
+            normalized = _normalize_column_name(col).replace(" ", "")
+            if "central" in normalized and unit_token in normalized:
+                return col
+        return None
+
+    def _clean_profile(df: pd.DataFrame) -> pd.DataFrame:
+        df = df.rename(columns={col: _normalize_column_name(col) for col in df.columns})
+        if "hour_index" not in df.columns:
+            raise ValueError("Forecast WESM profile must include an hour_index column.")
+
+        df["hour_index"] = pd.to_numeric(df["hour_index"], errors="coerce")
+        if df["hour_index"].isna().any():
+            st.error("Forecast WESM profile contains invalid hour_index values.")
+            df = df.dropna(subset=["hour_index"])
+
+        raw_columns = list(df.columns)
+        usd_col = _find_central_column(raw_columns, "usd/mwh")
+        if usd_col is None:
+            usd_col = _find_central_column(raw_columns, "usdpermwh")
+        php_mwh_col = _find_central_column(raw_columns, "php/mwh")
+        if php_mwh_col is None:
+            php_mwh_col = _find_central_column(raw_columns, "phppermwh")
+        php_kwh_col = _find_central_column(raw_columns, "php/kwh")
+        if php_kwh_col is None:
+            php_kwh_col = _find_central_column(raw_columns, "phpperkwh")
+
+        if usd_col is not None:
+            df["wesm_deficit_price_usd_per_mwh"] = pd.to_numeric(df[usd_col], errors="coerce")
+        elif php_mwh_col is not None:
+            df["wesm_deficit_price_usd_per_mwh"] = (
+                pd.to_numeric(df[php_mwh_col], errors="coerce") / forex_rate_php_per_usd
+            )
+        elif php_kwh_col is not None:
+            df["wesm_deficit_price_usd_per_mwh"] = (
+                pd.to_numeric(df[php_kwh_col], errors="coerce") / forex_rate_php_per_usd * 1000.0
+            )
+        else:
+            raise ValueError(
+                "Forecast WESM profile must include a central price column in USD/MWh, PHP/MWh, or PHP/kWh."
+            )
+
+        if df["wesm_deficit_price_usd_per_mwh"].isna().any():
+            st.error("Forecast WESM profile contains invalid price values.")
+            df = df.dropna(subset=["wesm_deficit_price_usd_per_mwh"])
+
+        if df.empty:
+            raise ValueError("No valid WESM forecast rows after cleaning.")
+
+        if (df["hour_index"] < 0).any():
+            raise ValueError("Forecast WESM hour_index values must be non-negative.")
+
+        df["hour_of_year"] = df["hour_index"].astype(int) % hours_in_year
+        averaged = (
+            df.groupby("hour_of_year", as_index=False)["wesm_deficit_price_usd_per_mwh"]
+            .mean()
+            .sort_values("hour_of_year")
+            .reset_index(drop=True)
+        )
+        if len(averaged) != hours_in_year:
+            raise ValueError("Forecast WESM profile does not cover every hour-of-year.")
+
+        averaged["hour_index"] = averaged["hour_of_year"].astype(int)
+        averaged["wesm_surplus_price_usd_per_mwh"] = averaged[
+            "wesm_deficit_price_usd_per_mwh"
+        ]
+        return averaged[
+            [
+                "hour_index",
+                "wesm_deficit_price_usd_per_mwh",
+                "wesm_surplus_price_usd_per_mwh",
+            ]
+        ]
+
+    last_err = None
+    for candidate in path_candidates:
+        try:
+            if hasattr(candidate, "seek"):
+                candidate.seek(0)
+            df = pd.read_csv(candidate)
+            return _clean_profile(df)
+        except Exception as e:  # pragma: no cover - errors handled via last_err
+            last_err = e
+    raise ValueError(
+        "Failed to read WESM forecast profile. "
+        f"Looked for: {path_candidates}. Last error: {last_err}"
+    )
+
+
 def read_wesm_profile_bands(
     path_candidates: List[Any],
     *,

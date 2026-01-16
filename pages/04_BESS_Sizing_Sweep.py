@@ -8,7 +8,12 @@ import streamlit as st
 
 from app import BASE_DIR
 from services.simulation_core import SimConfig
-from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
+from utils import (
+    enforce_rate_limit,
+    parse_numeric_series,
+    read_wesm_forecast_profile_average,
+    read_wesm_profile,
+)
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
@@ -152,19 +157,34 @@ def _resolve_wesm_profile_source(
     uploaded_file: Any,
     cached_payload: Optional[Dict[str, Any]],
     default_profile_path: Any,
-) -> tuple[Optional[Any], Optional[str]]:
+    *,
+    use_wesm_forecast: bool,
+) -> tuple[Optional[Any], Optional[str], bool]:
     """Select a WESM profile source, favoring explicit uploads and cached inputs."""
 
     if uploaded_file is not None:
-        return uploaded_file, "uploaded for this sweep"
+        return uploaded_file, "uploaded for this sweep", False
     if isinstance(cached_payload, dict) and cached_payload.get("wesm_profile_source") is not None:
-        return cached_payload["wesm_profile_source"], "cached from Inputs & Results"
+        return cached_payload["wesm_profile_source"], "cached from Inputs & Results", False
     cached_inputs_upload = st.session_state.get("inputs_wesm_upload")
     if cached_inputs_upload is not None:
-        return cached_inputs_upload, "cached from Inputs & Results sidebar"
+        return cached_inputs_upload, "cached from Inputs & Results sidebar", False
     if default_profile_path is not None and default_profile_path.exists():
-        return str(default_profile_path), f"default profile ({default_profile_path})"
-    return None, None
+        return (
+            str(default_profile_path),
+            f"default profile ({default_profile_path})",
+            use_wesm_forecast,
+        )
+    return None, None, False
+
+
+def _default_wesm_profile_path(use_wesm_forecast: bool) -> Any:
+    filename = (
+        "wesm_price_profile_forecast.csv"
+        if use_wesm_forecast
+        else "wesm_price_profile_historical.csv"
+    )
+    return BASE_DIR / "data" / filename
 
 
 def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
@@ -533,24 +553,44 @@ with st.container():
                 "shortfall costs and surplus revenue."
             )
 
+        cached_variant = None
+        if isinstance(cached_econ_payload, dict):
+            cached_variant = cached_econ_payload.get("wesm_profile_variant")
         wesm_file = st.file_uploader(
             "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
             type=["csv"],
             key="bess_sweep_wesm_upload",
         )
+        use_wesm_forecast = st.checkbox(
+            "Use forecast WESM profile (8760-hr average) when no file is uploaded",
+            value=bool(cached_variant == "forecast"),
+            key="bess_sweep_wesm_use_forecast",
+            disabled=not wesm_pricing_enabled,
+            help=(
+                "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
+                "forecast years. Uploaded files always take priority."
+            ),
+        )
         if wesm_pricing_enabled:
-            default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
-            wesm_profile_source, wesm_profile_label = _resolve_wesm_profile_source(
+            default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
+            wesm_profile_source, wesm_profile_label, wesm_profile_is_forecast = _resolve_wesm_profile_source(
                 wesm_file,
                 cached_econ_payload if isinstance(cached_econ_payload, dict) else None,
                 default_wesm_profile,
+                use_wesm_forecast=use_wesm_forecast,
             )
             if wesm_profile_source is not None:
                 try:
-                    wesm_profile_df = read_wesm_profile(
-                        [wesm_profile_source],
-                        forex_rate_php_per_usd=forex_rate_php_per_usd,
-                    )
+                    if wesm_profile_is_forecast:
+                        wesm_profile_df = read_wesm_forecast_profile_average(
+                            [wesm_profile_source],
+                            forex_rate_php_per_usd=forex_rate_php_per_usd,
+                        )
+                    else:
+                        wesm_profile_df = read_wesm_profile(
+                            [wesm_profile_source],
+                            forex_rate_php_per_usd=forex_rate_php_per_usd,
+                        )
                     st.caption(
                         "WESM hourly profile loaded "
                         f"({wesm_profile_label}). "

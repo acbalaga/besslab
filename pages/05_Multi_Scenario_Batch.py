@@ -11,7 +11,12 @@ import streamlit as st
 
 from app import BASE_DIR
 from services.simulation_core import HourlyLog, SimConfig, Window, parse_windows, simulate_project, summarize_simulation
-from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
+from utils import (
+    enforce_rate_limit,
+    parse_numeric_series,
+    read_wesm_forecast_profile_average,
+    read_wesm_profile,
+)
 from utils.economics import (
     DEFAULT_COST_OF_DEBT_PCT,
     DEFAULT_DEBT_EQUITY_RATIO,
@@ -46,6 +51,15 @@ render_layout = init_page_layout(
 )
 
 bootstrap_session_state()
+
+
+def _default_wesm_profile_path(use_wesm_forecast: bool) -> Any:
+    filename = (
+        "wesm_price_profile_forecast.csv"
+        if use_wesm_forecast
+        else "wesm_price_profile_historical.csv"
+    )
+    return BASE_DIR / "data" / filename
 
 
 def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
@@ -574,10 +588,21 @@ with st.expander("Economics (optional)", expanded=False):
             "shortfall costs and surplus revenue."
         )
 
+    default_wesm_variant = econ_defaults.get("wesm_profile_variant")
     wesm_file = st.file_uploader(
         "WESM hourly price CSV (optional; timestamp/hour_index + deficit/surplus prices)",
         type=["csv"],
         key="multi_scenario_wesm_upload",
+    )
+    use_wesm_forecast = st.checkbox(
+        "Use forecast WESM profile (8760-hr average) when no file is uploaded",
+        value=bool(default_wesm_variant == "forecast"),
+        key="multi_scenario_wesm_use_forecast",
+        disabled=not wesm_pricing_enabled,
+        help=(
+            "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
+            "forecast years. Uploaded files always take priority."
+        ),
     )
     if wesm_pricing_enabled:
         st.caption(
@@ -738,6 +763,7 @@ cache_latest_economics_payload(
         "economic_inputs": economic_inputs,
         "price_inputs": price_inputs,
         "wesm_profile_source": wesm_file,
+        "wesm_profile_variant": "forecast" if use_wesm_forecast else "historical",
     }
 )
 
@@ -1020,10 +1046,12 @@ def _run_batch() -> pd.DataFrame | None:
     base_econ_inputs: Optional[EconomicInputs] = None
     base_price_inputs: Optional[PriceInputs] = None
     wesm_profile_source: Optional[Any] = None
+    wesm_profile_variant = "historical"
     if isinstance(econ_payload, dict):
         base_econ_inputs = econ_payload.get("economic_inputs")
         base_price_inputs = econ_payload.get("price_inputs")
         wesm_profile_source = econ_payload.get("wesm_profile_source")
+        wesm_profile_variant = econ_payload.get("wesm_profile_variant", "historical")
         if base_econ_inputs and base_price_inputs:
             wesm_enabled = base_price_inputs.apply_wesm_to_shortfall or base_price_inputs.sell_to_wesm
             if not wesm_enabled:
@@ -1034,7 +1062,8 @@ def _run_batch() -> pd.DataFrame | None:
                     bess_bol_kwh=cached_cfg.initial_usable_mwh * 1000.0,
                 )
             normalized_base_inputs = normalize_economic_inputs(base_econ_inputs)
-            default_wesm_profile = BASE_DIR / "data" / "wesm_price_profile_historical.csv"
+            use_wesm_forecast = wesm_profile_variant == "forecast"
+            default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
             if (
                 wesm_profile_source is None
                 and wesm_enabled
@@ -1043,10 +1072,16 @@ def _run_batch() -> pd.DataFrame | None:
                 wesm_profile_source = str(default_wesm_profile)
             if wesm_profile_source is not None and wesm_enabled:
                 try:
-                    wesm_profile_df = read_wesm_profile(
-                        [wesm_profile_source],
-                        forex_rate_php_per_usd=normalized_base_inputs.forex_rate_php_per_usd,
-                    )
+                    if use_wesm_forecast and wesm_profile_source == str(default_wesm_profile):
+                        wesm_profile_df = read_wesm_forecast_profile_average(
+                            [wesm_profile_source],
+                            forex_rate_php_per_usd=normalized_base_inputs.forex_rate_php_per_usd,
+                        )
+                    else:
+                        wesm_profile_df = read_wesm_profile(
+                            [wesm_profile_source],
+                            forex_rate_php_per_usd=normalized_base_inputs.forex_rate_php_per_usd,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     st.warning(f"WESM profile could not be read; falling back to static pricing. ({exc})")
                     wesm_profile_df = None
