@@ -47,6 +47,7 @@ from utils import (
     FLAG_DEFINITIONS,
     build_flag_insights,
     enforce_rate_limit,
+    read_wesm_forecast_profile_average,
     read_wesm_profile,
     read_wesm_profile_bands,
 )
