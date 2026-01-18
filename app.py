@@ -1539,15 +1539,24 @@ def run_app():
             type=["csv"],
             key="inputs_wesm_upload",
         )
-        use_wesm_forecast = st.checkbox(
-            "Use forecast WESM profile (8760-hr average) when no file is uploaded",
-            value=False,
-            key="inputs_wesm_use_forecast",
+        wesm_profile_variants = ["historical", "forecast"]
+        wesm_profile_labels = {
+            "historical": "Historical (default)",
+            "forecast": "Forecast (8760-hr average)",
+        }
+        selected_wesm_variant = st.selectbox(
+            "Default WESM profile when no file is uploaded",
+            options=wesm_profile_variants,
+            index=wesm_profile_variants.index("historical"),
+            format_func=wesm_profile_labels.get,
+            key="inputs_wesm_profile_variant",
             help=(
-                "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
-                "forecast years. Uploaded files always take priority."
+                "Defaults to data/wesm_price_profile_historical.csv or "
+                "data/wesm_price_profile_forecast.csv. Forecast values are averaged across years. "
+                "Uploaded files always take priority."
             ),
         )
+        use_wesm_forecast = selected_wesm_variant == "forecast"
         st.caption(
             "If no files are uploaded, built-in defaults are read from ./data/. "
             "Current session caches the latest uploads."
@@ -1809,7 +1818,7 @@ def run_app():
                 "economic_inputs": econ_inputs,
                 "price_inputs": price_inputs,
                 "wesm_profile_source": wesm_file,
-                "wesm_profile_variant": "forecast" if use_wesm_forecast else "historical",
+                "wesm_profile_variant": selected_wesm_variant,
             }
         )
         normalized_econ_inputs = normalize_economic_inputs(econ_inputs)

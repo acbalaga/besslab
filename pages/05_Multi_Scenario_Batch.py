@@ -590,16 +590,28 @@ with st.expander("Economics (optional)", expanded=False):
         type=["csv"],
         key="multi_scenario_wesm_upload",
     )
-    use_wesm_forecast = st.checkbox(
-        "Use forecast WESM profile (8760-hr average) when no file is uploaded",
-        value=bool(default_wesm_variant == "forecast"),
-        key="multi_scenario_wesm_use_forecast",
+    wesm_profile_variants = ["historical", "forecast"]
+    wesm_profile_labels = {
+        "historical": "Historical (default)",
+        "forecast": "Forecast (8760-hr average)",
+    }
+    default_variant = (
+        default_wesm_variant if default_wesm_variant in wesm_profile_variants else "historical"
+    )
+    selected_wesm_variant = st.selectbox(
+        "Default WESM profile when no file is uploaded",
+        options=wesm_profile_variants,
+        index=wesm_profile_variants.index(default_variant),
+        format_func=wesm_profile_labels.get,
+        key="multi_scenario_wesm_profile_variant",
         disabled=not wesm_pricing_enabled,
         help=(
-            "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
-            "forecast years. Uploaded files always take priority."
+            "Defaults to data/wesm_price_profile_historical.csv or "
+            "data/wesm_price_profile_forecast.csv. Forecast values are averaged across years. "
+            "Uploaded files always take priority."
         ),
     )
+    use_wesm_forecast = selected_wesm_variant == "forecast"
     if wesm_pricing_enabled:
         st.caption(
             "If no WESM file is uploaded, the default profile in ./data/ is used when available."
@@ -759,7 +771,7 @@ cache_latest_economics_payload(
         "economic_inputs": economic_inputs,
         "price_inputs": price_inputs,
         "wesm_profile_source": wesm_file,
-        "wesm_profile_variant": "forecast" if use_wesm_forecast else "historical",
+        "wesm_profile_variant": selected_wesm_variant,
     }
 )
 
