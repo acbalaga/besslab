@@ -557,16 +557,26 @@ with st.container():
             type=["csv"],
             key="bess_sweep_wesm_upload",
         )
-        use_wesm_forecast = st.checkbox(
-            "Use forecast WESM profile (8760-hr average) when no file is uploaded",
-            value=bool(cached_variant == "forecast"),
-            key="bess_sweep_wesm_use_forecast",
+        wesm_profile_variants = ["historical", "forecast"]
+        wesm_profile_labels = {
+            "historical": "Historical (default)",
+            "forecast": "Forecast (8760-hr average)",
+        }
+        default_variant = cached_variant if cached_variant in wesm_profile_variants else "historical"
+        selected_wesm_variant = st.selectbox(
+            "Default WESM profile when no file is uploaded",
+            options=wesm_profile_variants,
+            index=wesm_profile_variants.index(default_variant),
+            format_func=wesm_profile_labels.get,
+            key="bess_sweep_wesm_profile_variant",
             disabled=not wesm_pricing_enabled,
             help=(
-                "Defaults to data/wesm_price_profile_forecast.csv and averages hourly values across "
-                "forecast years. Uploaded files always take priority."
+                "Defaults to data/wesm_price_profile_historical.csv or "
+                "data/wesm_price_profile_forecast.csv. Forecast values are averaged across years. "
+                "Uploaded files always take priority."
             ),
         )
+        use_wesm_forecast = selected_wesm_variant == "forecast"
         if wesm_pricing_enabled:
             default_wesm_profile = _default_wesm_profile_path(use_wesm_forecast)
             wesm_profile_source, wesm_profile_label, wesm_profile_is_forecast = _resolve_wesm_profile_source(
