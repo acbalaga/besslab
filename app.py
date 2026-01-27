@@ -15,6 +15,8 @@ from services.simulation_core import (
     SimConfig,
     Window,
     YearResult,
+    _normalize_contracted_mw_schedule,
+    _target_mw_from_schedule,
     in_any_window,
     resolve_efficiencies,
     simulate_project,
@@ -687,16 +689,20 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
     return df[existing_columns]
 
 
-def _build_expected_contract_mw(
-    hod: np.ndarray,
-    discharge_windows: List[Window],
-    contracted_mw: float,
-) -> np.ndarray:
-    """Return expected contract dispatch (MW) based on discharge windows."""
+def _build_expected_contract_mw(hod: np.ndarray, cfg: SimConfig) -> np.ndarray:
+    """Return expected contract dispatch (MW) using the configured dispatch strategy."""
+
+    schedule_mw = _normalize_contracted_mw_schedule(cfg)
+    if schedule_mw is not None:
+        dt = float(cfg.step_hours)
+        return np.array(
+            [_target_mw_from_schedule(hour, dt, schedule_mw) for hour in hod],
+            dtype=float,
+        )
 
     return np.array(
         [
-            contracted_mw if in_any_window(int(hour), discharge_windows) else 0.0
+            cfg.contracted_mw if in_any_window(int(hour), cfg.discharge_windows) else 0.0
             for hour in hod
         ],
         dtype=float,
@@ -762,11 +768,7 @@ def _build_hourly_inputs_results_df(
     """Return hourly inputs/results with WESM pricing and revenue products."""
 
     hour_index = np.arange(len(logs.hod), dtype=int)
-    expected_mw = _build_expected_contract_mw(
-        logs.hod,
-        cfg.discharge_windows,
-        cfg.contracted_mw,
-    )
+    expected_mw = _build_expected_contract_mw(logs.hod, cfg)
     pv_surplus_mw = np.maximum(
         logs.pv_mw - logs.pv_to_contract_mw - logs.charge_mw,
         0.0,
