@@ -119,6 +119,9 @@ INPUTS_FORM_KEYS = {
     "contracted_mw": "inputs_contracted_mw",
     "discharge_windows": "inputs_discharge_windows",
     "charge_windows": "inputs_charge_windows",
+    "dispatch_mode": "inputs_dispatch_mode",
+    "dispatch_hourly_schedule": "inputs_dispatch_hourly_schedule",
+    "dispatch_period_schedule": "inputs_dispatch_period_schedule",
     "calendar_fade_pct": "inputs_calendar_fade_pct",
     "dod_override": "inputs_dod_override",
     "wacc_pct": "inputs_wacc_pct",
@@ -286,6 +289,8 @@ def _build_inputs_payload(
     price_inputs: Optional[PriceInputs],
     discharge_windows_text: str,
     charge_windows_text: str,
+    dispatch_mode: str,
+    dispatch_schedule: Dict[str, Any],
 ) -> Dict[str, Any]:
     manual_schedule_rows: List[Dict[str, Any]] = []
     for entry in cfg.augmentation_schedule or []:
@@ -308,6 +313,11 @@ def _build_inputs_payload(
         "config": asdict(cfg),
         "discharge_windows_text": discharge_windows_text,
         "charge_windows_text": charge_windows_text,
+        "dispatch_schedule": {
+            "mode": dispatch_mode,
+            "hourly_mw": dispatch_schedule.get("hourly_mw"),
+            "period_table": dispatch_schedule.get("period_table"),
+        },
         "dod_override": dod_override,
         "run_economics": run_economics,
         "economic_inputs": asdict(econ_inputs) if econ_inputs is not None else None,
@@ -340,6 +350,9 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     charge_windows_text = config_payload.get("charge_windows_text")
     if charge_windows_text is None:
         charge_windows_text = fallback_cfg.charge_windows_text or ""
+    dispatch_schedule_payload = payload.get("dispatch_schedule")
+    dispatch_schedule_payload = dispatch_schedule_payload if isinstance(dispatch_schedule_payload, dict) else {}
+    dispatch_mode = dispatch_schedule_payload.get("mode")
 
     forex_rate_php_per_usd = _coerce_float(
         econ_payload.get("forex_rate_php_per_usd"),
@@ -467,6 +480,28 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     )
     st.session_state[INPUTS_FORM_KEYS["discharge_windows"]] = discharge_windows_text
     st.session_state[INPUTS_FORM_KEYS["charge_windows"]] = charge_windows_text
+    if dispatch_mode:
+        st.session_state[INPUTS_FORM_KEYS["dispatch_mode"]] = dispatch_mode
+    hourly_schedule = dispatch_schedule_payload.get("hourly_mw")
+    if isinstance(hourly_schedule, list) and len(hourly_schedule) == 24:
+        st.session_state[INPUTS_FORM_KEYS["dispatch_hourly_schedule"]] = [
+            {"Hour": hour, "Capacity (MW)": _coerce_optional_float(value)}
+            for hour, value in enumerate(hourly_schedule)
+        ]
+    period_schedule = dispatch_schedule_payload.get("period_table")
+    if isinstance(period_schedule, list):
+        sanitized_rows = []
+        for row in period_schedule:
+            if not isinstance(row, dict):
+                continue
+            start_time = row.get("start_time")
+            end_time = row.get("end_time")
+            capacity_mw = _coerce_optional_float(row.get("capacity_mw"))
+            sanitized_rows.append(
+                {"Start time": start_time, "End time": end_time, "Capacity (MW)": capacity_mw}
+            )
+        if sanitized_rows:
+            st.session_state[INPUTS_FORM_KEYS["dispatch_period_schedule"]] = sanitized_rows
     st.session_state[INPUTS_FORM_KEYS["calendar_fade_pct"]] = _coerce_float(
         config_payload.get("calendar_fade_rate"),
         fallback_cfg.calendar_fade_rate,
@@ -1640,8 +1675,12 @@ def run_app():
     run_submitted = form_result.run_submitted
     discharge_windows_text = form_result.discharge_windows_text
     charge_windows_text = form_result.charge_windows_text
+    dispatch_mode = form_result.dispatch_mode
+    dispatch_schedule = form_result.dispatch_schedule
 
-    inputs_fingerprint = build_inputs_fingerprint(cfg, dod_override, run_economics, econ_inputs, price_inputs)
+    inputs_fingerprint = build_inputs_fingerprint(
+        cfg, dod_override, run_economics, econ_inputs, price_inputs, dispatch_mode, dispatch_schedule
+    )
     with st.expander("Download inputs (JSON, includes economics)", expanded=False):
         def _build_inputs_json() -> bytes:
             inputs_payload = _build_inputs_payload(
@@ -1652,6 +1691,8 @@ def run_app():
                 price_inputs=price_inputs,
                 discharge_windows_text=discharge_windows_text,
                 charge_windows_text=charge_windows_text,
+                dispatch_mode=form_result.dispatch_mode,
+                dispatch_schedule=form_result.dispatch_schedule,
             )
             return json.dumps(inputs_payload, indent=2).encode("utf-8")
 

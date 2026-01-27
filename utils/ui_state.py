@@ -272,6 +272,8 @@ def build_inputs_fingerprint(
     run_economics: bool,
     econ_inputs: Optional[EconomicInputs],
     price_inputs: Optional[PriceInputs],
+    dispatch_mode: str,
+    dispatch_schedule: Dict[str, Any],
 ) -> str:
     """Return a hash of the latest simulation + economics inputs."""
 
@@ -281,6 +283,11 @@ def build_inputs_fingerprint(
         "run_economics": run_economics,
         "econ_inputs": asdict(econ_inputs) if econ_inputs is not None else None,
         "price_inputs": asdict(price_inputs) if price_inputs is not None else None,
+        "dispatch_schedule": {
+            "mode": dispatch_mode,
+            "hourly_mw": dispatch_schedule.get("hourly_mw"),
+            "period_table": dispatch_schedule.get("period_table"),
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
 

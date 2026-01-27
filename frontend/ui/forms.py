@@ -49,6 +49,8 @@ class SimulationFormResult:
     run_submitted: bool
     discharge_windows_text: str
     charge_windows_text: str
+    dispatch_mode: str
+    dispatch_schedule: Dict[str, Any]
     validation_errors: List[str] = field(default_factory=list)
     validation_warnings: List[str] = field(default_factory=list)
     validation_details: List[str] = field(default_factory=list)
@@ -64,58 +66,60 @@ class DispatchWindowValidation:
     warnings: List[str] = field(default_factory=list)
     details: List[str] = field(default_factory=list)
 
+@dataclass
+class DispatchScheduleValidation:
+    schedule_payload: Dict[str, Any]
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    details: List[str] = field(default_factory=list)
 
-def validate_dispatch_windows(discharge_text: str, charge_text: str) -> DispatchWindowValidation:
-    """Parse and validate dispatch windows, returning user-facing feedback."""
 
-    discharge_windows, discharge_window_warnings = parse_windows(discharge_text)
-    charge_windows, charge_window_warnings = parse_windows(charge_text)
-    warnings = list(discharge_window_warnings + charge_window_warnings)
-    errors: List[str] = []
-    details = [
-        f"Raw discharge text: {discharge_text or '<blank>'}",
-        f"Raw charge text: {charge_text or '<blank>'}",
-        f"Parsed discharge windows: {discharge_windows or 'none'}",
-        f"Parsed charge windows: {charge_windows or 'none'}",
-    ]
+DISPATCH_MODE_FIXED = "Fixed MW + windows"
+DISPATCH_MODE_HOURLY = "Hourly capacity schedule"
+DISPATCH_MODE_PERIOD = "Period table"
+DISPATCH_MODE_OPTIONS = [DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD]
 
-    def _format_window(window: Window) -> str:
-        if window.source:
-            return window.source
-        start_hour = int(window.start)
-        start_minute = int(round((window.start - start_hour) * 60))
-        end_hour = int(window.end)
-        end_minute = int(round((window.end - end_hour) * 60))
-        return f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"
 
-    def _intervals(window: Window) -> List[Tuple[float, float]]:
-        if window.start <= window.end:
-            return [(window.start, window.end)]
-        return [(window.start, 24.0), (0.0, window.end)]
+def _format_window(window: Window) -> str:
+    if window.source:
+        return window.source
+    start_hour = int(window.start)
+    start_minute = int(round((window.start - start_hour) * 60))
+    end_hour = int(window.end)
+    end_minute = int(round((window.end - end_hour) * 60))
+    return f"{start_hour:02d}:{start_minute:02d}-{end_hour:02d}:{end_minute:02d}"
 
-    def _collect_window_warnings(window_type: str, windows: List[Window]) -> List[str]:
-        """Return warnings about zero-length, duplicate, or overlapping windows."""
-        local_warnings: List[str] = []
-        seen: Dict[Tuple[float, float], List[Window]] = {}
 
-        for window in windows:
-            key = (window.start, window.end)
-            seen.setdefault(key, []).append(window)
-            if window.start == window.end:
-                window_label = _format_window(window)
-                local_warnings.append(
-                    f"{window_type} window '{window_label}' has zero length (start == end). "
-                    "Adjust the end time or remove the window."
-                )
+def _intervals(window: Window) -> List[Tuple[float, float]]:
+    if window.start <= window.end:
+        return [(window.start, window.end)]
+    return [(window.start, 24.0), (0.0, window.end)]
 
-        for key, matches in seen.items():
-            if len(matches) > 1:
-                window_label = _format_window(matches[0])
-                local_warnings.append(
-                    f"Duplicate {window_type} window '{window_label}' detected ({len(matches)} occurrences). "
-                    "Remove duplicates or adjust the times."
-                )
 
+def _collect_window_warnings(window_type: str, windows: List[Window], include_overlap: bool = True) -> List[str]:
+    """Return warnings about zero-length, duplicate, or overlapping windows."""
+    local_warnings: List[str] = []
+    seen: Dict[Tuple[float, float], List[Window]] = {}
+
+    for window in windows:
+        key = (window.start, window.end)
+        seen.setdefault(key, []).append(window)
+        if window.start == window.end:
+            window_label = _format_window(window)
+            local_warnings.append(
+                f"{window_type} window '{window_label}' has zero length (start == end). "
+                "Adjust the end time or remove the window."
+            )
+
+    for key, matches in seen.items():
+        if len(matches) > 1:
+            window_label = _format_window(matches[0])
+            local_warnings.append(
+                f"Duplicate {window_type} window '{window_label}' detected ({len(matches)} occurrences). "
+                "Remove duplicates or adjust the times."
+            )
+
+    if include_overlap:
         for idx, left in enumerate(windows):
             for right in windows[idx + 1 :]:
                 for left_interval in _intervals(left):
@@ -130,12 +134,100 @@ def validate_dispatch_windows(discharge_text: str, charge_text: str) -> Dispatch
                         continue
                     break
 
-        return local_warnings
+    return local_warnings
+
+
+def _parse_hhmm_time(value: str) -> float:
+    """Parse HH[:MM] into an hour-of-day float."""
+    parts = value.split(":")
+    if len(parts) == 1:
+        hour = int(parts[0])
+        minute = 0
+    elif len(parts) == 2:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    else:
+        raise ValueError("Too many ':' characters")
+    if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+        raise ValueError("Hour must be 0-23 and minute 0-59")
+    return hour + minute / 60.0
+
+
+def _cell_to_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _cell_to_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, float) and np.isnan(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _window_overlaps(windows: List[Window]) -> List[str]:
+    errors: List[str] = []
+    for idx, left in enumerate(windows):
+        for right in windows[idx + 1 :]:
+            for left_interval in _intervals(left):
+                for right_interval in _intervals(right):
+                    if max(left_interval[0], right_interval[0]) < min(left_interval[1], right_interval[1]):
+                        errors.append(
+                            f"Overlapping period rows '{_format_window(left)}' and '{_format_window(right)}' detected."
+                        )
+                        break
+                else:
+                    continue
+                break
+    return errors
+
+
+def _missing_hour_warnings(windows: List[Window], context: str) -> List[str]:
+    uncovered = []
+    for hour in range(24):
+        hod = hour + 0.5
+        if not any(window.contains(hod) for window in windows):
+            uncovered.append(hour)
+    if not uncovered:
+        return []
+    preview = ", ".join(f"{hour:02d}:00" for hour in uncovered[:6])
+    tail = "…" if len(uncovered) > 6 else ""
+    return [
+        (
+            f"{context} does not cover all 24 hours. Uncovered hours include {preview}{tail}. "
+            "Uncovered hours will default to 0 MW."
+        )
+    ]
+
+
+def validate_dispatch_windows(
+    discharge_text: str, charge_text: str, require_discharge_windows: bool = True
+) -> DispatchWindowValidation:
+    """Parse and validate dispatch windows, returning user-facing feedback."""
+
+    discharge_windows, discharge_window_warnings = parse_windows(discharge_text)
+    charge_windows, charge_window_warnings = parse_windows(charge_text)
+    warnings = list(discharge_window_warnings + charge_window_warnings)
+    errors: List[str] = []
+    details = [
+        f"Raw discharge text: {discharge_text or '<blank>'}",
+        f"Raw charge text: {charge_text or '<blank>'}",
+        f"Parsed discharge windows: {discharge_windows or 'none'}",
+        f"Parsed charge windows: {charge_windows or 'none'}",
+    ]
 
     warnings.extend(_collect_window_warnings("Discharge", discharge_windows))
     warnings.extend(_collect_window_warnings("Charge", charge_windows))
 
-    if not discharge_windows:
+    if require_discharge_windows and not discharge_windows:
         errors.append("Provide at least one discharge window in HH:MM-HH:MM format (e.g., 10:00-14:00).")
 
     return DispatchWindowValidation(
@@ -145,6 +237,93 @@ def validate_dispatch_windows(discharge_text: str, charge_text: str) -> Dispatch
         warnings=warnings,
         details=details,
     )
+
+
+def validate_dispatch_schedule(
+    dispatch_mode: str,
+    hourly_schedule_df: Optional[pd.DataFrame],
+    period_schedule_df: Optional[pd.DataFrame],
+) -> DispatchScheduleValidation:
+    """Validate dispatch schedule inputs without mutating config."""
+    errors: List[str] = []
+    warnings: List[str] = []
+    details: List[str] = [f"Dispatch schedule mode: {dispatch_mode}"]
+    schedule_payload: Dict[str, Any] = {"mode": dispatch_mode}
+
+    if dispatch_mode == DISPATCH_MODE_HOURLY:
+        if hourly_schedule_df is None or hourly_schedule_df.empty:
+            errors.append("Provide a full 24-hour capacity schedule (one MW value per hour).")
+            return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
+
+        hourly_values: List[Optional[float]] = []
+        missing_hours: List[int] = []
+        for _, row in hourly_schedule_df.iterrows():
+            hour_value = _cell_to_float(row.get("Hour"))
+            if hour_value is None:
+                continue
+            if not (0 <= hour_value <= 23):
+                errors.append(f"Hourly schedule includes invalid hour value {hour_value}. Use 0-23.")
+                continue
+            capacity_value = _cell_to_float(row.get("Capacity (MW)"))
+            if capacity_value is None:
+                missing_hours.append(int(hour_value))
+                hourly_values.append(None)
+                continue
+            if capacity_value < 0:
+                errors.append(f"Hourly schedule hour {int(hour_value):02d}:00 has negative MW.")
+            hourly_values.append(float(capacity_value))
+
+        if len(hourly_values) != 24:
+            errors.append("Hourly schedule must include exactly 24 rows (hours 00-23).")
+        if missing_hours:
+            missing_preview = ", ".join(f"{hour:02d}:00" for hour in sorted(missing_hours[:6]))
+            tail = "…" if len(missing_hours) > 6 else ""
+            errors.append(
+                f"Hourly schedule is missing MW values for {len(missing_hours)} hours ({missing_preview}{tail})."
+            )
+        schedule_payload["hourly_mw"] = hourly_values
+        details.append(f"Hourly schedule rows: {len(hourly_values)}")
+
+    if dispatch_mode == DISPATCH_MODE_PERIOD:
+        if period_schedule_df is None or period_schedule_df.empty:
+            errors.append("Add at least one period row with start/end time and capacity MW.")
+            return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
+
+        period_rows: List[Dict[str, Any]] = []
+        windows: List[Window] = []
+        for row_idx, row in period_schedule_df.iterrows():
+            start_text = _cell_to_str(row.get("Start time"))
+            end_text = _cell_to_str(row.get("End time"))
+            capacity_value = _cell_to_float(row.get("Capacity (MW)"))
+
+            if not any([start_text, end_text, capacity_value is not None]):
+                continue
+
+            row_label = f"Row {row_idx + 1}"
+            if start_text is None or end_text is None or capacity_value is None:
+                errors.append(f"{row_label}: Provide start time, end time, and capacity MW.")
+                continue
+            try:
+                start = _parse_hhmm_time(start_text)
+                end = _parse_hhmm_time(end_text)
+            except ValueError as exc:
+                errors.append(f"{row_label}: {exc}. Use HH:MM (00:00-23:59).")
+                continue
+            if capacity_value < 0:
+                errors.append(f"{row_label}: Capacity MW must be non-negative.")
+            windows.append(Window(start=start, end=end, source=f"{start_text}-{end_text}"))
+            period_rows.append(
+                {"start_time": start_text, "end_time": end_text, "capacity_mw": float(capacity_value)}
+            )
+
+        errors.extend(_window_overlaps(windows))
+        warnings.extend(_collect_window_warnings("Period", windows, include_overlap=False))
+        warnings.extend(_missing_hour_warnings(windows, "Period schedule"))
+
+        schedule_payload["period_table"] = period_rows
+        details.append(f"Period rows parsed: {len(period_rows)}")
+
+    return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
 
 
 def validate_manual_augmentation_schedule(
@@ -602,30 +781,93 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
     with st.expander("Market", expanded=True):
         # Dispatch
         with st.expander("Dispatch Strategy", expanded=True):
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                contracted_mw = st.number_input(
-                    "Contracted MW (firm)",
-                    0.0,
-                    None,
-                    30.0,
-                    1.0,
-                    help="Firm capacity to meet during discharge windows.",
-                    key="inputs_contracted_mw",
+            dispatch_mode = st.radio(
+                "Dispatch input mode",
+                options=DISPATCH_MODE_OPTIONS,
+                horizontal=True,
+                help=(
+                    "Use fixed windows for legacy firm-capacity runs, or provide an hourly/period schedule for "
+                    "variable dispatch. Hourly/period schedules are validated and stored for export."
+                ),
+                key="inputs_dispatch_mode",
+            )
+            contracted_mw = st.number_input(
+                "Contracted MW (firm)",
+                0.0,
+                None,
+                30.0,
+                1.0,
+                help="Firm capacity to meet during discharge windows (used by fixed-window simulations today).",
+                key="inputs_contracted_mw",
+            )
+
+            discharge_windows_text = st.session_state.get(
+                "inputs_discharge_windows", "10:00-14:00, 18:00-22:00"
+            )
+            charge_windows_text = st.session_state.get("inputs_charge_windows", "")
+            hourly_schedule_df: Optional[pd.DataFrame] = None
+            period_schedule_df: Optional[pd.DataFrame] = None
+
+            if dispatch_mode == DISPATCH_MODE_FIXED:
+                c1, c2 = st.columns(2)
+                with c1:
+                    discharge_windows_text = st.text_input(
+                        "Discharge windows (HH:MM-HH:MM, comma-separated)",
+                        "10:00-14:00, 18:00-22:00",
+                        help=(
+                            "Ex: 10:00-14:00, 18:00-22:00. Wrap-around windows like 22:00-02:00 are allowed."
+                        ),
+                        key="inputs_discharge_windows",
+                    )
+                with c2:
+                    charge_windows_text = st.text_input(
+                        "Charge windows (blank = any PV hours)",
+                        "",
+                        help="PV-only charging; blank allows any PV hour. Wrap-around windows are allowed.",
+                        key="inputs_charge_windows",
+                    )
+            elif dispatch_mode == DISPATCH_MODE_HOURLY:
+                st.caption(
+                    "Provide a MW value for each hour (00:00-23:00). Use 0 for off hours; blanks are flagged "
+                    "as missing hours."
                 )
-            with c2:
-                discharge_windows_text = st.text_input(
-                    "Discharge windows (HH:MM-HH:MM, comma-separated)",
-                    "10:00-14:00, 18:00-22:00",
-                    help="Ex: 10:00-14:00, 18:00-22:00",
-                    key="inputs_discharge_windows",
+                hourly_default = st.session_state.get("inputs_dispatch_hourly_schedule")
+                if hourly_default is None:
+                    hourly_default = [
+                        {"Hour": hour, "Capacity (MW)": 0.0} for hour in range(24)
+                    ]
+                hourly_schedule_df = st.data_editor(
+                    pd.DataFrame(hourly_default),
+                    num_rows="fixed",
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Hour": st.column_config.NumberColumn("Hour", disabled=True),
+                        "Capacity (MW)": st.column_config.NumberColumn(
+                            "Capacity (MW)", min_value=0.0, step=0.5
+                        ),
+                    },
+                    key="inputs_dispatch_hourly_schedule",
                 )
-            with c3:
-                charge_windows_text = st.text_input(
-                    "Charge windows (blank = any PV hours)",
-                    "",
-                    help="PV-only charging; blank allows any PV hour.",
-                    key="inputs_charge_windows",
+            else:
+                st.caption(
+                    "Add periods with HH:MM start/end and a MW capacity. Wrap-around windows like 22:00-02:00 "
+                    "are allowed. Overlaps are not allowed; gaps imply 0 MW for uncovered hours."
+                )
+                period_default = st.session_state.get("inputs_dispatch_period_schedule", [])
+                period_schedule_df = st.data_editor(
+                    pd.DataFrame(period_default, columns=["Start time", "End time", "Capacity (MW)"]),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Start time": st.column_config.TextColumn("Start time", help="HH:MM (00:00-23:59)"),
+                        "End time": st.column_config.TextColumn("End time", help="HH:MM (00:00-23:59)"),
+                        "Capacity (MW)": st.column_config.NumberColumn(
+                            "Capacity (MW)", min_value=0.0, step=0.5
+                        ),
+                    },
+                    key="inputs_dispatch_period_schedule",
                 )
 
     econ_inputs: Optional[EconomicInputs] = None
@@ -956,14 +1198,22 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
             )
 
-    dispatch_validation = validate_dispatch_windows(discharge_windows_text, charge_windows_text)
+    dispatch_validation = validate_dispatch_windows(
+        discharge_windows_text,
+        charge_windows_text,
+        require_discharge_windows=dispatch_mode == DISPATCH_MODE_FIXED,
+    )
+    schedule_validation = validate_dispatch_schedule(dispatch_mode, hourly_schedule_df, period_schedule_df)
     validation_warnings.extend(dispatch_validation.warnings)
+    validation_warnings.extend(schedule_validation.warnings)
     manual_errors, manual_details = validate_manual_augmentation_schedule(
         aug_mode, manual_schedule_entries, manual_schedule_errors
     )
     validation_errors.extend(manual_errors)
+    validation_errors.extend(schedule_validation.errors)
     validation_details.extend(manual_details)
     validation_details.extend(dispatch_validation.details)
+    validation_details.extend(schedule_validation.details)
 
     for msg in validation_warnings:
         st.warning(msg)
@@ -1039,6 +1289,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             "contracted_mw": contracted_mw,
             "discharge_windows_text": discharge_windows_text,
             "charge_windows_text": charge_windows_text or "<blank>",
+            "dispatch_mode": dispatch_mode,
+            "dispatch_schedule": schedule_validation.schedule_payload,
             "augmentation_mode": aug_mode,
             "augmentation_schedule_rows": len(manual_schedule_entries),
             "use_split_rte": use_split_rte,
@@ -1061,6 +1313,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         run_submitted=run_submitted,
         discharge_windows_text=discharge_windows_text,
         charge_windows_text=charge_windows_text,
+        dispatch_mode=dispatch_mode,
+        dispatch_schedule=schedule_validation.schedule_payload,
         validation_errors=validation_errors,
         validation_warnings=validation_warnings,
         validation_details=validation_details,
