@@ -80,6 +80,62 @@ DISPATCH_MODE_HOURLY = "Hourly capacity schedule"
 DISPATCH_MODE_PERIOD = "Period table"
 DISPATCH_MODE_OPTIONS = [DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD]
 
+def _default_hourly_schedule_rows() -> List[Dict[str, float]]:
+    return [{"Hour": hour, "Capacity (MW)": 0.0} for hour in range(24)]
+
+
+def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
+    """Return a 24-row DataFrame for hourly dispatch inputs.
+
+    Streamlit's data editor can yield dict-like payloads (column dicts or row dicts).
+    Normalize those shapes to avoid pandas' ambiguous ordering errors.
+    """
+    default_rows = _default_hourly_schedule_rows()
+    if hourly_default is None:
+        return pd.DataFrame(default_rows)
+
+    if isinstance(hourly_default, pd.DataFrame):
+        df = hourly_default.copy()
+    elif isinstance(hourly_default, list):
+        df = pd.DataFrame.from_records(hourly_default)
+    elif isinstance(hourly_default, dict):
+        if all(isinstance(value, dict) for value in hourly_default.values()):
+            df = pd.DataFrame.from_records(list(hourly_default.values()))
+        else:
+            df = pd.DataFrame.from_dict(hourly_default)
+    else:
+        df = pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame(default_rows)
+
+    rename_map: Dict[str, str] = {}
+    for column in df.columns:
+        if not isinstance(column, str):
+            continue
+        if column.lower() == "hour":
+            rename_map[column] = "Hour"
+        elif column.lower().startswith("capacity"):
+            rename_map[column] = "Capacity (MW)"
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    if "Hour" not in df.columns or "Capacity (MW)" not in df.columns:
+        return pd.DataFrame(default_rows)
+
+    df = df[["Hour", "Capacity (MW)"]].copy()
+    df["Hour"] = pd.to_numeric(df["Hour"], errors="coerce")
+    df["Capacity (MW)"] = pd.to_numeric(df["Capacity (MW)"], errors="coerce")
+    df = df.dropna(subset=["Hour"])
+    df["Hour"] = df["Hour"].astype(int)
+    # Keep the first entry per hour to avoid duplicates if Streamlit returns row dicts.
+    df = df.drop_duplicates(subset=["Hour"], keep="first")
+
+    hours_df = pd.DataFrame({"Hour": list(range(24))})
+    normalized = hours_df.merge(df, on="Hour", how="left")
+    normalized["Capacity (MW)"] = normalized["Capacity (MW)"].fillna(0.0)
+    return normalized
+
 
 def _format_window(window: Window) -> str:
     if window.source:
@@ -833,12 +889,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "as missing hours."
                 )
                 hourly_default = st.session_state.get("inputs_dispatch_hourly_schedule")
-                if hourly_default is None:
-                    hourly_default = [
-                        {"Hour": hour, "Capacity (MW)": 0.0} for hour in range(24)
-                    ]
                 hourly_schedule_df = st.data_editor(
-                    pd.DataFrame(hourly_default),
+                    _normalize_hourly_schedule_payload(hourly_default),
                     num_rows="fixed",
                     use_container_width=True,
                     hide_index=True,
