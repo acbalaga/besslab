@@ -28,6 +28,7 @@ from frontend.ui.charts import (
     prepare_soc_heatmap_data,
 )
 from frontend.ui.forms import (
+    DISPATCH_MODE_HOURLY,
     SimulationFormResult,
     render_rate_limit_section,
     render_simulation_form,
@@ -82,11 +83,12 @@ from utils.ui_state import (
     save_simulation_results,
     save_simulation_snapshot,
 )
+from utils.dispatch_schedule import normalize_hourly_schedule
 
 
 BASE_DIR = get_base_dir()
 
-INPUTS_JSON_SCHEMA_VERSION = 1
+INPUTS_JSON_SCHEMA_VERSION = 2
 INPUTS_FORM_KEYS = {
     "years": "inputs_years",
     "pv_deg_pct": "inputs_pv_deg_pct",
@@ -122,6 +124,7 @@ INPUTS_FORM_KEYS = {
     "dispatch_mode": "inputs_dispatch_mode",
     "dispatch_hourly_schedule": "inputs_dispatch_hourly_schedule",
     "dispatch_period_schedule": "inputs_dispatch_period_schedule",
+    "dispatch_schedule_payload": "inputs_dispatch_schedule_payload",
     "calendar_fade_pct": "inputs_calendar_fade_pct",
     "dod_override": "inputs_dod_override",
     "wacc_pct": "inputs_wacc_pct",
@@ -352,6 +355,13 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
         charge_windows_text = fallback_cfg.charge_windows_text or ""
     dispatch_schedule_payload = payload.get("dispatch_schedule")
     dispatch_schedule_payload = dispatch_schedule_payload if isinstance(dispatch_schedule_payload, dict) else {}
+    if not dispatch_schedule_payload:
+        contracted_schedule = normalize_hourly_schedule(config_payload.get("contracted_mw_schedule"))
+        if contracted_schedule:
+            dispatch_schedule_payload = {
+                "mode": DISPATCH_MODE_HOURLY,
+                "hourly_mw": contracted_schedule,
+            }
     dispatch_mode = dispatch_schedule_payload.get("mode")
 
     forex_rate_php_per_usd = _coerce_float(
@@ -482,6 +492,7 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
     st.session_state[INPUTS_FORM_KEYS["charge_windows"]] = charge_windows_text
     if dispatch_mode:
         st.session_state[INPUTS_FORM_KEYS["dispatch_mode"]] = dispatch_mode
+    st.session_state[INPUTS_FORM_KEYS["dispatch_schedule_payload"]] = dispatch_schedule_payload
     hourly_schedule = dispatch_schedule_payload.get("hourly_mw")
     if isinstance(hourly_schedule, list) and len(hourly_schedule) == 24:
         st.session_state[INPUTS_FORM_KEYS["dispatch_hourly_schedule"]] = [
