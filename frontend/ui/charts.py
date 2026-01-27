@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from services.simulation_core import HourlyLog, SimConfig
+from utils.dispatch_schedule import build_contracted_mw_profile
 
 
 def prepare_soc_heatmap_data(logs: HourlyLog, initial_energy_mwh: float) -> pd.DataFrame:
@@ -66,13 +67,8 @@ def prepare_charge_discharge_envelope(logs: HourlyLog) -> pd.DataFrame:
 
 def build_avg_profile_df(logs: HourlyLog, cfg: SimConfig) -> pd.DataFrame:
     """Compute the average daily power profile for a given simulation log."""
-    contracted_series = np.array(
-        [
-            cfg.contracted_mw if any(w.contains(int(h)) for w in cfg.discharge_windows) else 0.0
-            for h in logs.hod
-        ],
-        dtype=float,
-    )
+    contracted_by_hour = np.asarray(build_contracted_mw_profile(cfg), dtype=float)
+    contracted_series = contracted_by_hour[logs.hod.astype(int) % 24]
     df_hr = pd.DataFrame(
         {
             "hod": logs.hod.astype(int),
@@ -117,10 +113,7 @@ def build_avg_profile_bundle(
     hod_sum_charge: np.ndarray,
 ) -> AvgProfileBundle:
     """Prepare average daily profile DataFrames for first, final, and full-project views."""
-    contracted_by_hour = np.array(
-        [cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0 for h in range(24)],
-        dtype=float,
-    )
+    contracted_by_hour = np.asarray(build_contracted_mw_profile(cfg), dtype=float)
     project_df: Optional[pd.DataFrame] = None
     with np.errstate(invalid="ignore", divide="ignore"):
         avg_charge = np.divide(hod_sum_charge, hod_count, out=np.zeros_like(hod_sum_charge), where=hod_count > 0)
@@ -231,4 +224,3 @@ def build_avg_profile_chart(avg_df: pd.DataFrame) -> alt.LayerChart:
     return alt.layer(contract_box, line_contract, pv_resource_area, pv_surplus_area, area_chg, contrib_fill, contrib_chart).properties(
         height=360
     )
-

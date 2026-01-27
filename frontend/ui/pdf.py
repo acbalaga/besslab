@@ -11,6 +11,7 @@ import numpy as np
 from fpdf import FPDF
 
 from services.simulation_core import HourlyLog, SimConfig, YearResult, describe_schedule, resolve_efficiencies
+from utils.dispatch_schedule import build_contracted_mw_profile, normalize_hourly_schedule
 
 
 def _draw_metric_card(
@@ -176,10 +177,7 @@ def _average_profile_from_aggregates(
     hod_sum_charge: np.ndarray,
 ) -> Dict[str, List[float]]:
     """Return the average daily profile across the full project using hourly aggregates."""
-    contracted_by_hour = [
-        cfg.contracted_mw if any(w.contains(h) for w in cfg.discharge_windows) else 0.0
-        for h in range(24)
-    ]
+    contracted_by_hour = build_contracted_mw_profile(cfg)
 
     with np.errstate(invalid="ignore", divide="ignore"):
         avg_pv_resource = np.divide(
@@ -313,10 +311,17 @@ def build_pdf_summary(
     pdf.set_text_color(20, 20, 20)
     pdf.cell(0, 10, "BESS Lab - Performance & Lifecycle Summary", ln=1)
     pdf.set_font("Helvetica", "", 10)
+    hourly_schedule = normalize_hourly_schedule(cfg.contracted_mw_schedule)
+    if hourly_schedule:
+        avg_contract = float(np.mean(hourly_schedule))
+        max_contract = float(np.max(hourly_schedule))
+        contract_label = f"{avg_contract:.1f} MW avg / {max_contract:.1f} MW max"
+    else:
+        contract_label = f"{cfg.contracted_mw:.1f} MW"
     pdf.cell(
         0,
         6,
-        f"Project life: {cfg.years} years  |  Contracted: {cfg.contracted_mw:.1f} MW  |  PV-only charging",
+        f"Project life: {cfg.years} years  |  Contracted: {contract_label}  |  PV-only charging",
         ln=1,
     )
     pdf.cell(
@@ -333,7 +338,10 @@ def build_pdf_summary(
         ["Metric", "Value"],
         ["Initial usable energy", f"{cfg.initial_usable_mwh:,.1f} MWh"],
         ["Initial power", f"{cfg.initial_power_mw:,.1f} MW"],
-        ["Contracted power", f"{cfg.contracted_mw:,.1f} MW"],
+        [
+            "Contracted schedule (avg / max)" if hourly_schedule else "Contracted power",
+            f"{avg_contract:,.1f} MW / {max_contract:,.1f} MW" if hourly_schedule else f"{cfg.contracted_mw:,.1f} MW",
+        ],
         ["Round-trip efficiency", f"{eta_rt:.2f}"],
         ["Charge / Discharge efficiency", f"{eta_ch:.2f} / {eta_dis:.2f}" if cfg.use_split_rte else "Symmetric"],
         ["SoC window", f"{cfg.soc_floor:.2f} - {cfg.soc_ceiling:.2f}"],

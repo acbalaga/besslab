@@ -22,6 +22,7 @@ from services.simulation_core import (
     validate_pv_profile_duration,
 )
 from utils import get_rate_limit_password, parse_numeric_series
+from utils.dispatch_schedule import resolve_contracted_mw_schedule
 from utils.economics import (
     DEFAULT_COST_OF_DEBT_PCT,
     DEFAULT_DEBT_EQUITY_RATIO,
@@ -1257,6 +1258,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         aug_retire_replacement_fixed_mwh=float(retire_replace_fixed_mwh),
         augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
+    cfg.contracted_mw_schedule = resolve_contracted_mw_schedule(schedule_validation.schedule_payload)
 
     inferred_step = infer_step_hours_from_pv(pv_df)
     if inferred_step is not None:

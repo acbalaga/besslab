@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from dataclasses import replace
 from io import StringIO
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,8 +11,17 @@ import pandas as pd
 import streamlit as st
 
 from app import BASE_DIR
+from frontend.ui.forms import DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD
 from services.simulation_core import HourlyLog, SimConfig, Window, parse_windows, simulate_project, summarize_simulation
 from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
+from utils.dispatch_schedule import (
+    build_hourly_schedule_from_period_table,
+    find_window_overlaps,
+    normalize_hourly_schedule,
+    parse_hhmm_time,
+    parse_period_table_cell,
+    parse_schedule_cell,
+)
 from utils.io import read_wesm_forecast_profile_average
 from utils.economics import (
     DEFAULT_COST_OF_DEBT_PCT,
@@ -100,8 +110,54 @@ def _windows_to_text(windows: List[Window]) -> str:
     return ", ".join(f"{_format_hhmm(w.start)}-{_format_hhmm(w.end)}" for w in windows)
 
 
+def _windows_from_period_table(period_table: List[Dict[str, Any]]) -> List[Window]:
+    """Convert period table rows into Window objects for validation."""
+
+    windows: List[Window] = []
+    for row in period_table:
+        start_text = str(row.get("start_time"))
+        end_text = str(row.get("end_time"))
+        start = parse_hhmm_time(start_text)
+        end = parse_hhmm_time(end_text)
+        windows.append(Window(start=start, end=end, source=f"{start_text}-{end_text}"))
+    return windows
+
+
+def _parse_dispatch_schedule(row: pd.Series) -> Tuple[str, Optional[List[float]], Optional[List[Dict[str, Any]]]]:
+    """Parse the dispatch schedule columns into an hourly schedule."""
+
+    mode = str(row.get("dispatch_mode") or DISPATCH_MODE_FIXED)
+    if mode not in {DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD}:
+        raise ValueError(f"Unknown dispatch mode '{mode}'.")
+
+    if mode == DISPATCH_MODE_FIXED:
+        return mode, None, None
+
+    if mode == DISPATCH_MODE_HOURLY:
+        schedule = parse_schedule_cell(row.get("dispatch_hourly_mw"))
+        if not schedule:
+            raise ValueError("Hourly schedule must include 24 numeric MW values.")
+        return mode, schedule, None
+
+    period_table = parse_period_table_cell(row.get("dispatch_period_table"))
+    if not period_table:
+        raise ValueError("Period table must include at least one row.")
+    windows = _windows_from_period_table(period_table)
+    overlap_errors = find_window_overlaps(windows)
+    if overlap_errors:
+        raise ValueError("; ".join(overlap_errors))
+    schedule = build_hourly_schedule_from_period_table(period_table)
+    if not schedule:
+        raise ValueError("Period table could not be converted to an hourly schedule.")
+    return mode, schedule, period_table
+
+
 def _seed_rows(cfg: SimConfig) -> pd.DataFrame:
     """Construct the initial scenario table from cached inputs or defaults."""
+
+    hourly_schedule = normalize_hourly_schedule(cfg.contracted_mw_schedule)
+    dispatch_mode = DISPATCH_MODE_HOURLY if hourly_schedule else DISPATCH_MODE_FIXED
+    dispatch_hourly = json.dumps(hourly_schedule) if hourly_schedule else ""
 
     defaults: Dict[str, Any] = {
         "label": "Scenario 1",
@@ -118,6 +174,9 @@ def _seed_rows(cfg: SimConfig) -> pd.DataFrame:
         "use_calendar_exp_model": cfg.use_calendar_exp_model,
         "discharge_windows": _windows_to_text(cfg.discharge_windows),
         "charge_windows": cfg.charge_windows_text or "",
+        "dispatch_mode": dispatch_mode,
+        "dispatch_hourly_mw": dispatch_hourly,
+        "dispatch_period_table": "",
         "augmentation": cfg.augmentation,
         "aug_trigger_type": cfg.aug_trigger_type,
         "aug_threshold_margin": cfg.aug_threshold_margin,
@@ -185,6 +244,8 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     label = str(row.get("label") or "Scenario")
     config = deepcopy(template)
 
+    dispatch_mode, contracted_schedule, _ = _parse_dispatch_schedule(row)
+
     dis_windows_text = str(row.get("discharge_windows") or "").strip()
     dis_windows, dis_warnings = parse_windows(dis_windows_text)
 
@@ -192,7 +253,7 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     charge_windows, charge_warnings = parse_windows(charge_windows_text)
     if dis_warnings or charge_warnings:
         raise ValueError("; ".join(dis_warnings + charge_warnings))
-    if not dis_windows:
+    if dispatch_mode == DISPATCH_MODE_FIXED and not dis_windows:
         raise ValueError("Please provide at least one discharge window.")
 
     years = int(row.get("years") or template.years)
@@ -216,6 +277,9 @@ def _parse_row_to_config(row: pd.Series, template: SimConfig) -> Tuple[str, SimC
     config.discharge_windows = dis_windows
     config.charge_windows_text = charge_windows_text
     config.charge_windows = charge_windows
+
+    config.contracted_mw_schedule = contracted_schedule
+
     config.augmentation = str(row.get("augmentation") or template.augmentation)
     config.aug_trigger_type = str(row.get("aug_trigger_type") or template.aug_trigger_type)
     config.aug_threshold_margin = float(row.get("aug_threshold_margin") or template.aug_threshold_margin)
@@ -255,8 +319,6 @@ def _validate_row(row: pd.Series, idx: int) -> List[str]:
     dis_windows_text = str(row.get("discharge_windows") or "").strip()
     dis_windows, dis_warnings = parse_windows(dis_windows_text)
     errors.extend(dis_warnings)
-    if not dis_windows:
-        errors.append("Missing discharge windows (HH:MM-HH:MM).")
 
     years_value = row.get("years")
     try:
@@ -273,6 +335,13 @@ def _validate_row(row: pd.Series, idx: int) -> List[str]:
             errors.append("SOC floor must be lower than SOC ceiling.")
     except (TypeError, ValueError):
         errors.append("SOC floor/ceiling must be numeric.")
+
+    try:
+        dispatch_mode, _, _ = _parse_dispatch_schedule(row)
+        if dispatch_mode == DISPATCH_MODE_FIXED and not dis_windows:
+            errors.append("Missing discharge windows (HH:MM-HH:MM).")
+    except ValueError as exc:
+        errors.append(str(exc))
 
     return [f"Row {idx + 1}: {msg}" for msg in errors]
 
@@ -291,6 +360,9 @@ def _expected_column_order() -> List[str]:
         # Operations windows + operations levers
         "discharge_windows",
         "charge_windows",
+        "dispatch_mode",
+        "dispatch_hourly_mw",
+        "dispatch_period_table",
         "bess_availability",
         "rte",
         "soc_floor",
@@ -366,6 +438,7 @@ def _render_summary_table(df: pd.DataFrame) -> None:
             "contracted_mw",
             "years",
             "discharge_windows",
+            "dispatch_mode",
             "augmentation",
         ]
     ].rename(
@@ -376,6 +449,7 @@ def _render_summary_table(df: pd.DataFrame) -> None:
             "contracted_mw": "Contracted (MW)",
             "years": "Years",
             "discharge_windows": "Discharge windows",
+            "dispatch_mode": "Dispatch mode",
             "augmentation": "Augmentation",
         }
     )
@@ -895,6 +969,25 @@ column_config = {
         "Charge windows (optional)",
         help=f"Operations windows: leave blank to allow any PV hour; uses HH:MM-HH:MM (e.g., {WINDOW_PLACEHOLDER}).",
         default=WINDOW_PLACEHOLDER,
+    ),
+    "dispatch_mode": st.column_config.SelectboxColumn(
+        "Dispatch mode",
+        options=[DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD],
+        help="Use fixed windows or provide an hourly/period schedule for contracted MW.",
+    ),
+    "dispatch_hourly_mw": st.column_config.TextColumn(
+        "Hourly schedule (MW)",
+        help=(
+            "Provide 24 hourly MW values as JSON array or comma-separated values. "
+            "Example: [0, 0, 0, 0, 10, 10, ...]."
+        ),
+    ),
+    "dispatch_period_table": st.column_config.TextColumn(
+        "Period table (JSON)",
+        help=(
+            "JSON array of rows with start_time, end_time, capacity_mw. "
+            "Example: [{\"start_time\":\"06:00\",\"end_time\":\"10:00\",\"capacity_mw\":10}]."
+        ),
     ),
     "augmentation": st.column_config.SelectboxColumn(
         "Augmentation mode",
