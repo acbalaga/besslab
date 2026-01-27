@@ -64,3 +64,29 @@ def test_simulation_core_runs_with_parsed_windows() -> None:
 
     summary = summarize_simulation(output)
     assert summary.compliance == pytest.approx(100.0)
+
+
+def test_simulation_core_uses_contracted_schedule() -> None:
+    """Ensure the hourly schedule overrides discharge windows when provided."""
+
+    schedule = [2.0] + [0.0] * 23
+    cfg = SimConfig(
+        years=1,
+        step_hours=1.0,
+        contracted_mw=5.0,
+        contracted_mw_schedule=schedule,
+        initial_power_mw=2.0,
+        initial_usable_mwh=4.0,
+        discharge_windows=[Window(10, 11)],
+        charge_windows=[],
+        pv_availability=1.0,
+        bess_availability=1.0,
+    )
+    pv_df = pd.DataFrame({"pv_mw": [2.5, 0.0]})
+    cycle_df = _flat_cycle_table()
+
+    output = simulate_project(cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override="Auto (infer)", need_logs=True)
+
+    first_year = output.results[0]
+    assert first_year.expected_firm_mwh == pytest.approx(2.0)
+    assert first_year.delivered_firm_mwh == pytest.approx(2.0)

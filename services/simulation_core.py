@@ -199,6 +199,7 @@ class SimConfig:
     initial_power_mw: float = 30.0
     initial_usable_mwh: float = 120.0
     contracted_mw: float = 30.0
+    contracted_mw_schedule: Optional[List[float]] = None
     discharge_windows: List[Window] = field(default_factory=lambda: [Window(10, 14), Window(18, 22)])
     charge_windows_text: str = ""
     charge_windows: List[Window] = field(default_factory=list)
@@ -438,6 +439,60 @@ def in_any_window(hod: int, windows: List[Window]) -> bool:
     return any(w.contains(hod) for w in windows)
 
 
+def _normalize_contracted_mw_schedule(cfg: SimConfig) -> Optional[np.ndarray]:
+    """Return a 24-value hourly schedule if provided; otherwise None.
+
+    A schedule must include one value per hour-of-day (0-23). Any other
+    length is treated as partial coverage and falls back to discharge windows.
+    """
+
+    if not cfg.contracted_mw_schedule:
+        return None
+
+    schedule = np.asarray(cfg.contracted_mw_schedule, dtype=float)
+    if schedule.size != 24:
+        return None
+
+    return np.nan_to_num(schedule, nan=0.0)
+
+
+def _target_mw_from_schedule(hod: float, dt: float, schedule_mw: np.ndarray) -> float:
+    """Map an hourly schedule to a timestep target using overlap weighting.
+
+    If a timestep spans multiple hours (dt != 1), the target is the overlap-
+    weighted average of the hourly buckets. Wrap-around across midnight is
+    handled by continuing to index the 24-hour schedule modulo 24.
+    """
+
+    if dt <= 0:
+        return 0.0
+
+    start = hod % 24.0
+    end = start + dt
+    total = 0.0
+    hour = int(np.floor(start))
+    current = start
+
+    while current < end - 1e-9:
+        next_hour = min(end, hour + 1)
+        overlap = next_hour - current
+        total += overlap * schedule_mw[hour % 24]
+        current = next_hour
+        hour += 1
+
+    return total / dt
+
+
+def _daily_target_mwh(cfg: SimConfig, discharge_hours_per_day: float) -> float:
+    """Return daily target energy, using schedule when available."""
+
+    schedule = _normalize_contracted_mw_schedule(cfg)
+    if schedule is None:
+        return cfg.contracted_mw * discharge_hours_per_day
+
+    return float(schedule.sum())
+
+
 def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_logs: bool = False) -> Tuple[YearResult, HourlyLog, List[MonthResult]]:
     cfg = state.cfg
     dt = cfg.step_hours
@@ -451,6 +506,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
 
     dis_windows = cfg.discharge_windows
     ch_windows = cfg.charge_windows
+    schedule_mw = _normalize_contracted_mw_schedule(cfg)
 
     dod_for_lookup = dod_key if dod_key else 100
     soh_cycle_start, soh_calendar_start, soh_total_start = compute_fleet_soh(
@@ -513,14 +569,18 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     flag_shortfall_hours = flag_soc_floor_hits = flag_soc_ceiling_hits = 0
 
     for h in range(n_hours):
-        is_dis = in_any_window(int(hod[h]), dis_windows)
         is_ch = True if not ch_windows else in_any_window(int(hod[h]), ch_windows)
         pv_avail_mw = max(0.0, pv_mw[h])
 
         pv_available_mwh += pv_avail_mw * dt
         month_pv_available[month_index[h]] += pv_avail_mw * dt
 
-        target_mw = cfg.contracted_mw if is_dis else 0.0
+        if schedule_mw is not None:
+            # Schedule overrides discharge windows; partial coverage falls back to windows above.
+            target_mw = _target_mw_from_schedule(hod[h], dt, schedule_mw)
+        else:
+            is_dis = in_any_window(int(hod[h]), dis_windows)
+            target_mw = cfg.contracted_mw if is_dis else 0.0
         expected_firm_mwh += target_mw * dt
 
         pv_to_contract_mw = min(pv_avail_mw, target_mw)
@@ -862,7 +922,7 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
         return 0.0, 0.0
 
     if cfg.augmentation == "Threshold" and cfg.aug_trigger_type == "Capability":
-        target_energy_per_day = cfg.contracted_mw * discharge_hours_per_day
+        target_energy_per_day = _daily_target_mwh(cfg, discharge_hours_per_day)
         eoy_cap_per_day = min(yr.eoy_usable_mwh, yr.eoy_power_mw * discharge_hours_per_day)
         if eoy_cap_per_day + 1e-6 < target_energy_per_day * (1.0 - cfg.aug_threshold_margin):
             short_mwh = target_energy_per_day * (1.0 + cfg.aug_topup_margin) - eoy_cap_per_day
@@ -901,9 +961,14 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
     if not cfg.discharge_windows:
         raise ValueError("Please provide at least one discharge window.")
 
-    dis_hours_per_day = 0.0
-    for w in cfg.discharge_windows:
-        dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
+    schedule_mw = _normalize_contracted_mw_schedule(cfg)
+    if schedule_mw is not None:
+        # Hours with non-zero schedule are treated as the active discharge period.
+        dis_hours_per_day = float(np.count_nonzero(schedule_mw > 0.0))
+    else:
+        dis_hours_per_day = 0.0
+        for w in cfg.discharge_windows:
+            dis_hours_per_day += (w.end - w.start) if w.start <= w.end else (24 - w.start + w.end)
 
     state = SimState(
         pv_df=pv_df,
@@ -1008,11 +1073,8 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
     total_shortfall_mwh = sum(r.shortfall_mwh for r in results)
     avg_eq_cycles_per_year = float(np.mean([r.eq_cycles for r in results]))
     cap_daily_final = min(final.eoy_usable_mwh, final.eoy_power_mw * sim_output.discharge_hours_per_day)
-    cap_ratio_final = (
-        cap_daily_final / (sim_output.cfg.contracted_mw * sim_output.discharge_hours_per_day)
-        if sim_output.discharge_hours_per_day > 0
-        else float("nan")
-    )
+    daily_target_mwh = _daily_target_mwh(sim_output.cfg, sim_output.discharge_hours_per_day)
+    cap_ratio_final = (cap_daily_final / daily_target_mwh) if daily_target_mwh > 0 else float("nan")
 
     return SimulationSummary(
         compliance=compliance,
