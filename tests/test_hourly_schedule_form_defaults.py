@@ -22,3 +22,23 @@ def test_normalize_hourly_schedule_payload_handles_row_dicts() -> None:
     assert len(df) == 24
     assert df.loc[df["Hour"] == 0, "Capacity (MW)"].iloc[0] == 2.0
     assert df.loc[df["Hour"] == 2, "Capacity (MW)"].iloc[0] == 0.0
+
+
+def test_normalize_hourly_schedule_payload_handles_mixed_column_values() -> None:
+    payload = {
+        "Hour": {0: 0, 1: 1, 2: 2},
+        "Capacity (MW)": [5.0, 6.0, 7.0],
+    }
+
+    df = _normalize_hourly_schedule_payload(payload)
+
+    assert len(df) == 24
+    assert df.loc[df["Hour"] == 1, "Capacity (MW)"].iloc[0] == 6.0
+
+
+def test_normalize_hourly_schedule_payload_skips_editor_state_only_payloads() -> None:
+    payload = {"edited_rows": {}, "added_rows": [], "deleted_rows": []}
+
+    df = _normalize_hourly_schedule_payload(payload)
+
+    assert len(df) == 24

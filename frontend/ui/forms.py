@@ -84,6 +84,25 @@ def _default_hourly_schedule_rows() -> List[Dict[str, float]]:
     return [{"Hour": hour, "Capacity (MW)": 0.0} for hour in range(24)]
 
 
+def _coerce_columnar_frame(payload: Dict[str, Any]) -> pd.DataFrame:
+    """Normalize columnar dict payloads into a DataFrame.
+
+    Streamlit can emit dicts with mixed column value types (lists, dicts, arrays).
+    Convert every column into a Series to avoid pandas' mixed-dict ambiguity.
+    """
+    series_map: Dict[str, pd.Series] = {}
+    for key, value in payload.items():
+        if isinstance(value, pd.Series):
+            series_map[key] = value
+        elif isinstance(value, dict):
+            series_map[key] = pd.Series(value)
+        elif isinstance(value, (list, tuple, np.ndarray)):
+            series_map[key] = pd.Series(list(value))
+        else:
+            series_map[key] = pd.Series([value])
+    return pd.DataFrame(series_map)
+
+
 def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
     """Return a 24-row DataFrame for hourly dispatch inputs.
 
@@ -99,10 +118,15 @@ def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
     elif isinstance(hourly_default, list):
         df = pd.DataFrame.from_records(hourly_default)
     elif isinstance(hourly_default, dict):
+        if "data" in hourly_default:
+            return _normalize_hourly_schedule_payload(hourly_default["data"])
+        editor_state_keys = {"edited_rows", "added_rows", "deleted_rows"}
+        if set(hourly_default.keys()).issubset(editor_state_keys):
+            return pd.DataFrame(default_rows)
         if all(isinstance(value, dict) for value in hourly_default.values()):
             df = pd.DataFrame.from_records(list(hourly_default.values()))
         else:
-            df = pd.DataFrame.from_dict(hourly_default)
+            df = _coerce_columnar_frame(hourly_default)
     else:
         df = pd.DataFrame()
 
