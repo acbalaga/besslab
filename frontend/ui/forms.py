@@ -921,7 +921,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     column_config={
                         "Hour": st.column_config.NumberColumn("Hour", disabled=True),
                         "Capacity (MW)": st.column_config.NumberColumn(
-                            "Capacity (MW)", min_value=0.0, step=0.5
+                            "Capacity (MW)", min_value=0.0, step=0.01, format="%.2f"
                         ),
                     },
                     key="inputs_dispatch_hourly_schedule",
