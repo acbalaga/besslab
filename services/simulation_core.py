@@ -546,6 +546,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     soc_max = usable_mwh_start * cfg.soc_ceiling
 
     n_hours = len(pv_mw)
+    profile_mw = _normalize_contracted_mw_profile(cfg, n_hours)
     if "timestamp" in state.pv_df.columns:
         calendar_index = pd.to_datetime(state.pv_df["timestamp"], errors="coerce")
     else:
@@ -982,11 +983,10 @@ def apply_augmentation(state: SimState, cfg: SimConfig, yr: YearResult, discharg
 
 
 def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame, dod_override: str, need_logs: bool = True) -> SimulationOutput:
-    if not cfg.discharge_windows:
-        raise ValueError("Please provide at least one discharge window.")
-
     schedule_mw = _normalize_contracted_mw_schedule(cfg)
     profile_mw = _normalize_contracted_mw_profile(cfg, len(pv_df))
+    if not cfg.discharge_windows and schedule_mw is None and profile_mw is None:
+        raise ValueError("Please provide at least one discharge window or an active dispatch schedule.")
     if profile_mw is not None and profile_mw.size > 0:
         total_hours = profile_mw.size * cfg.step_hours
         days = max(total_hours / 24.0, 1e-9)
