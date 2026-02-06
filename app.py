@@ -15,6 +15,7 @@ from services.simulation_core import (
     SimConfig,
     Window,
     YearResult,
+    _normalize_contracted_mw_profile,
     _normalize_contracted_mw_schedule,
     _target_mw_from_schedule,
     in_any_window,
@@ -31,6 +32,7 @@ from frontend.ui.charts import (
 )
 from frontend.ui.forms import (
     DISPATCH_MODE_HOURLY,
+    DISPATCH_MODE_PROFILE,
     SimulationFormResult,
     render_rate_limit_section,
     render_simulation_form,
@@ -90,7 +92,7 @@ from utils.dispatch_schedule import normalize_hourly_schedule
 
 BASE_DIR = get_base_dir()
 
-INPUTS_JSON_SCHEMA_VERSION = 2
+INPUTS_JSON_SCHEMA_VERSION = 3
 INPUTS_FORM_KEYS = {
     "years": "inputs_years",
     "pv_deg_pct": "inputs_pv_deg_pct",
@@ -127,6 +129,7 @@ INPUTS_FORM_KEYS = {
     "dispatch_hourly_schedule": "inputs_dispatch_hourly_schedule",
     "dispatch_period_schedule": "inputs_dispatch_period_schedule",
     "dispatch_schedule_payload": "inputs_dispatch_schedule_payload",
+    "dispatch_requirement_profile": "inputs_dispatch_requirement_profile",
     "calendar_fade_pct": "inputs_calendar_fade_pct",
     "dod_override": "inputs_dod_override",
     "wacc_pct": "inputs_wacc_pct",
@@ -322,6 +325,7 @@ def _build_inputs_payload(
             "mode": dispatch_mode,
             "hourly_mw": dispatch_schedule.get("hourly_mw"),
             "period_table": dispatch_schedule.get("period_table"),
+            "requirement_mw": dispatch_schedule.get("requirement_mw"),
         },
         "dod_override": dod_override,
         "run_economics": run_economics,
@@ -363,6 +367,12 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
             dispatch_schedule_payload = {
                 "mode": DISPATCH_MODE_HOURLY,
                 "hourly_mw": contracted_schedule,
+            }
+        contracted_profile = config_payload.get("contracted_mw_profile")
+        if contracted_profile:
+            dispatch_schedule_payload = {
+                "mode": DISPATCH_MODE_PROFILE,
+                "requirement_mw": contracted_profile,
             }
     dispatch_mode = dispatch_schedule_payload.get("mode")
 
@@ -515,6 +525,9 @@ def _apply_inputs_payload(payload: Dict[str, Any], fallback_cfg: SimConfig) -> N
             )
         if sanitized_rows:
             st.session_state[INPUTS_FORM_KEYS["dispatch_period_schedule"]] = sanitized_rows
+    requirement_profile = dispatch_schedule_payload.get("requirement_mw")
+    if isinstance(requirement_profile, list):
+        st.session_state[INPUTS_FORM_KEYS["dispatch_requirement_profile"]] = requirement_profile
     st.session_state[INPUTS_FORM_KEYS["calendar_fade_pct"]] = _coerce_float(
         config_payload.get("calendar_fade_rate"),
         fallback_cfg.calendar_fade_rate,
@@ -691,6 +704,10 @@ def _build_hourly_summary_df(logs: HourlyLog) -> pd.DataFrame:
 
 def _build_expected_contract_mw(hod: np.ndarray, cfg: SimConfig) -> np.ndarray:
     """Return expected contract dispatch (MW) using the configured dispatch strategy."""
+
+    profile_mw = _normalize_contracted_mw_profile(cfg, len(hod))
+    if profile_mw is not None:
+        return profile_mw.astype(float)
 
     schedule_mw = _normalize_contracted_mw_schedule(cfg)
     if schedule_mw is not None:
