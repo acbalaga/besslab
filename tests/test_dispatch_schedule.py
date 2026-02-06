@@ -5,6 +5,7 @@ from utils.dispatch_schedule import (
     build_contracted_mw_profile,
     build_hourly_schedule_from_period_table,
     normalize_hourly_schedule,
+    resolve_contracted_mw_profile,
 )
 
 
@@ -34,6 +35,31 @@ def test_build_contracted_mw_profile_prefers_hourly_schedule() -> None:
     schedule = build_contracted_mw_profile(cfg)
 
     assert schedule == [1.0] * 24
+
+
+def test_build_contracted_mw_profile_averages_requirement_profile() -> None:
+    profile = [0.0] * 48
+    profile[0] = 1.0
+    profile[24] = 3.0
+    cfg = SimConfig(
+        contracted_mw=4.0,
+        contracted_mw_profile=profile,
+        discharge_windows=[Window(6, 8)],
+        charge_windows=[],
+    )
+
+    schedule = build_contracted_mw_profile(cfg)
+
+    assert schedule[0] == 2.0
+    assert schedule[1] == 0.0
+
+
+def test_resolve_contracted_mw_profile_reads_payload() -> None:
+    payload = {"requirement_mw": [1.0, 2.0, 3.0]}
+
+    resolved = resolve_contracted_mw_profile(payload)
+
+    assert resolved == [1.0, 2.0, 3.0]
 
 
 def test_period_table_to_hourly_schedule_wraps_midnight() -> None:

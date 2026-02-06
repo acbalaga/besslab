@@ -17,6 +17,7 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 ### Prepare your data
 - PV profile CSV with columns `hour_index, pv_mw` (0–8759 or 1–8760). Add a `timestamp` column to keep sub-hourly cadences or leap-year coverage; the app infers the timestep and fills gaps.
 - Optional cycle-model Excel file to override the built-in degradation table.
+- Optional dispatch requirement CSV with columns `hour_index, required_mw` to drive a full-year contract requirement profile.
 - Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours, and uploads are cached on the Landing page so you can reuse them across pages or fresh sessions.
 
 ### Run the workflow

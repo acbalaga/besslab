@@ -22,7 +22,8 @@ from services.simulation_core import (
     validate_pv_profile_duration,
 )
 from utils import get_rate_limit_password, parse_numeric_series
-from utils.dispatch_schedule import resolve_contracted_mw_schedule
+from utils.dispatch_schedule import resolve_contracted_mw_profile, resolve_contracted_mw_schedule
+from utils.io import read_dispatch_requirement_profile
 from utils.economics import (
     DEFAULT_COST_OF_DEBT_PCT,
     DEFAULT_DEBT_EQUITY_RATIO,
@@ -78,7 +79,13 @@ class DispatchScheduleValidation:
 DISPATCH_MODE_FIXED = "Fixed MW + windows"
 DISPATCH_MODE_HOURLY = "Hourly capacity schedule"
 DISPATCH_MODE_PERIOD = "Period table"
-DISPATCH_MODE_OPTIONS = [DISPATCH_MODE_FIXED, DISPATCH_MODE_HOURLY, DISPATCH_MODE_PERIOD]
+DISPATCH_MODE_PROFILE = "8760 requirement file"
+DISPATCH_MODE_OPTIONS = [
+    DISPATCH_MODE_FIXED,
+    DISPATCH_MODE_HOURLY,
+    DISPATCH_MODE_PERIOD,
+    DISPATCH_MODE_PROFILE,
+]
 
 def _default_hourly_schedule_rows() -> List[Dict[str, float]]:
     return [{"Hour": hour, "Capacity (MW)": 0.0} for hour in range(24)]
@@ -190,6 +197,21 @@ def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
     normalized = hours_df.merge(df, on="Hour", how="left")
     normalized["Capacity (MW)"] = normalized["Capacity (MW)"].fillna(0.0)
     return normalized
+
+
+def _build_requirement_profile(
+    requirement_df: pd.DataFrame,
+    expected_steps: int,
+) -> List[Optional[float]]:
+    """Align requirement inputs to the expected timestep count."""
+    normalized = requirement_df.copy()
+    normalized["hour_index"] = pd.to_numeric(normalized["hour_index"], errors="coerce")
+    normalized["required_mw"] = pd.to_numeric(normalized["required_mw"], errors="coerce")
+    normalized = normalized.dropna(subset=["hour_index"]).copy()
+    normalized["hour_index"] = normalized["hour_index"].astype(int)
+    normalized = normalized.set_index("hour_index").sort_index()
+    series = normalized["required_mw"].reindex(range(expected_steps))
+    return [None if pd.isna(value) else float(value) for value in series.tolist()]
 
 
 def _format_window(window: Window) -> str:
@@ -355,6 +377,8 @@ def validate_dispatch_schedule(
     dispatch_mode: str,
     hourly_schedule_df: Optional[pd.DataFrame],
     period_schedule_df: Optional[pd.DataFrame],
+    requirement_profile: Optional[List[Optional[float]]],
+    expected_steps: Optional[int],
 ) -> DispatchScheduleValidation:
     """Validate dispatch schedule inputs without mutating config."""
     errors: List[str] = []
@@ -434,6 +458,39 @@ def validate_dispatch_schedule(
 
         schedule_payload["period_table"] = period_rows
         details.append(f"Period rows parsed: {len(period_rows)}")
+
+    if dispatch_mode == DISPATCH_MODE_PROFILE:
+        if not requirement_profile:
+            errors.append("Upload a requirement CSV with hour_index and required_mw columns.")
+            return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
+
+        if expected_steps is not None and len(requirement_profile) != expected_steps:
+            errors.append(
+                f"Requirement profile length {len(requirement_profile)} does not match "
+                f"PV profile length {expected_steps}."
+            )
+            return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
+
+        missing_hours = [idx for idx, value in enumerate(requirement_profile) if value is None]
+        if missing_hours:
+            preview = ", ".join(str(idx) for idx in missing_hours[:6])
+            tail = "…" if len(missing_hours) > 6 else ""
+            errors.append(
+                f"Requirement profile is missing {len(missing_hours)} hour_index values "
+                f"({preview}{tail})."
+            )
+
+        negative_hours = [idx for idx, value in enumerate(requirement_profile) if value is not None and value < 0]
+        if negative_hours:
+            preview = ", ".join(str(idx) for idx in negative_hours[:6])
+            tail = "…" if len(negative_hours) > 6 else ""
+            errors.append(
+                f"Requirement profile has negative MW values at {len(negative_hours)} hour_index rows "
+                f"({preview}{tail})."
+            )
+
+        schedule_payload["requirement_mw"] = requirement_profile
+        details.append(f"Requirement rows parsed: {len(requirement_profile)}")
 
     return DispatchScheduleValidation(schedule_payload, errors, warnings, details)
 
@@ -899,7 +956,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                 horizontal=True,
                 help=(
                     "Use fixed windows for legacy firm-capacity runs, or provide an hourly/period schedule for "
-                    "variable dispatch. Hourly/period schedules are validated and stored for export."
+                    "variable dispatch. Requirement CSVs let you drive a full-year contract profile. "
+                    "Hourly/period schedules are validated and stored for export."
                 ),
                 key="inputs_dispatch_mode",
             )
@@ -919,6 +977,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             charge_windows_text = st.session_state.get("inputs_charge_windows", "")
             hourly_schedule_df: Optional[pd.DataFrame] = None
             period_schedule_df: Optional[pd.DataFrame] = None
+            requirement_profile: Optional[List[Optional[float]]] = None
 
             if dispatch_mode == DISPATCH_MODE_FIXED:
                 c1, c2 = st.columns(2)
@@ -958,7 +1017,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_dispatch_hourly_schedule",
                 )
                 _store_data_editor_payload("inputs_dispatch_hourly_schedule", hourly_schedule_df)
-            else:
+            elif dispatch_mode == DISPATCH_MODE_PERIOD:
                 st.caption(
                     "Add periods with HH:MM start/end and a MW capacity. Wrap-around windows like 22:00-02:00 "
                     "are allowed. Overlaps are not allowed; gaps imply 0 MW for uncovered hours."
@@ -979,7 +1038,38 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     key="inputs_dispatch_period_schedule",
                 )
                 _store_data_editor_payload("inputs_dispatch_period_schedule", period_schedule_df)
+            else:
+                st.caption(
+                    "Upload an 8760-hour requirement CSV with columns hour_index and required_mw (MW). "
+                    "The requirement profile overrides discharge windows and hourly/period schedules."
+                )
+                requirement_file = st.file_uploader(
+                    "Dispatch requirement CSV (hour_index, required_mw)",
+                    type=["csv"],
+                    key="inputs_dispatch_requirement_upload",
+                )
+                expected_steps = len(pv_df)
+                cached_profile = st.session_state.get("inputs_dispatch_requirement_profile")
+                if requirement_file is not None:
+                    try:
+                        requirement_df = read_dispatch_requirement_profile(
+                            [requirement_file], expected_steps=expected_steps
+                        )
+                    except ValueError as exc:
+                        st.error(str(exc))
+                    else:
+                        requirement_profile = _build_requirement_profile(requirement_df, expected_steps)
+                        st.session_state["inputs_dispatch_requirement_profile"] = requirement_profile
+                elif isinstance(cached_profile, list):
+                    requirement_profile = cached_profile
+                    st.info("Using cached dispatch requirement profile from this session.", icon="ℹ️")
 
+                if requirement_profile:
+                    missing_count = sum(value is None for value in requirement_profile)
+                    st.caption(
+                        f"Requirement profile loaded ({len(requirement_profile)} rows, "
+                        f"{missing_count} missing hour_index values)."
+                    )
     econ_inputs: Optional[EconomicInputs] = None
     price_inputs: Optional[PriceInputs] = None
 
@@ -1313,7 +1403,13 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         charge_windows_text,
         require_discharge_windows=dispatch_mode == DISPATCH_MODE_FIXED,
     )
-    schedule_validation = validate_dispatch_schedule(dispatch_mode, hourly_schedule_df, period_schedule_df)
+    schedule_validation = validate_dispatch_schedule(
+        dispatch_mode,
+        hourly_schedule_df,
+        period_schedule_df,
+        requirement_profile,
+        len(pv_df),
+    )
     validation_warnings.extend(dispatch_validation.warnings)
     validation_warnings.extend(schedule_validation.warnings)
     manual_errors, manual_details = validate_manual_augmentation_schedule(
@@ -1368,6 +1464,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
         augmentation_schedule=list(manual_schedule_entries) if aug_mode == "Manual" else [],
     )
     cfg.contracted_mw_schedule = resolve_contracted_mw_schedule(schedule_validation.schedule_payload)
+    cfg.contracted_mw_profile = resolve_contracted_mw_profile(schedule_validation.schedule_payload)
 
     inferred_step = infer_step_hours_from_pv(pv_df)
     if inferred_step is not None:

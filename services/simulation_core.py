@@ -200,6 +200,7 @@ class SimConfig:
     initial_usable_mwh: float = 120.0
     contracted_mw: float = 30.0
     contracted_mw_schedule: Optional[List[float]] = None
+    contracted_mw_profile: Optional[List[float]] = None
     discharge_windows: List[Window] = field(default_factory=lambda: [Window(10, 14), Window(18, 22)])
     charge_windows_text: str = ""
     charge_windows: List[Window] = field(default_factory=list)
@@ -456,6 +457,19 @@ def _normalize_contracted_mw_schedule(cfg: SimConfig) -> Optional[np.ndarray]:
     return np.nan_to_num(schedule, nan=0.0)
 
 
+def _normalize_contracted_mw_profile(cfg: SimConfig, expected_length: int) -> Optional[np.ndarray]:
+    """Return a per-timestep contracted MW profile aligned to the PV profile length."""
+
+    if not cfg.contracted_mw_profile:
+        return None
+
+    profile = np.asarray(cfg.contracted_mw_profile, dtype=float)
+    if profile.size != expected_length:
+        return None
+
+    return np.nan_to_num(profile, nan=0.0)
+
+
 def _target_mw_from_schedule(hod: float, dt: float, schedule_mw: np.ndarray) -> float:
     """Map an hourly schedule to a timestep target using overlap weighting.
 
@@ -488,7 +502,14 @@ def _daily_target_mwh(cfg: SimConfig, discharge_hours_per_day: float) -> float:
 
     schedule = _normalize_contracted_mw_schedule(cfg)
     if schedule is None:
-        return cfg.contracted_mw * discharge_hours_per_day
+        profile = None
+        if cfg.contracted_mw_profile:
+            profile = np.asarray(cfg.contracted_mw_profile, dtype=float)
+        if profile is None or profile.size == 0:
+            return cfg.contracted_mw * discharge_hours_per_day
+        total_hours = profile.size * cfg.step_hours
+        days = max(total_hours / 24.0, 1e-9)
+        return float(np.nan_to_num(profile, nan=0.0).sum() * cfg.step_hours / days)
 
     return float(schedule.sum())
 
@@ -507,6 +528,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     dis_windows = cfg.discharge_windows
     ch_windows = cfg.charge_windows
     schedule_mw = _normalize_contracted_mw_schedule(cfg)
+    profile_mw = _normalize_contracted_mw_profile(cfg, n_hours)
 
     dod_for_lookup = dod_key if dod_key else 100
     soh_cycle_start, soh_calendar_start, soh_total_start = compute_fleet_soh(
@@ -575,7 +597,9 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
         pv_available_mwh += pv_avail_mw * dt
         month_pv_available[month_index[h]] += pv_avail_mw * dt
 
-        if schedule_mw is not None:
+        if profile_mw is not None:
+            target_mw = float(profile_mw[h])
+        elif schedule_mw is not None:
             # Schedule overrides discharge windows; partial coverage falls back to windows above.
             target_mw = _target_mw_from_schedule(hod[h], dt, schedule_mw)
         else:
@@ -962,7 +986,12 @@ def simulate_project(cfg: SimConfig, pv_df: pd.DataFrame, cycle_df: pd.DataFrame
         raise ValueError("Please provide at least one discharge window.")
 
     schedule_mw = _normalize_contracted_mw_schedule(cfg)
-    if schedule_mw is not None:
+    profile_mw = _normalize_contracted_mw_profile(cfg, len(pv_df))
+    if profile_mw is not None and profile_mw.size > 0:
+        total_hours = profile_mw.size * cfg.step_hours
+        days = max(total_hours / 24.0, 1e-9)
+        dis_hours_per_day = float(np.count_nonzero(profile_mw > 0.0) * cfg.step_hours / days)
+    elif schedule_mw is not None:
         # Hours with non-zero schedule are treated as the active discharge period.
         dis_hours_per_day = float(np.count_nonzero(schedule_mw > 0.0))
     else:
