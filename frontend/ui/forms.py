@@ -103,6 +103,37 @@ def _coerce_columnar_frame(payload: Dict[str, Any]) -> pd.DataFrame:
     return pd.DataFrame(series_map)
 
 
+def _is_data_editor_state(value: Any) -> bool:
+    """Return True when the payload matches Streamlit's data editor state shape."""
+    if not isinstance(value, dict):
+        return False
+    editor_state_keys = {"edited_rows", "added_rows", "deleted_rows"}
+    return set(value.keys()).issubset(editor_state_keys)
+
+
+def _extract_data_editor_payload(key: str) -> Any:
+    """Extract a data payload while avoiding Streamlit's editor state conflicts.
+
+    Streamlit stores widget state in session_state[key]. When we preload list/dict
+    data into the same key (e.g., from a JSON import), Streamlit treats it as the
+    editor state and crashes. We move any non-editor payload into a companion
+    key so the editor can initialize cleanly.
+    """
+    value = st.session_state.get(key)
+    if value is None:
+        return st.session_state.get(f"{key}_data")
+    if _is_data_editor_state(value):
+        return st.session_state.get(f"{key}_data")
+    st.session_state[f"{key}_data"] = value
+    st.session_state.pop(key, None)
+    return value
+
+
+def _store_data_editor_payload(key: str, frame: pd.DataFrame) -> None:
+    """Persist the latest editor data in a companion session_state key."""
+    st.session_state[f"{key}_data"] = frame.to_dict(orient="records")
+
+
 def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
     """Return a 24-row DataFrame for hourly dispatch inputs.
 
@@ -912,7 +943,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "Provide a MW value for each hour (00:00-23:00). Use 0 for off hours; blanks are flagged "
                     "as missing hours."
                 )
-                hourly_default = st.session_state.get("inputs_dispatch_hourly_schedule")
+                hourly_default = _extract_data_editor_payload("inputs_dispatch_hourly_schedule")
                 hourly_schedule_df = st.data_editor(
                     _normalize_hourly_schedule_payload(hourly_default),
                     num_rows="fixed",
@@ -926,12 +957,13 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     },
                     key="inputs_dispatch_hourly_schedule",
                 )
+                _store_data_editor_payload("inputs_dispatch_hourly_schedule", hourly_schedule_df)
             else:
                 st.caption(
                     "Add periods with HH:MM start/end and a MW capacity. Wrap-around windows like 22:00-02:00 "
                     "are allowed. Overlaps are not allowed; gaps imply 0 MW for uncovered hours."
                 )
-                period_default = st.session_state.get("inputs_dispatch_period_schedule", [])
+                period_default = _extract_data_editor_payload("inputs_dispatch_period_schedule") or []
                 period_schedule_df = st.data_editor(
                     pd.DataFrame(period_default, columns=["Start time", "End time", "Capacity (MW)"]),
                     num_rows="dynamic",
@@ -946,6 +978,7 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     },
                     key="inputs_dispatch_period_schedule",
                 )
+                _store_data_editor_payload("inputs_dispatch_period_schedule", period_schedule_df)
 
     econ_inputs: Optional[EconomicInputs] = None
     price_inputs: Optional[PriceInputs] = None
