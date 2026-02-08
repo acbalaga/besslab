@@ -465,7 +465,10 @@ def _normalize_contracted_mw_profile(cfg: SimConfig, expected_length: int) -> Op
 
     profile = np.asarray(cfg.contracted_mw_profile, dtype=float)
     if profile.size != expected_length:
-        return None
+        if profile.size > 0 and expected_length % profile.size == 0:
+            profile = np.tile(profile, int(expected_length / profile.size))
+        else:
+            return None
 
     return np.nan_to_num(profile, nan=0.0)
 

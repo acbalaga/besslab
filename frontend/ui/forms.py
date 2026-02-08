@@ -202,7 +202,7 @@ def _normalize_hourly_schedule_payload(hourly_default: Any) -> pd.DataFrame:
 def _build_requirement_profile(
     requirement_df: pd.DataFrame,
     expected_steps: int,
-) -> List[Optional[float]]:
+) -> Tuple[List[Optional[float]], int, bool]:
     """Align requirement inputs to the expected timestep count."""
     normalized = requirement_df.copy()
     normalized["hour_index"] = pd.to_numeric(normalized["hour_index"], errors="coerce")
@@ -210,8 +210,20 @@ def _build_requirement_profile(
     normalized = normalized.dropna(subset=["hour_index"]).copy()
     normalized["hour_index"] = normalized["hour_index"].astype(int)
     normalized = normalized.set_index("hour_index").sort_index()
-    series = normalized["required_mw"].reindex(range(expected_steps))
-    return [None if pd.isna(value) else float(value) for value in series.tolist()]
+    base_steps = int(normalized.index.max()) + 1
+    series = normalized["required_mw"].reindex(range(base_steps))
+    profile = [None if pd.isna(value) else float(value) for value in series.tolist()]
+
+    if expected_steps == base_steps:
+        return profile, base_steps, False
+
+    if expected_steps % base_steps == 0:
+        repeat_count = int(expected_steps / base_steps)
+        return (profile * repeat_count), base_steps, True
+
+    padded_series = normalized["required_mw"].reindex(range(expected_steps))
+    padded_profile = [None if pd.isna(value) else float(value) for value in padded_series.tolist()]
+    return padded_profile, base_steps, False
 
 
 def _format_window(window: Window) -> str:
@@ -1041,7 +1053,8 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
             else:
                 st.caption(
                     "Upload an 8760-hour requirement CSV with columns hour_index and required_mw (MW). "
-                    "The requirement profile overrides discharge windows and hourly/period schedules."
+                    "The requirement profile overrides discharge windows and hourly/period schedules and "
+                    "is reused for each simulation year."
                 )
                 requirement_file = st.file_uploader(
                     "Dispatch requirement CSV (hour_index, required_mw)",
@@ -1058,8 +1071,15 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     except ValueError as exc:
                         st.error(str(exc))
                     else:
-                        requirement_profile = _build_requirement_profile(requirement_df, expected_steps)
+                        requirement_profile, base_steps, repeated_profile = _build_requirement_profile(
+                            requirement_df, expected_steps
+                        )
                         st.session_state["inputs_dispatch_requirement_profile"] = requirement_profile
+                        if repeated_profile:
+                            st.caption(
+                                f"Requirement profile repeated from {base_steps} steps "
+                                f"to cover {expected_steps} steps."
+                            )
                 elif isinstance(cached_profile, list):
                     requirement_profile = cached_profile
                     st.info("Using cached dispatch requirement profile from this session.", icon="ℹ️")
