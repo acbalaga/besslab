@@ -524,6 +524,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     pv_scale = (1.0 - cfg.pv_deg_rate) ** (year_idx - 1)
     pv_mw = state.pv_df["pv_mw"].to_numpy(float) * pv_scale * cfg.pv_availability
 
+    n_hours = len(pv_mw)
     pow_cap_mw = state.current_power_mw * cfg.bess_availability
 
     eta_ch, eta_dis, _ = resolve_efficiencies(cfg)
@@ -548,8 +549,6 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     soc_min = usable_mwh_start * cfg.soc_floor
     soc_max = usable_mwh_start * cfg.soc_ceiling
 
-    n_hours = len(pv_mw)
-    profile_mw = _normalize_contracted_mw_profile(cfg, n_hours)
     if "timestamp" in state.pv_df.columns:
         calendar_index = pd.to_datetime(state.pv_df["timestamp"], errors="coerce")
     else:
