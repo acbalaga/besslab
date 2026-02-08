@@ -287,6 +287,7 @@ def build_inputs_fingerprint(
             "mode": dispatch_mode,
             "hourly_mw": dispatch_schedule.get("hourly_mw"),
             "period_table": dispatch_schedule.get("period_table"),
+            "requirement_mw": dispatch_schedule.get("requirement_mw"),
         },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()

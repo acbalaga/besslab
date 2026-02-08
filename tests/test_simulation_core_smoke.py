@@ -90,3 +90,51 @@ def test_simulation_core_uses_contracted_schedule() -> None:
     first_year = output.results[0]
     assert first_year.expected_firm_mwh == pytest.approx(2.0)
     assert first_year.delivered_firm_mwh == pytest.approx(2.0)
+
+
+def test_simulation_core_allows_profile_without_windows() -> None:
+    """Requirement profiles should not require discharge windows."""
+
+    cfg = SimConfig(
+        years=1,
+        step_hours=1.0,
+        contracted_mw=5.0,
+        contracted_mw_profile=[1.0, 0.0],
+        initial_power_mw=2.0,
+        initial_usable_mwh=4.0,
+        discharge_windows=[],
+        charge_windows=[],
+        pv_availability=1.0,
+        bess_availability=1.0,
+    )
+    pv_df = pd.DataFrame({"pv_mw": [2.5, 0.0]})
+    cycle_df = _flat_cycle_table()
+
+    output = simulate_project(cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override="Auto (infer)", need_logs=True)
+
+    first_year = output.results[0]
+    assert first_year.expected_firm_mwh == pytest.approx(1.0)
+
+
+def test_simulation_core_repeats_profile_to_match_length() -> None:
+    """Profiles should repeat when PV data spans multiple profile lengths."""
+
+    cfg = SimConfig(
+        years=1,
+        step_hours=1.0,
+        contracted_mw=5.0,
+        contracted_mw_profile=[1.0, 0.0],
+        initial_power_mw=2.0,
+        initial_usable_mwh=4.0,
+        discharge_windows=[],
+        charge_windows=[],
+        pv_availability=1.0,
+        bess_availability=1.0,
+    )
+    pv_df = pd.DataFrame({"pv_mw": [2.5, 0.0, 2.5, 0.0]})
+    cycle_df = _flat_cycle_table()
+
+    output = simulate_project(cfg, pv_df=pv_df, cycle_df=cycle_df, dod_override="Auto (infer)", need_logs=True)
+
+    first_year = output.results[0]
+    assert first_year.expected_firm_mwh == pytest.approx(2.0)

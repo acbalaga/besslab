@@ -6,6 +6,8 @@ import json
 import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+import numpy as np
+
 from services.simulation_core import SimConfig, Window
 
 
@@ -129,12 +131,39 @@ def resolve_contracted_mw_schedule(dispatch_schedule: Optional[Dict[str, Any]]) 
     return None
 
 
+def resolve_contracted_mw_profile(dispatch_schedule: Optional[Dict[str, Any]]) -> Optional[List[float]]:
+    """Return a contracted MW profile from a dispatch payload if available."""
+
+    if not isinstance(dispatch_schedule, dict):
+        return None
+
+    profile = dispatch_schedule.get("requirement_mw")
+    if not isinstance(profile, list) or not profile:
+        return None
+
+    try:
+        return [float(value) for value in profile]
+    except (TypeError, ValueError):
+        return None
+
+
 def build_contracted_mw_profile(cfg: SimConfig) -> List[float]:
     """Return the contracted MW schedule by hour, falling back to discharge windows."""
 
     schedule = normalize_hourly_schedule(cfg.contracted_mw_schedule)
     if schedule:
         return schedule
+
+    if cfg.contracted_mw_profile:
+        profile = np.asarray(cfg.contracted_mw_profile, dtype=float)
+        if profile.size >= HOURS_PER_DAY:
+            hours = np.arange(profile.size) % HOURS_PER_DAY
+            totals = np.zeros(HOURS_PER_DAY, dtype=float)
+            counts = np.zeros(HOURS_PER_DAY, dtype=float)
+            np.add.at(totals, hours, profile)
+            np.add.at(counts, hours, 1.0)
+            averaged = np.divide(totals, counts, out=np.zeros_like(totals), where=counts > 0)
+            return averaged.tolist()
 
     return [
         cfg.contracted_mw if any(window.contains(hour) for window in cfg.discharge_windows) else 0.0
