@@ -17,17 +17,18 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 ### Prepare your data
 - PV profile CSV with columns `hour_index, pv_mw` (0–8759 or 1–8760). Add a `timestamp` column to keep sub-hourly cadences or leap-year coverage; the app infers the timestep and fills gaps.
 - Optional cycle-model Excel file to override the built-in degradation table.
-- Optional dispatch requirement CSV with columns `hour_index, required_mw` to drive a full-year contract requirement profile.
+- Optional dispatch requirement CSV with columns `hour_index, required_mw` to drive a full-year contract requirement profile (use when selecting a profile or hourly dispatch mode).
+- Optional WESM hourly price CSV with `timestamp` or `hour_index` plus deficit/surplus price columns (`wesm_deficit_price_usd_per_mwh`, `wesm_surplus_price_usd_per_mwh`) to price shortfalls or surplus in economics.
 - Dispatch windows accept minutes (e.g., `05:30-09:00`), parsed as fractional hours, and uploads are cached on the Landing page so you can reuse them across pages or fresh sessions.
 
 ### Run the workflow
 1) Upload your PV CSV (and optional cycle model) on the Landing page (or directly on Inputs & Results), or use the bundled samples.
 2) Set contracted MW, duration (hours), discharge windows, and any charge windows (minutes are preserved).
-3) Adjust efficiency (single RTE or split charge/discharge), SOC limits, availability, augmentation triggers (threshold, periodic, or manual schedules), rate-limit settings, and (optionally) enable economics for LCOE/LCOS, NPV, and IRR. Set the contract energy price and optional WESM pricing to reflect your offtake structure.
+3) Adjust efficiency (single RTE or split charge/discharge), SOC limits, availability, augmentation triggers (threshold, periodic, or manual schedules), rate-limit settings, and choose a dispatch mode (fixed windows or hourly/profile schedule). Optionally enable economics for LCOE/LCOS, NPV, and IRR; set the contract energy price and optional WESM pricing to reflect your offtake structure.
 4) Run the simulation and review compliance, energy splits, end-of-year capability, daily profiles, and flag guidance.
-5) Use the physics-bounded Design Advisor and SOC/economics sensitivity sweeps to explore mitigations when targets are missed. Re-run sweeps after input changes to refresh results.
-6) Download yearly/monthly/hourly CSVs, export the inputs (JSON, including economics), grab a PDF snapshot, or pull the finance audit workbook for traceable cash-flow reviews. Use the sweep and batch tools to compare scenarios in a structured way.
-7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs.
+5) Use the physics-bounded Design Advisor, SOC/economics sensitivity sweeps, and the Sensitivity & Stress Test page to explore mitigations when targets are missed. Re-run sweeps after input changes to refresh results.
+6) Download yearly/monthly/hourly CSVs, export the inputs (JSON, including economics), grab a PDF snapshot, or pull the finance audit workbook for traceable cash-flow reviews. Use the sweep, batch, and stress-test tools to compare scenarios in a structured way.
+7) Jump to the BESS sizing sweep page to explore usable-energy variants (holding power fixed) using your cached inputs, or the batch page to compare multiple scenarios.
 
 ### Units and conventions
 - Power: MW (nameplate and contracted).
@@ -38,6 +39,7 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 
 ### Multipage navigation
 - **Inputs & Results:** Primary simulation, Design Advisor, sensitivities, and downloads.
+- **Sensitivity & stress test:** Capture baseline KPIs, apply upsides/downsides, and export tornado charts.
 - **BESS sizing sweep:** Sweep usable energy, rank feasible designs, and chart LCOE/IRR trends.
 - **Multi-scenario batch:** Run predefined variations and compare results in one table (recommended for scenario reviews).
 
@@ -47,6 +49,7 @@ Use this in-app guide to navigate the PV-only, AC-coupled BESS model and its mul
 - If charge opportunities look tight, widen charge windows or raise the SOC ceiling.
 - Sensitivities clear when inputs change—rerun them after major edits.
 - PV-only charging is enforced; grid charging is not modeled.
+- WESM pricing affects economics only; compliance/energy KPIs are still based on the physical simulation.
 - Disable the session rate limit by entering the password in the sidebar (default: `besslab`).
     """
 )
