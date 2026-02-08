@@ -531,6 +531,7 @@ def simulate_year(state: SimState, year_idx: int, dod_key: Optional[int], need_l
     dis_windows = cfg.discharge_windows
     ch_windows = cfg.charge_windows
     schedule_mw = _normalize_contracted_mw_schedule(cfg)
+    profile_mw = _normalize_contracted_mw_profile(cfg, n_hours)
 
     dod_for_lookup = dod_key if dod_key else 100
     soh_cycle_start, soh_calendar_start, soh_total_start = compute_fleet_soh(
