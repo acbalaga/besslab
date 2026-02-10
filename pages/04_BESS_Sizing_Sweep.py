@@ -36,6 +36,10 @@ render_layout = init_page_layout(
     base_dir=BASE_DIR,
 )
 
+ENERGY_POINTS_MIN = 1
+ENERGY_POINTS_MAX = 30
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -76,7 +80,13 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         payload.get("energy_range"),
         defaults["energy_range"],
     )
-    normalized["energy_steps"] = _coerce_int(payload.get("energy_steps"), defaults["energy_steps"])
+    normalized["energy_steps"] = max(
+        ENERGY_POINTS_MIN,
+        min(
+            ENERGY_POINTS_MAX,
+            _coerce_int(payload.get("energy_steps"), defaults["energy_steps"]),
+        ),
+    )
     normalized["fixed_power"] = _coerce_float(payload.get("fixed_power"), defaults["fixed_power"])
     normalized["analysis_mode"] = payload.get("analysis_mode", defaults.get("analysis_mode"))
     normalized["power_range"] = _normalize_energy_range(
@@ -360,9 +370,12 @@ with st.container():
         )
         energy_steps = st.number_input(
             "Energy points",
-            min_value=1,
-            max_value=15,
-            value=int(default_inputs["energy_steps"]),
+            min_value=ENERGY_POINTS_MIN,
+            max_value=ENERGY_POINTS_MAX,
+            value=max(
+                ENERGY_POINTS_MIN,
+                min(ENERGY_POINTS_MAX, int(default_inputs["energy_steps"])),
+            ),
             help="Number of evenly spaced usable-energy values between the bounds.",
         )
         fixed_power = st.number_input(
