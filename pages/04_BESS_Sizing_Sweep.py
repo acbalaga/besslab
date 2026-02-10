@@ -14,9 +14,10 @@ from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.bess_advisory import (
     build_sizing_benchmark_table,
     choose_recommended_candidate,
+    rank_recommendation_candidates,
     summarize_pv_sizing_signals,
 )
-from utils.sweeps import sweep_bess_sizes
+from utils.sweeps import _resolve_ranking_column, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
     bootstrap_session_state,
@@ -826,7 +827,12 @@ if sweep_df is not None:
     )
 
     benchmark_df = build_sizing_benchmark_table(sweep_df)
-    recommendation = choose_recommended_candidate(sweep_df)
+    ranking_column, ranking_ascending, _, _ = _resolve_ranking_column("reliability", ranking_choice)
+    recommendation = choose_recommended_candidate(
+        sweep_df,
+        ranking_column=ranking_column,
+        ascending=ranking_ascending,
+    )
     if recommendation is not None:
         st.success(
             "Recommended benchmark candidate: "
@@ -900,7 +906,11 @@ if sweep_df is not None:
         "benchmark_reliability_ok",
     ]
     available_top_cols = [col for col in top_cols if col in viz_df.columns]
-    ranked_df = viz_df.sort_values(["benchmark_reliability_ok", "compliance_pct", "total_shortfall_mwh"], ascending=[False, False, True])
+    ranked_df = rank_recommendation_candidates(
+        viz_df,
+        ranking_column=ranking_column,
+        ascending=ranking_ascending,
+    )
     st.dataframe(ranked_df[available_top_cols].head(10), use_container_width=True, hide_index=True)
 
     if recommendation is not None:

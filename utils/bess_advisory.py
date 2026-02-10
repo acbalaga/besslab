@@ -8,6 +8,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from utils.sweeps import _resolve_ranking_column
+
 
 @dataclass(frozen=True)
 class PvSizingSignals:
@@ -74,29 +76,73 @@ def build_sizing_benchmark_table(sweep_df: pd.DataFrame) -> pd.DataFrame:
     return annotated
 
 
-def choose_recommended_candidate(sweep_df: pd.DataFrame) -> Optional[pd.Series]:
-    """Select a practical recommendation using reliability-first screening."""
+def rank_recommendation_candidates(
+    sweep_df: pd.DataFrame,
+    *,
+    ranking_column: str,
+    ascending: bool,
+    enforce_benchmark_gate: bool = True,
+) -> pd.DataFrame:
+    """Return ranked recommendation candidates using a shared sorting policy.
+
+    The ranking policy is configurable so Streamlit displays can stay aligned with
+    the backend recommendation logic for any selected KPI.
+    """
 
     if sweep_df.empty:
-        return None
+        return pd.DataFrame()
 
     df = build_sizing_benchmark_table(sweep_df)
     evaluated = df[df.get("status", "evaluated") == "evaluated"].copy()
     if evaluated.empty:
-        return None
+        return evaluated
 
     fully_qualified = evaluated[
         evaluated["benchmark_reliability_ok"]
         & evaluated["benchmark_duration_ok"]
         & evaluated["benchmark_c_rate_ok"]
     ]
-    candidate_pool = fully_qualified if not fully_qualified.empty else evaluated
+    if enforce_benchmark_gate:
+        candidate_pool = fully_qualified
+    else:
+        candidate_pool = fully_qualified if not fully_qualified.empty else evaluated
+    if candidate_pool.empty:
+        return candidate_pool
 
-    sort_cols = ["total_shortfall_mwh", "energy_mwh"]
-    ascending = [True, True]
-    if "npv_usd" in candidate_pool.columns and candidate_pool["npv_usd"].notna().any():
-        sort_cols = ["benchmark_reliability_ok", "npv_usd", "energy_mwh"]
-        ascending = [False, False, True]
+    resolved_column = ranking_column
+    resolved_ascending = ascending
+    if resolved_column not in candidate_pool.columns or not candidate_pool[resolved_column].notna().any():
+        fallback_column, fallback_ascending, _, _ = _resolve_ranking_column("reliability", None)
+        resolved_column = fallback_column
+        resolved_ascending = fallback_ascending
 
-    recommended = candidate_pool.sort_values(sort_cols, ascending=ascending).iloc[0]
+    ranking_keys = [
+        "benchmark_reliability_ok",
+        resolved_column,
+        "total_shortfall_mwh",
+        "energy_mwh",
+    ]
+    ranking_ascending = [False, resolved_ascending, True, True]
+
+    return candidate_pool.sort_values(ranking_keys, ascending=ranking_ascending)
+
+
+def choose_recommended_candidate(
+    sweep_df: pd.DataFrame,
+    *,
+    ranking_column: str = "compliance_pct",
+    ascending: bool = False,
+    enforce_benchmark_gate: bool = True,
+) -> Optional[pd.Series]:
+    """Select a practical recommendation using the configured ranking policy."""
+
+    ranked = rank_recommendation_candidates(
+        sweep_df,
+        ranking_column=ranking_column,
+        ascending=ascending,
+        enforce_benchmark_gate=enforce_benchmark_gate,
+    )
+    if ranked.empty:
+        return None
+    recommended = ranked.iloc[0]
     return recommended
