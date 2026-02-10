@@ -1,5 +1,6 @@
 import json
 import math
+from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
 
 import altair as alt
@@ -11,6 +12,11 @@ from services.simulation_core import SimConfig
 from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
 from utils.io import read_wesm_forecast_profile_average
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
+from utils.bess_advisory import (
+    build_sizing_benchmark_table,
+    choose_recommended_candidate,
+    summarize_pv_sizing_signals,
+)
 from utils.sweeps import generate_values, sweep_bess_sizes
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
@@ -23,10 +29,16 @@ bootstrap_session_state()
 
 render_layout = init_page_layout(
     page_title="BESS Sizing Sweep",
-    main_title="BESS sizing sweep (energy sensitivity)",
-    description="Sweep usable energy (MWh) while holding power constant to see feasibility, LCOE, and NPV.",
+    main_title="BESS sizing sweep (comprehensive advisory)",
+    description=(
+        "Analyze the PV 8760 source and sweep BESS candidates to generate reliability and economics sizing advice."
+    ),
     base_dir=BASE_DIR,
 )
+
+ENERGY_POINTS_MIN = 1
+ENERGY_POINTS_MAX = 30
+
 
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
@@ -68,8 +80,19 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         payload.get("energy_range"),
         defaults["energy_range"],
     )
-    normalized["energy_steps"] = _coerce_int(payload.get("energy_steps"), defaults["energy_steps"])
+    normalized["energy_steps"] = max(
+        ENERGY_POINTS_MIN,
+        min(
+            ENERGY_POINTS_MAX,
+            _coerce_int(payload.get("energy_steps"), defaults["energy_steps"]),
+        ),
+    )
     normalized["fixed_power"] = _coerce_float(payload.get("fixed_power"), defaults["fixed_power"])
+    normalized["analysis_mode"] = payload.get("analysis_mode", defaults.get("analysis_mode"))
+    normalized["power_range"] = _normalize_energy_range(
+        payload.get("power_range"),
+        defaults.get("power_range", (5.0, 50.0)),
+    )
     normalized["wacc_pct"] = _coerce_float(payload.get("wacc_pct"), defaults["wacc_pct"])
     normalized["inflation_pct"] = _coerce_float(payload.get("inflation_pct"), defaults["inflation_pct"])
     normalized["forex_rate_php_per_usd"] = _coerce_float(
@@ -249,9 +272,11 @@ default_energy_range = (
     min(500.0, default_energy * 1.5),
 )
 default_inputs: Dict[str, Any] = {
-    "energy_range": default_energy_range,
-    "energy_steps": 5,
+    "energy_range": (10.0, 200.0),
+    "energy_steps": 20,
     "fixed_power": float(cfg.initial_power_mw),
+    "analysis_mode": "Comprehensive matrix (5–50 MW × 10–200 MWh)",
+    "power_range": (5.0, 50.0),
     "wacc_pct": 8.0,
     "inflation_pct": 3.0,
     "forex_rate_php_per_usd": default_forex_rate_php_per_usd,
@@ -322,6 +347,16 @@ with st.expander("Load/save sweep inputs (JSON)", expanded=False):
             st.info("Provide JSON content to load.", icon="ℹ️")
 
 with st.container():
+    analysis_mode = st.radio(
+        "Sweep mode",
+        options=[
+            "Comprehensive matrix (5–50 MW × 10–200 MWh)",
+            "Legacy energy sensitivity (fixed MW)",
+        ],
+        index=0 if default_inputs.get("analysis_mode", "").startswith("Comprehensive") else 1,
+        help="Use matrix mode to evaluate the requested 5–50 MW and 10–200 MWh candidate grid.",
+    )
+
     size_col1, size_col2, size_col3, price_col = st.columns(4)
     wesm_profile_df: Optional[pd.DataFrame] = None
     with size_col1:
@@ -335,9 +370,12 @@ with st.container():
         )
         energy_steps = st.number_input(
             "Energy points",
-            min_value=1,
-            max_value=15,
-            value=int(default_inputs["energy_steps"]),
+            min_value=ENERGY_POINTS_MIN,
+            max_value=ENERGY_POINTS_MAX,
+            value=max(
+                ENERGY_POINTS_MIN,
+                min(ENERGY_POINTS_MAX, int(default_inputs["energy_steps"])),
+            ),
             help="Number of evenly spaced usable-energy values between the bounds.",
         )
         fixed_power = st.number_input(
@@ -347,6 +385,14 @@ with st.container():
             value=float(default_inputs["fixed_power"]),
             step=0.1,
             help="Power rating held constant while sweeping usable energy.",
+        )
+        power_range = st.slider(
+            "Power range (MW)",
+            min_value=5.0,
+            max_value=50.0,
+            value=tuple(float(v) for v in default_inputs.get("power_range", (5.0, 50.0))),
+            step=5.0,
+            help="Used for comprehensive matrix mode.",
         )
 
     with size_col2:
@@ -701,6 +747,8 @@ with st.container():
         "energy_range": energy_range,
         "energy_steps": int(energy_steps),
         "fixed_power": float(fixed_power),
+        "analysis_mode": analysis_mode,
+        "power_range": power_range,
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
         "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
@@ -751,6 +799,17 @@ if submitted:
         )
         st.stop()
     energy_values = generate_values(energy_range[0], energy_range[1], int(energy_steps))
+    power_values = generate_values(power_range[0], power_range[1], int((power_range[1] - power_range[0]) / 5) + 1)
+    benchmark_cfg = replace(
+        cfg,
+        pv_availability=0.99,
+        bess_availability=0.97,
+        calendar_fade_rate=0.01,
+        soc_floor=0.0,
+        soc_ceiling=1.0,
+        rte_roundtrip=0.89,
+    )
+
     economics_inputs = EconomicInputs(
         capex_musd=capex_musd,
         pv_capex_musd=pv_capex_musd,
@@ -775,13 +834,11 @@ if submitted:
     )
 
     with st.spinner("Running BESS energy sweep..."):
-        sweep_kwargs = dict(
-            base_cfg=cfg,
+        common_kwargs = dict(
+            base_cfg=benchmark_cfg,
             pv_df=pv_df,
             cycle_df=cycle_df,
             dod_override=dod_override,
-            energy_mwh_values=energy_values,
-            fixed_power_mw=fixed_power,
             economics_inputs=economics_inputs,
             price_inputs=price_inputs,
             wesm_profile_df=wesm_profile_df if wesm_pricing_enabled else None,
@@ -791,62 +848,23 @@ if submitted:
             use_case="reliability",
         )
 
-        try:
-            sweep_df = sweep_bess_sizes(**sweep_kwargs)
-        except TypeError as exc:
-            # Backwards-compatibility for environments still running an older sweep implementation
-            # that lacks newer keyword arguments. Gracefully retry without the missing inputs.
-            message = str(exc)
-            if "wesm_profile_df" in message:
-                sweep_kwargs.pop("wesm_profile_df", None)
-                sweep_kwargs.pop("wesm_step_hours", None)
-                try:
-                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
-                except TypeError as inner_exc:
-                    if "price_inputs" not in str(inner_exc):
-                        raise
-                    sweep_kwargs.pop("price_inputs", None)
-                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
-                sweep_kwargs["wesm_profile_df"] = wesm_profile_df
-                sweep_kwargs["wesm_step_hours"] = getattr(cfg, "step_hours", 1.0)
-            elif "price_inputs" in message:
-                sweep_kwargs.pop("price_inputs", None)
-                try:
-                    sweep_df = sweep_bess_sizes(**sweep_kwargs)
-                except TypeError as inner_exc:
-                    if "energy_mwh_values" not in str(inner_exc):
-                        raise
-                    duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
-                    sweep_df = sweep_bess_sizes(
-                        cfg,
-                        pv_df,
-                        cycle_df,
-                        dod_override,
-                        power_mw_values=[fixed_power],
-                        duration_h_values=duration_values,
-                        economics_inputs=economics_inputs,
-                        ranking_kpi=ranking_choice,
-                        min_soh=min_soh,
-                        use_case="reliability",
+        if analysis_mode.startswith("Comprehensive"):
+            matrix_frames: list[pd.DataFrame] = []
+            for power_mw in power_values:
+                matrix_frames.append(
+                    sweep_bess_sizes(
+                        **common_kwargs,
+                        energy_mwh_values=energy_values,
+                        fixed_power_mw=float(power_mw),
                     )
-                sweep_kwargs["price_inputs"] = price_inputs
-            elif "energy_mwh_values" in message:
-                duration_values = [energy / fixed_power for energy in energy_values if fixed_power > 0]
-                sweep_df = sweep_bess_sizes(
-                    cfg,
-                    pv_df,
-                    cycle_df,
-                    dod_override,
-                    power_mw_values=[fixed_power],
-                    duration_h_values=duration_values,
-                    economics_inputs=economics_inputs,
-                    price_inputs=price_inputs,
-                    ranking_kpi=ranking_choice,
-                    min_soh=min_soh,
-                    use_case="reliability",
                 )
-            else:
-                raise
+            sweep_df = pd.concat(matrix_frames, ignore_index=True) if matrix_frames else pd.DataFrame()
+        else:
+            sweep_df = sweep_bess_sizes(
+                **common_kwargs,
+                energy_mwh_values=energy_values,
+                fixed_power_mw=fixed_power,
+            )
 
     if sweep_df.empty:
         st.info("No sweep results generated; widen the ranges and try again.")
@@ -857,6 +875,43 @@ if submitted:
 
 sweep_df = st.session_state.get("bess_size_sweep_results")
 if sweep_df is not None:
+    pv_signals = summarize_pv_sizing_signals(pv_df)
+    st.subheader("PV 8760 technical signals")
+    signal_cols = st.columns(5)
+    signal_cols[0].metric("Annual PV energy", f"{pv_signals.annual_energy_mwh:,.0f} MWh")
+    signal_cols[1].metric("PV peak", f"{pv_signals.peak_power_mw:,.2f} MW")
+    signal_cols[2].metric("Implied CF", f"{pv_signals.implied_capacity_factor_pct:,.1f}%")
+    signal_cols[3].metric("Active PV hours", f"{pv_signals.active_hours_pct:,.1f}%")
+    signal_cols[4].metric("P95 hourly ramp", f"{pv_signals.p95_hourly_ramp_mw:,.2f} MW")
+    st.caption(
+        "Benchmark assumptions used for this advisory: PV availability 99%, BESS availability 97%, "
+        "calendar fade 1%/year, DoD 100%, SoC 0–100%, and RTE 89%."
+    )
+
+    benchmark_df = build_sizing_benchmark_table(sweep_df)
+    recommendation = choose_recommended_candidate(sweep_df)
+    if recommendation is not None:
+        st.success(
+            "Recommended benchmark candidate: "
+            f"{recommendation['power_mw']:.0f} MW / {recommendation['energy_mwh']:.0f} MWh "
+            f"({recommendation['duration_h']:.1f} h), compliance {recommendation['compliance_pct']:.2f}%, "
+            f"shortfall {recommendation['total_shortfall_mwh']:.1f} MWh."
+        )
+
+    if analysis_mode.startswith("Comprehensive"):
+        st.subheader("Comprehensive sizing visuals")
+        st.altair_chart(
+            alt.Chart(benchmark_df)
+            .mark_rect()
+            .encode(
+                x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
+                y=alt.Y("power_mw:Q", title="Power (MW)"),
+                color=alt.Color("compliance_pct:Q", title="Compliance (%)"),
+                tooltip=["power_mw", "energy_mwh", "duration_h", "compliance_pct", "total_shortfall_mwh", "npv_usd"],
+            ),
+            use_container_width=True,
+        )
+
     convergence_point = recommend_convergence_point(sweep_df)
     if convergence_point:
         energy_mwh, npv_usd, irr_pct = convergence_point
