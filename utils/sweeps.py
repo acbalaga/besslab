@@ -353,6 +353,34 @@ def compute_static_bess_sweep_economics(
     return pd.DataFrame(rows)
 
 
+
+
+def _resolve_candidate_bess_capex_musd(
+    economics_inputs: EconomicInputs,
+    candidate_power_mw: float,
+    candidate_energy_mwh: float,
+    base_initial_energy_mwh: float | None,
+) -> float:
+    """Resolve candidate BESS CAPEX in USD millions for sweep economics."""
+
+    has_explicit_sizing_inputs = any(
+        value is not None
+        for value in (
+            economics_inputs.capex_energy_usd_per_kwh,
+            economics_inputs.capex_power_usd_per_kw,
+            economics_inputs.capex_base_fixed_musd,
+        )
+    )
+    if not has_explicit_sizing_inputs:
+        size_scale = 1.0
+        if base_initial_energy_mwh and base_initial_energy_mwh > 0:
+            size_scale = max(candidate_energy_mwh / base_initial_energy_mwh, 0.0)
+        return economics_inputs.capex_musd * size_scale
+
+    base_fixed_musd = float(economics_inputs.capex_base_fixed_musd or 0.0)
+    power_term_musd = float(economics_inputs.capex_power_usd_per_kw or 0.0) * candidate_power_mw * 1_000.0 / 1_000_000.0
+    energy_term_musd = float(economics_inputs.capex_energy_usd_per_kwh or 0.0) * candidate_energy_mwh * 1_000.0 / 1_000_000.0
+    return base_fixed_musd + power_term_musd + energy_term_musd
 def _compute_candidate_economics(
     sim_output: "SimulationOutput",
     economics_inputs: EconomicInputs,
@@ -404,9 +432,18 @@ def _compute_candidate_economics(
         return float("nan"), float("nan"), float("nan"), float("nan")
 
     base_cfg = sim_output.cfg
+    candidate_power_mw = max(float(base_cfg.initial_power_mw), 0.0)
+    candidate_energy_mwh = max(float(base_cfg.initial_usable_mwh), 0.0)
     size_scale = 1.0
     if base_initial_energy_mwh and base_initial_energy_mwh > 0:
-        size_scale = max(sim_output.cfg.initial_usable_mwh / base_initial_energy_mwh, 0.0)
+        size_scale = max(candidate_energy_mwh / base_initial_energy_mwh, 0.0)
+
+    candidate_bess_capex_musd = _resolve_candidate_bess_capex_musd(
+        economics_inputs,
+        candidate_power_mw=candidate_power_mw,
+        candidate_energy_mwh=candidate_energy_mwh,
+        base_initial_energy_mwh=base_initial_energy_mwh,
+    )
 
     scaled_variable_opex_schedule_usd = (
         tuple(v * size_scale for v in economics_inputs.variable_opex_schedule_usd)
@@ -420,7 +457,7 @@ def _compute_candidate_economics(
     )
     scaled_economics = replace(
         economics_inputs,
-        capex_musd=economics_inputs.capex_musd * size_scale,
+        capex_musd=candidate_bess_capex_musd,
         fixed_opex_musd=economics_inputs.fixed_opex_musd * size_scale,
         variable_opex_schedule_usd=scaled_variable_opex_schedule_usd,
         periodic_variable_opex_usd=scaled_periodic_variable_opex_usd,
@@ -863,13 +900,14 @@ def _evaluate_candidate_row(
                     annual_wesm_surplus_revenue_usd if use_wesm_profile else None
                 ),
             )
-            size_scale = (
-                candidate_energy_mwh / base_initial_energy_mwh
-                if base_initial_energy_mwh > 0
-                else 1.0
+            candidate_bess_capex_musd = _resolve_candidate_bess_capex_musd(
+                economics_inputs,
+                candidate_power_mw=float(power_mw),
+                candidate_energy_mwh=float(candidate_energy_mwh),
+                base_initial_energy_mwh=base_initial_energy_mwh,
             )
             # CAPEX is normalized to installed power (USD/kW) to match common quoting units.
-            total_capex_musd = economics_inputs.capex_musd * size_scale + economics_inputs.pv_capex_musd
+            total_capex_musd = candidate_bess_capex_musd + economics_inputs.pv_capex_musd
             capex_usd = total_capex_musd * 1_000_000.0
             if power_mw > 0:
                 capex_per_kw_usd = capex_usd / (power_mw * 1_000.0)

@@ -38,6 +38,9 @@ class EconomicInputs:
     """
 
     capex_musd: float = 0.0
+    capex_energy_usd_per_kwh: float | None = None
+    capex_power_usd_per_kw: float | None = None
+    capex_base_fixed_musd: float | None = None
     capex_usd_per_kwh: float | None = None
     capex_total_usd: float | None = None
     bess_bol_kwh: float | None = None
@@ -633,6 +636,12 @@ def _validate_inputs(
         _ensure_non_negative_finite(float(value), f"annual_bess_mwh[{idx}]")
 
     _ensure_non_negative_finite(inputs.capex_musd, "capex_musd")
+    if inputs.capex_energy_usd_per_kwh is not None:
+        _ensure_non_negative_finite(inputs.capex_energy_usd_per_kwh, "capex_energy_usd_per_kwh")
+    if inputs.capex_power_usd_per_kw is not None:
+        _ensure_non_negative_finite(inputs.capex_power_usd_per_kw, "capex_power_usd_per_kw")
+    if inputs.capex_base_fixed_musd is not None:
+        _ensure_non_negative_finite(inputs.capex_base_fixed_musd, "capex_base_fixed_musd")
     _ensure_non_negative_finite(inputs.pv_capex_musd, "pv_capex_musd")
     if inputs.total_capex_musd is not None:
         _ensure_non_negative_finite(inputs.total_capex_musd, "total_capex_musd")

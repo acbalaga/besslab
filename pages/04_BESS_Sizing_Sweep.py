@@ -100,6 +100,18 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
         defaults["forex_rate_php_per_usd"],
     )
     normalized["capex_musd"] = _coerce_float(payload.get("capex_musd"), defaults["capex_musd"])
+    normalized["capex_energy_usd_per_kwh"] = _coerce_float(
+        payload.get("capex_energy_usd_per_kwh"),
+        defaults["capex_energy_usd_per_kwh"],
+    )
+    normalized["capex_power_usd_per_kw"] = _coerce_float(
+        payload.get("capex_power_usd_per_kw"),
+        defaults["capex_power_usd_per_kw"],
+    )
+    normalized["capex_base_fixed_musd"] = _coerce_float(
+        payload.get("capex_base_fixed_musd"),
+        defaults["capex_base_fixed_musd"],
+    )
     normalized["pv_capex_musd"] = _coerce_float(payload.get("pv_capex_musd"), defaults["pv_capex_musd"])
     normalized["fixed_opex_pct"] = _coerce_float(payload.get("fixed_opex_pct"), defaults["fixed_opex_pct"])
     normalized["fixed_opex_musd"] = _coerce_float(
@@ -234,6 +246,9 @@ default_inputs: Dict[str, Any] = {
     "inflation_pct": 3.0,
     "forex_rate_php_per_usd": default_forex_rate_php_per_usd,
     "capex_musd": 40.0,
+    "capex_energy_usd_per_kwh": 0.0,
+    "capex_power_usd_per_kw": 0.0,
+    "capex_base_fixed_musd": 0.0,
     "pv_capex_musd": 0.0,
     "fixed_opex_pct": 2.0,
     "fixed_opex_musd": 0.0,
@@ -340,11 +355,32 @@ with st.container():
             help="Used to convert PHP-denominated inputs (prices, OPEX, DevEx) to USD.",
         )
         capex_musd = st.number_input(
-            "BESS CAPEX (USD million)",
+            "Legacy BESS CAPEX (USD million)",
             min_value=0.0,
             value=float(default_inputs["capex_musd"]),
             step=0.1,
-            help="BESS-only CAPEX. Combined with PV CAPEX for total project spend.",
+            help="Legacy single-scalar BESS CAPEX. Used only when the explicit sizing CAPEX terms below are not set.",
+        )
+        capex_energy_usd_per_kwh = st.number_input(
+            "Energy CAPEX term (USD/kWh)",
+            min_value=0.0,
+            value=float(default_inputs["capex_energy_usd_per_kwh"]),
+            step=1.0,
+            help="Applied to candidate usable energy (MWh) during the sweep.",
+        )
+        capex_power_usd_per_kw = st.number_input(
+            "Power CAPEX term (USD/kW)",
+            min_value=0.0,
+            value=float(default_inputs["capex_power_usd_per_kw"]),
+            step=1.0,
+            help="Applied to candidate power rating (MW) during the sweep.",
+        )
+        capex_base_fixed_musd = st.number_input(
+            "Fixed BOS/base CAPEX (USD million)",
+            min_value=0.0,
+            value=float(default_inputs["capex_base_fixed_musd"]),
+            step=0.1,
+            help="Added once per candidate when explicit CAPEX sizing terms are used.",
         )
         pv_capex_musd = st.number_input(
             "PV CAPEX (USD million)",
@@ -669,6 +705,9 @@ with st.container():
         "inflation_pct": float(inflation_pct),
         "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
         "capex_musd": float(capex_musd),
+        "capex_energy_usd_per_kwh": float(capex_energy_usd_per_kwh),
+        "capex_power_usd_per_kw": float(capex_power_usd_per_kw),
+        "capex_base_fixed_musd": float(capex_base_fixed_musd),
         "pv_capex_musd": float(pv_capex_musd),
         "fixed_opex_pct": float(fixed_opex_pct * 100.0),
         "fixed_opex_musd": float(fixed_opex_musd),
@@ -724,8 +763,24 @@ if submitted:
         rte_roundtrip=0.89,
     )
 
+    if (
+        len(power_values) > 1
+        and len(energy_values) > 1
+        and capex_energy_usd_per_kwh <= 0
+        and capex_power_usd_per_kw <= 0
+        and capex_base_fixed_musd <= 0
+    ):
+        st.warning(
+            "Using legacy single-scalar BESS CAPEX for a 2D power/energy matrix. "
+            "Set energy and/or power CAPEX terms to capture independent sizing effects.",
+            icon="⚠️",
+        )
+
     economics_inputs = EconomicInputs(
         capex_musd=capex_musd,
+        capex_energy_usd_per_kwh=(capex_energy_usd_per_kwh if capex_energy_usd_per_kwh > 0 else None),
+        capex_power_usd_per_kw=(capex_power_usd_per_kw if capex_power_usd_per_kw > 0 else None),
+        capex_base_fixed_musd=(capex_base_fixed_musd if capex_base_fixed_musd > 0 else None),
         pv_capex_musd=pv_capex_musd,
         fixed_opex_pct_of_capex=fixed_opex_pct,
         fixed_opex_musd=fixed_opex_musd,
