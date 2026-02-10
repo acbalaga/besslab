@@ -1,5 +1,4 @@
 import json
-import math
 from dataclasses import replace
 from typing import Any, Dict, Optional, Tuple
 
@@ -17,7 +16,7 @@ from utils.bess_advisory import (
     choose_recommended_candidate,
     summarize_pv_sizing_signals,
 )
-from utils.sweeps import generate_values, sweep_bess_sizes
+from utils.sweeps import sweep_bess_sizes
 from utils.ui_layout import init_page_layout
 from utils.ui_state import (
     bootstrap_session_state,
@@ -206,48 +205,6 @@ def _default_wesm_profile_path(use_wesm_forecast: bool) -> Any:
     return BASE_DIR / "data" / filename
 
 
-def recommend_convergence_point(df: pd.DataFrame) -> Optional[Tuple[float, float, float]]:
-    """Identify the BESS capacity where NPV and IRR curves overlap after scaling.
-
-    The NPV and IRR charts use different axes, so we normalize each series to a
-    0–1 range and locate the energy point where the curves are closest. A small
-    penalty is applied to negative NPVs to avoid recommending designs with weak
-    economics even if their normalized values cross. Returns ``(energy_mwh,
-    npv_usd, irr_pct)`` when a convergence point can be inferred. Prefers cash-
-    flow NPV when available and falls back to discounted-cost NPV otherwise.
-    """
-
-    npv_column = "npv_usd" if "npv_usd" in df.columns else "npv_costs_usd"
-    columns = ["energy_mwh", npv_column, "irr_pct"]
-    if not set(columns).issubset(df.columns):
-        return None
-
-    clean_df = df[columns].replace([math.inf, -math.inf], float("nan")).dropna()
-    if clean_df.empty:
-        return None
-
-    npv_min, npv_max = clean_df[npv_column].min(), clean_df[npv_column].max()
-    irr_min, irr_max = clean_df["irr_pct"].min(), clean_df["irr_pct"].max()
-    if npv_max == npv_min or irr_max == irr_min:
-        return None
-
-    normalized = clean_df.assign(
-        npv_norm=lambda x: (x[npv_column] - npv_min) / (npv_max - npv_min),
-        irr_norm=lambda x: (x["irr_pct"] - irr_min) / (irr_max - irr_min),
-    )
-
-    penalty_scale = max(abs(npv_min), abs(npv_max), 1.0)
-    normalized["intersection_score"] = (
-        (normalized["npv_norm"] - normalized["irr_norm"]).abs()
-        + (normalized[npv_column].clip(upper=0.0).abs() / penalty_scale) * 0.1
-    )
-
-    best_row = normalized.nsmallest(1, "intersection_score")
-    if best_row.empty:
-        return None
-
-    chosen = best_row.iloc[0]
-    return float(chosen["energy_mwh"]), float(chosen[npv_column]), float(chosen["irr_pct"])
 
 cfg, dod_override = get_cached_simulation_config()
 bootstrap_session_state(cfg)
@@ -266,11 +223,6 @@ if cfg is None:
 
 st.session_state.setdefault("bess_size_sweep_results", None)
 
-default_energy = max(10.0, cfg.initial_usable_mwh)
-default_energy_range = (
-    max(10.0, default_energy * 0.5),
-    min(500.0, default_energy * 1.5),
-)
 default_inputs: Dict[str, Any] = {
     "energy_range": (10.0, 200.0),
     "energy_steps": 20,
@@ -319,7 +271,7 @@ with st.expander("Load/save sweep inputs (JSON)", expanded=False):
     )
     pasted_inputs = st.text_area(
         "Or paste sweep inputs JSON",
-        placeholder='{"energy_range": [25, 75], "fixed_power": 50}',
+        placeholder='{"wacc_pct": 8.0, "capex_musd": 40.0}',
         height=120,
         key="bess_sweep_inputs_paste",
     )
@@ -347,54 +299,20 @@ with st.expander("Load/save sweep inputs (JSON)", expanded=False):
             st.info("Provide JSON content to load.", icon="ℹ️")
 
 with st.container():
-    analysis_mode = st.radio(
-        "Sweep mode",
-        options=[
-            "Comprehensive matrix (5–50 MW × 10–200 MWh)",
-            "Legacy energy sensitivity (fixed MW)",
-        ],
-        index=0 if default_inputs.get("analysis_mode", "").startswith("Comprehensive") else 1,
-        help="Use matrix mode to evaluate the requested 5–50 MW and 10–200 MWh candidate grid.",
+    st.info(
+        "Comprehensive matrix mode is active: power is swept from 5–50 MW (5 MW steps) and "
+        "usable energy is swept from 10–200 MWh (10 MWh steps)."
     )
 
     size_col1, size_col2, size_col3, price_col = st.columns(4)
     wesm_profile_df: Optional[pd.DataFrame] = None
     with size_col1:
-        energy_range = st.slider(
-            "Usable energy range (MWh)",
-            min_value=10.0,
-            max_value=500.0,
-            value=default_inputs["energy_range"],
-            step=5.0,
-            help="Lower and upper bounds for the usable MWh grid.",
-        )
-        energy_steps = st.number_input(
-            "Energy points",
-            min_value=ENERGY_POINTS_MIN,
-            max_value=ENERGY_POINTS_MAX,
-            value=max(
-                ENERGY_POINTS_MIN,
-                min(ENERGY_POINTS_MAX, int(default_inputs["energy_steps"])),
-            ),
-            help="Number of evenly spaced usable-energy values between the bounds.",
-        )
-        fixed_power = st.number_input(
-            "Fixed discharge power (MW)",
-            min_value=0.1,
-            max_value=300.0,
-            value=float(default_inputs["fixed_power"]),
-            step=0.1,
-            help="Power rating held constant while sweeping usable energy.",
-        )
-        power_range = st.slider(
-            "Power range (MW)",
-            min_value=5.0,
-            max_value=50.0,
-            value=tuple(float(v) for v in default_inputs.get("power_range", (5.0, 50.0))),
-            step=5.0,
-            help="Used for comprehensive matrix mode.",
-        )
-
+        energy_values = [float(value) for value in range(10, 201, 10)]
+        power_values = [float(value) for value in range(5, 51, 5)]
+        st.metric("Energy candidates", f"{len(energy_values)} points")
+        st.caption("10 to 200 MWh, 10 MWh interval.")
+        st.metric("Power candidates", f"{len(power_values)} points")
+        st.caption("5 to 50 MW, 5 MW interval.")
     with size_col2:
         wacc_pct = st.number_input(
             "WACC (%)",
@@ -744,11 +662,8 @@ with st.container():
     submitted = st.button("Run BESS energy sweep", use_container_width=True)
 
     st.session_state["bess_sweep_inputs"] = {
-        "energy_range": energy_range,
-        "energy_steps": int(energy_steps),
-        "fixed_power": float(fixed_power),
-        "analysis_mode": analysis_mode,
-        "power_range": power_range,
+        "energy_mwh_values": energy_values,
+        "power_mw_values": power_values,
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
         "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
@@ -798,8 +713,6 @@ if submitted:
             "Upload a profile or disable WESM pricing to continue."
         )
         st.stop()
-    energy_values = generate_values(energy_range[0], energy_range[1], int(energy_steps))
-    power_values = generate_values(power_range[0], power_range[1], int((power_range[1] - power_range[0]) / 5) + 1)
     benchmark_cfg = replace(
         cfg,
         pv_availability=0.99,
@@ -833,7 +746,7 @@ if submitted:
         sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
     )
 
-    total_candidates = len(energy_values) * (len(power_values) if analysis_mode.startswith("Comprehensive") else 1)
+    total_candidates = len(energy_values) * len(power_values)
     progress_state = {"completed": 0}
     progress_bar = st.progress(
         0.0,
@@ -873,23 +786,16 @@ if submitted:
             progress_callback=_update_progress,
         )
 
-        if analysis_mode.startswith("Comprehensive"):
-            matrix_frames: list[pd.DataFrame] = []
-            for power_mw in power_values:
-                matrix_frames.append(
-                    sweep_bess_sizes(
-                        **common_kwargs,
-                        energy_mwh_values=energy_values,
-                        fixed_power_mw=float(power_mw),
-                    )
+        matrix_frames: list[pd.DataFrame] = []
+        for power_mw in power_values:
+            matrix_frames.append(
+                sweep_bess_sizes(
+                    **common_kwargs,
+                    energy_mwh_values=energy_values,
+                    fixed_power_mw=float(power_mw),
                 )
-            sweep_df = pd.concat(matrix_frames, ignore_index=True) if matrix_frames else pd.DataFrame()
-        else:
-            sweep_df = sweep_bess_sizes(
-                **common_kwargs,
-                energy_mwh_values=energy_values,
-                fixed_power_mw=fixed_power,
             )
+        sweep_df = pd.concat(matrix_frames, ignore_index=True) if matrix_frames else pd.DataFrame()
 
     progress_bar.progress(
         1.0,
@@ -929,136 +835,93 @@ if sweep_df is not None:
             f"shortfall {recommendation['total_shortfall_mwh']:.1f} MWh."
         )
 
-    if analysis_mode.startswith("Comprehensive"):
-        st.subheader("Comprehensive sizing visuals")
-        st.altair_chart(
-            alt.Chart(benchmark_df)
-            .mark_rect()
-            .encode(
-                x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
-                y=alt.Y("power_mw:Q", title="Power (MW)"),
-                color=alt.Color("compliance_pct:Q", title="Compliance (%)"),
-                tooltip=["power_mw", "energy_mwh", "duration_h", "compliance_pct", "total_shortfall_mwh", "npv_usd"],
+    st.subheader("Comprehensive sizing visuals")
+    viz_df = benchmark_df.copy()
+    viz_df["compliance_gap_pct"] = (99.0 - viz_df["compliance_pct"]).clip(lower=0.0)
+
+    heatmap_shortfall = (
+        alt.Chart(viz_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
+            y=alt.Y("power_mw:Q", title="Power (MW)"),
+            color=alt.Color(
+                "total_shortfall_mwh:Q",
+                title="Annual shortfall (MWh)",
+                scale=alt.Scale(scheme="yelloworangered"),
             ),
-            use_container_width=True,
+            tooltip=[
+                alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
+                alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
+                alt.Tooltip("duration_h:Q", title="Duration (h)", format=",.2f"),
+                alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+                alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
+            ],
         )
-
-    convergence_point = recommend_convergence_point(sweep_df)
-    if convergence_point:
-        energy_mwh, npv_usd, irr_pct = convergence_point
-        npv_label = (
-            "net NPV" if "npv_usd" in sweep_df.columns and sweep_df["npv_usd"].notna().any() else "NPV of costs"
-        )
-        st.info(
-            "Convergence point (NPV vs IRR): "
-            f"~{energy_mwh:.1f} MWh usable with IRR {irr_pct:.2f}% and {npv_label} ${npv_usd:,.0f}. "
-            "Curves are normalized to locate where returns and discounted costs align, "
-            "favoring options that avoid very negative NPVs when CAPEX scales linearly "
-            "with BESS size and resource availability limits upside energy."
-        )
-
-    npv_field = (
-        "npv_usd"
-        if "npv_usd" in sweep_df.columns and sweep_df["npv_usd"].notna().any()
-        else "npv_costs_usd"
+        .properties(title="Reliability map: annual shortfall by size")
     )
-    npv_axis_title = "Net NPV (USD)" if npv_field == "npv_usd" else "NPV of costs (USD)"
 
-    chart_df = sweep_df[["energy_mwh", npv_field]].copy()
-    chart_df["irr_pct"] = sweep_df.get("irr_pct", float("nan"))
-    chart_df["is_best"] = sweep_df.get("is_best", False)
-    chart_df = chart_df.sort_values("energy_mwh")
+    st.altair_chart(heatmap_shortfall, use_container_width=True)
 
-    has_economics = chart_df[[npv_field, "irr_pct"]].notna().any().any()
-    if not has_economics:
-        st.warning(
-            "Economics outputs were not computed for this sweep. Verify pricing/economics inputs "
-            "(CAPEX, OPEX, discount rate, and contract price), or disable WESM pricing if the "
-            "hourly profile is missing.",
-            icon="⚠️",
+    npv_field = "npv_usd" if "npv_usd" in viz_df.columns and viz_df["npv_usd"].notna().any() else "npv_costs_usd"
+    npv_title = "Net NPV (USD)" if npv_field == "npv_usd" else "NPV of costs (USD)"
+
+    tradeoff_chart = (
+        alt.Chart(viz_df)
+        .mark_circle(size=90, opacity=0.85)
+        .encode(
+            x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
+            y=alt.Y("compliance_pct:Q", title="Compliance (%)"),
+            color=alt.Color("power_mw:N", title="Power (MW)"),
+            size=alt.Size("duration_h:Q", title="Duration (h)"),
+            tooltip=[
+                alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
+                alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
+                alt.Tooltip("duration_h:Q", title="Duration (h)", format=",.2f"),
+                alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+                alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
+                alt.Tooltip(f"{npv_field}:Q", title=npv_title, format=",.0f"),
+            ],
         )
-        feasibility_fields = [
-            field
-            for field in ["energy_mwh", "compliance_pct", "total_shortfall_mwh", "total_project_generation_mwh"]
-            if field in sweep_df.columns
-        ]
-        if feasibility_fields:
-            st.dataframe(
-                sweep_df[feasibility_fields].sort_values("energy_mwh"),
-                use_container_width=True,
-                hide_index=True,
+        .properties(title="Sizing tradeoff: compliance vs energy (bubble size = duration)")
+    )
+    st.altair_chart(tradeoff_chart, use_container_width=True)
+
+    top_cols = [
+        "power_mw",
+        "energy_mwh",
+        "duration_h",
+        "compliance_pct",
+        "total_shortfall_mwh",
+        npv_field,
+        "irr_pct",
+        "benchmark_duration_ok",
+        "benchmark_c_rate_ok",
+        "benchmark_reliability_ok",
+    ]
+    available_top_cols = [col for col in top_cols if col in viz_df.columns]
+    ranked_df = viz_df.sort_values(["benchmark_reliability_ok", "compliance_pct", "total_shortfall_mwh"], ascending=[False, False, True])
+    st.dataframe(ranked_df[available_top_cols].head(10), use_container_width=True, hide_index=True)
+
+    if recommendation is not None:
+        same_power = viz_df[viz_df["power_mw"] == float(recommendation["power_mw"])].sort_values("energy_mwh")
+        lower_energy = same_power[same_power["energy_mwh"] < float(recommendation["energy_mwh"])]
+        comparison_note = "No lower-energy candidate at this power level was available for comparison."
+        if not lower_energy.empty:
+            ref = lower_energy.iloc[-1]
+            compliance_gain = float(recommendation["compliance_pct"] - ref["compliance_pct"])
+            shortfall_reduction = float(ref["total_shortfall_mwh"] - recommendation["total_shortfall_mwh"])
+            comparison_note = (
+                f"Versus the next lower-energy option at {recommendation['power_mw']:.0f} MW "
+                f"({ref['energy_mwh']:.0f} MWh), the recommendation improves compliance by "
+                f"{compliance_gain:.2f} points and reduces annual shortfall by {shortfall_reduction:,.1f} MWh."
             )
-    else:
-        base_chart = alt.Chart(chart_df).encode(
-            x=alt.X("energy_mwh", title="BESS capacity (MWh)", axis=alt.Axis(format=",.0f"))
-        )
 
-        point_tooltip = [
-            alt.Tooltip("energy_mwh", title="BESS capacity (MWh)", format=",.0f"),
-            alt.Tooltip(npv_field, title=npv_axis_title, format=",.0f"),
-            alt.Tooltip("irr_pct", title="IRR (%)", format=",.2f"),
-        ]
-
-        npv_line = base_chart.mark_line(color="#0b2c66", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
-            y=alt.Y(
-                npv_field,
-                title=npv_axis_title,
-                axis=alt.Axis(titleColor="#0b2c66", format=",.0f", orient="left"),
-            ),
-            tooltip=point_tooltip,
-        )
-
-        irr_line = base_chart.mark_line(color="#88c5de", point=alt.OverlayMarkDef(filled=True, size=90)).encode(
-            y=alt.Y(
-                "irr_pct",
-                title="IRR (%)",
-                axis=alt.Axis(
-                    titleColor="#88c5de",
-                    orient="right",
-                    format=",.2f",
-                    labelExpr="datum.label + '%'",
-                ),
-            ),
-            tooltip=point_tooltip,
-        )
-
-        zero_line = alt.Chart(pd.DataFrame({"y": [0]})).mark_rule(color="#bbbbbb", strokeDash=[4, 4]).encode(
-            y=alt.Y("y:Q", axis=None)
-        )
-
-        best_point = (
-            base_chart.transform_filter(alt.datum.is_best == True)  # noqa: E712 - Altair predicate
-            .mark_circle(color="#f57c00", size=120)
-            .encode(y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
-        )
-
-        convergence_overlay = None
-        if convergence_point:
-            convergence_df = pd.DataFrame(
-                {
-                    "energy_mwh": [convergence_point[0]],
-                    npv_field: [convergence_point[1]],
-                    "irr_pct": [convergence_point[2]],
-                }
-            )
-            convergence_overlay = alt.Chart(convergence_df).mark_point(
-                color="#b3006e",
-                size=140,
-                shape="diamond",
-                filled=True,
-            ).encode(x="energy_mwh", y=alt.Y(npv_field, axis=None), tooltip=point_tooltip)
-
-        layers = [zero_line, npv_line, irr_line, best_point]
-        if convergence_overlay is not None:
-            layers.append(convergence_overlay)
-
-        st.altair_chart(
-            alt.layer(*layers).resolve_scale(y="independent"),
-            use_container_width=True,
-        )
-        st.caption(
-            "Dual-axis line chart overlays NPV and IRR across BESS capacities; IRR points are omitted when unavailable. "
-            "Net NPV is displayed when cash-flow assumptions are provided, otherwise discounted costs are shown."
+        st.info(
+            "Recommendation rationale: "
+            f"{recommendation['power_mw']:.0f} MW / {recommendation['energy_mwh']:.0f} MWh is selected because it "
+            "meets reliability-first screening while balancing duration and economics across the matrix. "
+            + comparison_note
         )
 else:
     st.info(
