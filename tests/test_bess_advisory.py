@@ -1,8 +1,10 @@
 import pandas as pd
 
 from utils.bess_advisory import (
+    build_power_block_marginals,
     build_sizing_benchmark_table,
     choose_recommended_candidate,
+    extract_pareto_frontier,
     rank_recommendation_candidates,
     summarize_pv_sizing_signals,
 )
@@ -114,3 +116,62 @@ def test_build_sizing_benchmark_table_adds_duration_and_c_rate():
     assert benchmark_df.loc[0, "duration_h"] == 4.0
     assert benchmark_df.loc[0, "c_rate_per_h"] == 0.25
     assert bool(benchmark_df.loc[0, "benchmark_reliability_ok"])
+
+
+def test_extract_pareto_frontier_filters_dominated_candidates():
+    sweep_df = pd.DataFrame(
+        {
+            "power_mw": [20.0, 20.0, 20.0, 20.0],
+            "energy_mwh": [40.0, 60.0, 80.0, 100.0],
+            "compliance_pct": [98.0, 99.0, 99.2, 99.1],
+            "total_shortfall_mwh": [120.0, 70.0, 90.0, 100.0],
+            "status": ["evaluated", "evaluated", "evaluated", "evaluated"],
+        }
+    )
+
+    frontier = extract_pareto_frontier(sweep_df)
+
+    assert list(frontier["energy_mwh"]) == [60.0, 80.0]
+
+
+def test_extract_pareto_frontier_supports_optional_economic_objective():
+    sweep_df = pd.DataFrame(
+        {
+            "power_mw": [20.0, 20.0, 20.0],
+            "energy_mwh": [40.0, 60.0, 80.0],
+            "compliance_pct": [99.0, 99.0, 99.2],
+            "total_shortfall_mwh": [80.0, 80.0, 90.0],
+            "npv_usd": [80.0, 100.0, 90.0],
+            "status": ["evaluated", "evaluated", "evaluated"],
+        }
+    )
+
+    frontier_base = extract_pareto_frontier(sweep_df)
+    frontier_with_npv = extract_pareto_frontier(sweep_df, economic_objective="npv_usd")
+
+    assert set(frontier_base["energy_mwh"]) == {40.0, 60.0, 80.0}
+    assert set(frontier_with_npv["energy_mwh"]) == {60.0, 80.0}
+
+
+def test_build_power_block_marginals_computes_stepwise_deltas_and_elbow():
+    frontier_df = pd.DataFrame(
+        {
+            "power_mw": [20.0, 20.0, 20.0],
+            "energy_mwh": [40.0, 60.0, 80.0],
+            "compliance_pct": [98.0, 99.0, 99.2],
+            "total_shortfall_mwh": [120.0, 80.0, 70.0],
+            "npv_usd": [100.0, 120.0, 130.0],
+        }
+    )
+
+    marginals = build_power_block_marginals(frontier_df, economic_objective="npv_usd")
+
+    second = marginals.loc[marginals["energy_mwh"] == 60.0].iloc[0]
+    third = marginals.loc[marginals["energy_mwh"] == 80.0].iloc[0]
+
+    assert second["delta_energy_mwh"] == 20.0
+    assert second["compliance_gain_per_mwh"] == 0.05
+    assert second["shortfall_reduction_per_mwh"] == 2.0
+    assert second["economic_marginal_value_per_mwh"] == 1.0
+    assert bool(second["is_elbow"])
+    assert not bool(third["is_elbow"])

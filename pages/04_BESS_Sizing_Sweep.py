@@ -12,8 +12,10 @@ from utils import enforce_rate_limit, parse_numeric_series, read_wesm_profile
 from utils.io import read_wesm_forecast_profile_average
 from utils.economics import DEVEX_COST_PHP, EconomicInputs, PriceInputs
 from utils.bess_advisory import (
+    build_power_block_marginals,
     build_sizing_benchmark_table,
     choose_recommended_candidate,
+    extract_pareto_frontier,
     rank_recommendation_candidates,
     summarize_pv_sizing_signals,
 )
@@ -1215,6 +1217,76 @@ if sweep_df is not None:
         compliance_target_pct=compliance_target_pct,
     )
     st.dataframe(ranked_df[available_top_cols].head(10), use_container_width=True, hide_index=True)
+
+    st.subheader("Pareto frontier and marginal sizing value")
+    economic_objective_choice = st.selectbox(
+        "Optional economic objective for Pareto filtering",
+        options=["None", "npv_usd", "lcoe_usd_per_mwh"],
+        index=1 if "npv_usd" in viz_df.columns else 0,
+        help=(
+            "Base objectives always include maximizing compliance and minimizing shortfall. "
+            "You can optionally include NPV (maximize) or LCOE (minimize)."
+        ),
+        key="pareto_economic_objective",
+    )
+    selected_economic_objective = None if economic_objective_choice == "None" else economic_objective_choice
+
+    pareto_df = extract_pareto_frontier(viz_df, economic_objective=selected_economic_objective)
+    if pareto_df.empty:
+        st.info("No frontier candidates were available after filtering to evaluated rows.")
+    else:
+        marginals_df = build_power_block_marginals(
+            pareto_df,
+            economic_objective=selected_economic_objective,
+        )
+
+        marginal_chart = (
+            alt.Chart(marginals_df)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
+                y=alt.Y("compliance_gain_per_mwh:Q", title="ΔCompliance / ΔMWh (pct-point per MWh)"),
+                color=alt.Color("power_mw:N", title="Power (MW)"),
+                tooltip=[
+                    alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
+                    alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
+                    alt.Tooltip("delta_energy_mwh:Q", title="ΔEnergy (MWh)", format=",.1f"),
+                    alt.Tooltip("compliance_gain_per_mwh:Q", title="ΔCompliance/ΔMWh", format=",.5f"),
+                    alt.Tooltip("shortfall_reduction_per_mwh:Q", title="ΔShortfall/ΔMWh", format=",.5f"),
+                ],
+            )
+            .properties(title="Frontier stepwise compliance gain by added energy")
+        )
+
+        elbow_points = marginals_df[marginals_df["is_elbow"]]
+        if not elbow_points.empty:
+            marginal_chart = marginal_chart + (
+                alt.Chart(elbow_points)
+                .mark_point(shape="diamond", size=220, color="red")
+                .encode(x="energy_mwh:Q", y="compliance_gain_per_mwh:Q")
+            )
+        st.altair_chart(marginal_chart, use_container_width=True)
+
+        pareto_table_cols = [
+            "power_mw",
+            "energy_mwh",
+            "compliance_pct",
+            "total_shortfall_mwh",
+            "delta_energy_mwh",
+            "compliance_gain_per_mwh",
+            "shortfall_reduction_per_mwh",
+            "is_elbow",
+        ]
+        if selected_economic_objective and selected_economic_objective in marginals_df.columns:
+            pareto_table_cols.append(selected_economic_objective)
+        if "economic_marginal_value_per_mwh" in marginals_df.columns:
+            pareto_table_cols.append("economic_marginal_value_per_mwh")
+
+        st.dataframe(
+            marginals_df[[col for col in pareto_table_cols if col in marginals_df.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
     if recommendation is not None:
         same_power = viz_df[viz_df["power_mw"] == float(recommendation["power_mw"])].sort_values("energy_mwh")

@@ -178,3 +178,112 @@ def choose_recommended_candidate(
         return None
     recommended = ranked.iloc[0]
     return recommended
+
+
+def extract_pareto_frontier(
+    sweep_df: pd.DataFrame,
+    *,
+    economic_objective: Optional[str] = None,
+) -> pd.DataFrame:
+    """Return non-dominated candidates for reliability and optional economics.
+
+    Objectives are defined as:
+    - maximize compliance_pct
+    - minimize total_shortfall_mwh
+    - optionally maximize npv_usd OR minimize lcoe_usd_per_mwh
+    """
+
+    if sweep_df.empty:
+        return sweep_df.copy()
+
+    evaluated = sweep_df[sweep_df.get("status", "evaluated") == "evaluated"].copy()
+    if evaluated.empty:
+        return evaluated
+
+    objective_specs: list[tuple[str, bool]] = [
+        ("compliance_pct", True),
+        ("total_shortfall_mwh", False),
+    ]
+    if economic_objective in {"npv_usd", "lcoe_usd_per_mwh"} and economic_objective in evaluated.columns:
+        objective_specs.append((economic_objective, economic_objective == "npv_usd"))
+
+    objective_cols = [col for col, _ in objective_specs]
+    valid = evaluated.dropna(subset=objective_cols).copy()
+    if valid.empty:
+        return valid
+
+    transformed_columns: list[pd.Series] = []
+    for col, maximize in objective_specs:
+        series = valid[col].astype(float)
+        transformed_columns.append(-series if maximize else series)
+    objective_matrix = np.column_stack(transformed_columns)
+
+    dominates_all = objective_matrix[:, None, :] <= objective_matrix[None, :, :]
+    strictly_better_any = objective_matrix[:, None, :] < objective_matrix[None, :, :]
+    dominates = dominates_all.all(axis=2) & strictly_better_any.any(axis=2)
+    dominated = dominates.any(axis=0)
+
+    frontier = valid.loc[~dominated].copy()
+    return frontier.sort_values(["power_mw", "energy_mwh"]).reset_index(drop=True)
+
+
+def build_power_block_marginals(
+    frontier_df: pd.DataFrame,
+    *,
+    economic_objective: Optional[str] = None,
+) -> pd.DataFrame:
+    """Compute stepwise marginal improvements across energy increments per power block."""
+
+    if frontier_df.empty:
+        return frontier_df.copy()
+
+    marginals = frontier_df.sort_values(["power_mw", "energy_mwh"]).copy()
+    group = marginals.groupby("power_mw", group_keys=False)
+    marginals["prev_energy_mwh"] = group["energy_mwh"].shift(1)
+    marginals["prev_compliance_pct"] = group["compliance_pct"].shift(1)
+    marginals["prev_shortfall_mwh"] = group["total_shortfall_mwh"].shift(1)
+    marginals["delta_energy_mwh"] = marginals["energy_mwh"] - marginals["prev_energy_mwh"]
+    marginals["delta_compliance_pct"] = marginals["compliance_pct"] - marginals["prev_compliance_pct"]
+    marginals["delta_shortfall_reduction_mwh"] = (
+        marginals["prev_shortfall_mwh"] - marginals["total_shortfall_mwh"]
+    )
+
+    valid_delta = marginals["delta_energy_mwh"] > 0
+    marginals["compliance_gain_per_mwh"] = np.where(
+        valid_delta,
+        marginals["delta_compliance_pct"] / marginals["delta_energy_mwh"],
+        np.nan,
+    )
+    marginals["shortfall_reduction_per_mwh"] = np.where(
+        valid_delta,
+        marginals["delta_shortfall_reduction_mwh"] / marginals["delta_energy_mwh"],
+        np.nan,
+    )
+
+    if economic_objective in {"npv_usd", "lcoe_usd_per_mwh"} and economic_objective in marginals.columns:
+        marginals["prev_economic"] = group[economic_objective].shift(1)
+        if economic_objective == "npv_usd":
+            marginals["delta_economic"] = marginals[economic_objective] - marginals["prev_economic"]
+        else:
+            marginals["delta_economic"] = marginals["prev_economic"] - marginals[economic_objective]
+        marginals["economic_marginal_value_per_mwh"] = np.where(
+            valid_delta,
+            marginals["delta_economic"] / marginals["delta_energy_mwh"],
+            np.nan,
+        )
+
+    score_columns = ["compliance_gain_per_mwh", "shortfall_reduction_per_mwh"]
+    if "economic_marginal_value_per_mwh" in marginals.columns:
+        score_columns.append("economic_marginal_value_per_mwh")
+
+    rank_parts = []
+    for column in score_columns:
+        rank_parts.append(group[column].rank(method="average", pct=True))
+    marginals["elbow_score"] = pd.concat(rank_parts, axis=1).mean(axis=1)
+    valid_rows = marginals["delta_energy_mwh"].notna()
+    elbow_idx = marginals[valid_rows].groupby("power_mw")["elbow_score"].idxmax()
+    marginals["is_elbow"] = False
+    if len(elbow_idx) > 0:
+        marginals.loc[elbow_idx.values, "is_elbow"] = True
+
+    return marginals
