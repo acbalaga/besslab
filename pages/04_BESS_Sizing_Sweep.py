@@ -833,6 +833,30 @@ if submitted:
         sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
     )
 
+    total_candidates = len(energy_values) * (len(power_values) if analysis_mode.startswith("Comprehensive") else 1)
+    progress_state = {"completed": 0}
+    progress_bar = st.progress(
+        0.0,
+        text=f"Running sizing sweep candidates: 0/{total_candidates} completed.",
+    )
+
+    def _update_progress(progress_rows: pd.DataFrame) -> None:
+        """Update the UI progress bar as candidate batches finish."""
+
+        completed_now = int(len(progress_rows.index))
+        progress_state["completed"] = min(
+            total_candidates,
+            progress_state["completed"] + max(completed_now, 0),
+        )
+        fraction = progress_state["completed"] / max(total_candidates, 1)
+        progress_bar.progress(
+            fraction,
+            text=(
+                "Running sizing sweep candidates: "
+                f"{progress_state['completed']}/{total_candidates} completed."
+            ),
+        )
+
     with st.spinner("Running BESS energy sweep..."):
         common_kwargs = dict(
             base_cfg=benchmark_cfg,
@@ -846,6 +870,7 @@ if submitted:
             ranking_kpi=ranking_choice,
             min_soh=min_soh,
             use_case="reliability",
+            progress_callback=_update_progress,
         )
 
         if analysis_mode.startswith("Comprehensive"):
@@ -865,6 +890,12 @@ if submitted:
                 energy_mwh_values=energy_values,
                 fixed_power_mw=fixed_power,
             )
+
+    progress_bar.progress(
+        1.0,
+        text=f"Sizing sweep finished: {min(progress_state['completed'], total_candidates)}/{total_candidates} completed.",
+    )
+
 
     if sweep_df.empty:
         st.info("No sweep results generated; widen the ranges and try again.")
