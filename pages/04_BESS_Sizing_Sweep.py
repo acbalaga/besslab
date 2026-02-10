@@ -39,6 +39,38 @@ render_layout = init_page_layout(
 ENERGY_POINTS_MIN = 1
 ENERGY_POINTS_MAX = 30
 
+BENCHMARK_PRESETS: Dict[str, Dict[str, float]] = {
+    "Conservative": {
+        "pv_availability": 0.98,
+        "bess_availability": 0.95,
+        "calendar_fade_rate": 0.015,
+        "soc_floor": 0.05,
+        "soc_ceiling": 0.95,
+        "rte_roundtrip": 0.86,
+    },
+    "Base": {
+        "pv_availability": 0.99,
+        "bess_availability": 0.97,
+        "calendar_fade_rate": 0.01,
+        "soc_floor": 0.0,
+        "soc_ceiling": 1.0,
+        "rte_roundtrip": 0.89,
+    },
+    "Aggressive": {
+        "pv_availability": 0.995,
+        "bess_availability": 0.98,
+        "calendar_fade_rate": 0.0075,
+        "soc_floor": 0.0,
+        "soc_ceiling": 1.0,
+        "rte_roundtrip": 0.92,
+    },
+}
+BENCHMARK_PRESET_OPTIONS = ["Conservative", "Base", "Aggressive", "Custom"]
+
+DEFAULT_DURATION_BAND_HOURS = (2.0, 6.0)
+DEFAULT_C_RATE_BAND_PER_H = (0.17, 0.5)
+DEFAULT_COMPLIANCE_TARGET_PCT = 99.0
+
 
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
@@ -70,6 +102,33 @@ def _normalize_energy_range(value: Any, default: Tuple[float, float]) -> Tuple[f
         high = _coerce_float(value[1], default[1])
         return (low, high) if low <= high else (high, low)
     return default
+
+
+def _sanitize_benchmark_assumptions(payload: Any, fallback: Dict[str, float]) -> Dict[str, float]:
+    """Normalize benchmark assumptions from JSON/session payloads."""
+
+    assumptions = fallback.copy()
+    if not isinstance(payload, dict):
+        return assumptions
+    for key, fallback_value in fallback.items():
+        assumptions[key] = _coerce_float(payload.get(key), fallback_value)
+
+    assumptions["pv_availability"] = min(max(assumptions["pv_availability"], 0.0), 1.0)
+    assumptions["bess_availability"] = min(max(assumptions["bess_availability"], 0.0), 1.0)
+    assumptions["calendar_fade_rate"] = max(assumptions["calendar_fade_rate"], 0.0)
+    assumptions["soc_floor"] = min(max(assumptions["soc_floor"], 0.0), 1.0)
+    assumptions["soc_ceiling"] = min(max(assumptions["soc_ceiling"], 0.0), 1.0)
+    assumptions["rte_roundtrip"] = min(max(assumptions["rte_roundtrip"], 0.0), 1.0)
+    if assumptions["soc_floor"] > assumptions["soc_ceiling"]:
+        assumptions["soc_floor"], assumptions["soc_ceiling"] = assumptions["soc_ceiling"], assumptions["soc_floor"]
+    return assumptions
+
+
+def _normalize_threshold_band(value: Any, default: Tuple[float, float], *, floor: float = 0.0) -> Tuple[float, float]:
+    low, high = _normalize_energy_range(value, default)
+    low = max(low, floor)
+    high = max(high, floor)
+    return (low, high) if low <= high else (high, low)
 
 
 def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str, Any]:
@@ -138,6 +197,26 @@ def _normalize_sweep_inputs(payload: Dict[str, Any], defaults: Dict[str, Any]) -
     )
     normalized["ranking_choice"] = payload.get("ranking_choice", defaults["ranking_choice"])
     normalized["min_soh"] = _coerce_float(payload.get("min_soh"), defaults["min_soh"])
+    preset_payload = payload.get("benchmark_preset", defaults["benchmark_preset"])
+    normalized["benchmark_preset"] = (
+        preset_payload if preset_payload in BENCHMARK_PRESET_OPTIONS else defaults["benchmark_preset"]
+    )
+    normalized["benchmark_assumptions"] = _sanitize_benchmark_assumptions(
+        payload.get("benchmark_assumptions"),
+        defaults["benchmark_assumptions"],
+    )
+    normalized["duration_band_hours"] = _normalize_threshold_band(
+        payload.get("duration_band_hours"),
+        defaults["duration_band_hours"],
+    )
+    normalized["c_rate_band_per_h"] = _normalize_threshold_band(
+        payload.get("c_rate_band_per_h"),
+        defaults["c_rate_band_per_h"],
+    )
+    normalized["compliance_target_pct"] = max(
+        0.0,
+        min(100.0, _coerce_float(payload.get("compliance_target_pct"), defaults["compliance_target_pct"])),
+    )
     if "contract_price_php_per_kwh" in payload:
         normalized["contract_price_php_per_kwh"] = _coerce_float(
             payload.get("contract_price_php_per_kwh"),
@@ -258,6 +337,11 @@ default_inputs: Dict[str, Any] = {
     "devex_cost_php": float(DEVEX_COST_PHP),
     "ranking_choice": "compliance_pct",
     "min_soh": 0.6,
+    "benchmark_preset": "Base",
+    "benchmark_assumptions": BENCHMARK_PRESETS["Base"].copy(),
+    "duration_band_hours": DEFAULT_DURATION_BAND_HOURS,
+    "c_rate_band_per_h": DEFAULT_C_RATE_BAND_PER_H,
+    "compliance_target_pct": DEFAULT_COMPLIANCE_TARGET_PCT,
     "contract_price_php_per_kwh": default_contract_php_per_kwh,
     "escalate_prices": False,
     "wesm_pricing_enabled": False,
@@ -511,6 +595,104 @@ with st.container():
             step=0.05,
             help="Candidates falling below this total SOH are flagged as infeasible.",
         )
+        benchmark_preset = st.selectbox(
+            "Benchmark assumption preset",
+            options=BENCHMARK_PRESET_OPTIONS,
+            index=BENCHMARK_PRESET_OPTIONS.index(
+                default_inputs["benchmark_preset"]
+                if default_inputs.get("benchmark_preset") in BENCHMARK_PRESET_OPTIONS
+                else "Base"
+            ),
+            help="Preset applies availability, fade, SoC operating window, and round-trip efficiency.",
+        )
+        preset_defaults = BENCHMARK_PRESETS.get(benchmark_preset, BENCHMARK_PRESETS["Base"])
+        stored_benchmark_assumptions = _sanitize_benchmark_assumptions(
+            default_inputs.get("benchmark_assumptions"),
+            BENCHMARK_PRESETS["Base"],
+        )
+        if benchmark_preset == "Custom":
+            benchmark_assumptions = {
+                "pv_availability": st.number_input(
+                    "PV availability (fraction)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(stored_benchmark_assumptions["pv_availability"]),
+                    step=0.005,
+                ),
+                "bess_availability": st.number_input(
+                    "BESS availability (fraction)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(stored_benchmark_assumptions["bess_availability"]),
+                    step=0.005,
+                ),
+                "calendar_fade_rate": st.number_input(
+                    "Calendar fade rate (fraction/year)",
+                    min_value=0.0,
+                    max_value=0.2,
+                    value=float(stored_benchmark_assumptions["calendar_fade_rate"]),
+                    step=0.001,
+                ),
+                "soc_floor": st.number_input(
+                    "SoC floor (fraction)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(stored_benchmark_assumptions["soc_floor"]),
+                    step=0.01,
+                ),
+                "soc_ceiling": st.number_input(
+                    "SoC ceiling (fraction)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(stored_benchmark_assumptions["soc_ceiling"]),
+                    step=0.01,
+                ),
+                "rte_roundtrip": st.number_input(
+                    "Round-trip efficiency (fraction)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=float(stored_benchmark_assumptions["rte_roundtrip"]),
+                    step=0.005,
+                ),
+            }
+            benchmark_assumptions = _sanitize_benchmark_assumptions(
+                benchmark_assumptions,
+                stored_benchmark_assumptions,
+            )
+        else:
+            benchmark_assumptions = preset_defaults.copy()
+
+        duration_band_hours = _normalize_threshold_band(
+            default_inputs.get("duration_band_hours"),
+            DEFAULT_DURATION_BAND_HOURS,
+        )
+        duration_floor, duration_ceiling = st.slider(
+            "Benchmark duration band (h)",
+            min_value=0.5,
+            max_value=12.0,
+            value=(float(duration_band_hours[0]), float(duration_band_hours[1])),
+            step=0.25,
+            help="Candidates within this duration band pass the benchmark duration gate.",
+        )
+        c_rate_band = _normalize_threshold_band(
+            default_inputs.get("c_rate_band_per_h"),
+            DEFAULT_C_RATE_BAND_PER_H,
+        )
+        c_rate_floor, c_rate_ceiling = st.slider(
+            "Benchmark C-rate band (1/h)",
+            min_value=0.05,
+            max_value=1.0,
+            value=(float(c_rate_band[0]), float(c_rate_band[1])),
+            step=0.01,
+        )
+        compliance_target_pct = st.number_input(
+            "Benchmark compliance target (%)",
+            min_value=0.0,
+            max_value=100.0,
+            value=float(default_inputs.get("compliance_target_pct", DEFAULT_COMPLIANCE_TARGET_PCT)),
+            step=0.1,
+            help="Minimum compliance percentage to pass the reliability benchmark gate.",
+        )
         st.caption(
             "Discount rate is derived from WACC and inflation to align with the economics helper."
         )
@@ -717,6 +899,11 @@ with st.container():
         "devex_cost_php": float(devex_cost_php),
         "ranking_choice": ranking_choice,
         "min_soh": float(min_soh),
+        "benchmark_preset": benchmark_preset,
+        "benchmark_assumptions": benchmark_assumptions,
+        "duration_band_hours": [float(duration_floor), float(duration_ceiling)],
+        "c_rate_band_per_h": [float(c_rate_floor), float(c_rate_ceiling)],
+        "compliance_target_pct": float(compliance_target_pct),
         "contract_price_php_per_kwh": float(contract_price_php_per_kwh),
         "escalate_prices": bool(escalate_prices),
         "wesm_pricing_enabled": bool(wesm_pricing_enabled),
@@ -755,12 +942,12 @@ if submitted:
         st.stop()
     benchmark_cfg = replace(
         cfg,
-        pv_availability=0.99,
-        bess_availability=0.97,
-        calendar_fade_rate=0.01,
-        soc_floor=0.0,
-        soc_ceiling=1.0,
-        rte_roundtrip=0.89,
+        pv_availability=benchmark_assumptions["pv_availability"],
+        bess_availability=benchmark_assumptions["bess_availability"],
+        calendar_fade_rate=benchmark_assumptions["calendar_fade_rate"],
+        soc_floor=benchmark_assumptions["soc_floor"],
+        soc_ceiling=benchmark_assumptions["soc_ceiling"],
+        rte_roundtrip=benchmark_assumptions["rte_roundtrip"],
     )
 
     if (
@@ -876,17 +1063,75 @@ if sweep_df is not None:
     signal_cols[2].metric("Implied CF", f"{pv_signals.implied_capacity_factor_pct:,.1f}%")
     signal_cols[3].metric("Active PV hours", f"{pv_signals.active_hours_pct:,.1f}%")
     signal_cols[4].metric("P95 hourly ramp", f"{pv_signals.p95_hourly_ramp_mw:,.2f} MW")
-    st.caption(
-        "Benchmark assumptions used for this advisory: PV availability 99%, BESS availability 97%, "
-        "calendar fade 1%/year, DoD 100%, SoC 0–100%, and RTE 89%."
-    )
+    st.caption("Sizing signals are shown for the active sweep benchmark settings.")
 
-    benchmark_df = build_sizing_benchmark_table(sweep_df)
+    assumption_card = pd.DataFrame(
+        [
+            {"Assumption": "Preset", "Value": benchmark_preset, "Unit": "-"},
+            {
+                "Assumption": "PV availability",
+                "Value": f"{benchmark_assumptions['pv_availability'] * 100:.2f}",
+                "Unit": "%",
+            },
+            {
+                "Assumption": "BESS availability",
+                "Value": f"{benchmark_assumptions['bess_availability'] * 100:.2f}",
+                "Unit": "%",
+            },
+            {
+                "Assumption": "Calendar fade",
+                "Value": f"{benchmark_assumptions['calendar_fade_rate'] * 100:.2f}",
+                "Unit": "%/year",
+            },
+            {
+                "Assumption": "SoC floor",
+                "Value": f"{benchmark_assumptions['soc_floor'] * 100:.1f}",
+                "Unit": "%",
+            },
+            {
+                "Assumption": "SoC ceiling",
+                "Value": f"{benchmark_assumptions['soc_ceiling'] * 100:.1f}",
+                "Unit": "%",
+            },
+            {
+                "Assumption": "Round-trip efficiency",
+                "Value": f"{benchmark_assumptions['rte_roundtrip'] * 100:.2f}",
+                "Unit": "%",
+            },
+            {
+                "Assumption": "Duration benchmark band",
+                "Value": f"{duration_floor:.2f} to {duration_ceiling:.2f}",
+                "Unit": "h",
+            },
+            {
+                "Assumption": "C-rate benchmark band",
+                "Value": f"{c_rate_floor:.2f} to {c_rate_ceiling:.2f}",
+                "Unit": "1/h",
+            },
+            {
+                "Assumption": "Compliance benchmark target",
+                "Value": f"{compliance_target_pct:.2f}",
+                "Unit": "%",
+            },
+        ]
+    )
+    st.markdown("**Assumption card**")
+    st.dataframe(assumption_card, use_container_width=True, hide_index=True)
+
+    benchmark_df = build_sizing_benchmark_table(
+        sweep_df,
+        duration_band_hours=(duration_floor, duration_ceiling),
+        c_rate_band_per_h=(c_rate_floor, c_rate_ceiling),
+        compliance_target_pct=compliance_target_pct,
+    )
     ranking_column, ranking_ascending, _, _ = _resolve_ranking_column("reliability", ranking_choice)
     recommendation = choose_recommended_candidate(
         sweep_df,
         ranking_column=ranking_column,
         ascending=ranking_ascending,
+        duration_band_hours=(duration_floor, duration_ceiling),
+        c_rate_band_per_h=(c_rate_floor, c_rate_ceiling),
+        compliance_target_pct=compliance_target_pct,
     )
     if recommendation is not None:
         st.success(
@@ -898,7 +1143,7 @@ if sweep_df is not None:
 
     st.subheader("Comprehensive sizing visuals")
     viz_df = benchmark_df.copy()
-    viz_df["compliance_gap_pct"] = (99.0 - viz_df["compliance_pct"]).clip(lower=0.0)
+    viz_df["compliance_gap_pct"] = (compliance_target_pct - viz_df["compliance_pct"]).clip(lower=0.0)
 
     heatmap_shortfall = (
         alt.Chart(viz_df)
@@ -965,6 +1210,9 @@ if sweep_df is not None:
         viz_df,
         ranking_column=ranking_column,
         ascending=ranking_ascending,
+        duration_band_hours=(duration_floor, duration_ceiling),
+        c_rate_band_per_h=(c_rate_floor, c_rate_ceiling),
+        compliance_target_pct=compliance_target_pct,
     )
     st.dataframe(ranked_df[available_top_cols].head(10), use_container_width=True, hide_index=True)
 
