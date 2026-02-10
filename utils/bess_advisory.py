@@ -55,7 +55,13 @@ def summarize_pv_sizing_signals(pv_df: pd.DataFrame) -> PvSizingSignals:
     )
 
 
-def build_sizing_benchmark_table(sweep_df: pd.DataFrame) -> pd.DataFrame:
+def build_sizing_benchmark_table(
+    sweep_df: pd.DataFrame,
+    *,
+    duration_band_hours: tuple[float, float] = (2.0, 6.0),
+    c_rate_band_per_h: tuple[float, float] = (0.17, 0.5),
+    compliance_target_pct: float = 99.0,
+) -> pd.DataFrame:
     """Annotate sweep candidates with benchmark-oriented sizing indicators."""
 
     if sweep_df.empty:
@@ -69,9 +75,21 @@ def build_sizing_benchmark_table(sweep_df: pd.DataFrame) -> pd.DataFrame:
 
     # Common utility-scale heuristics used in pre-feasibility benchmarking.
     # These are explicit placeholders and should be adjusted per market/code.
-    annotated["benchmark_duration_ok"] = annotated["duration_h"].between(2.0, 6.0, inclusive="both")
-    annotated["benchmark_c_rate_ok"] = annotated["c_rate_per_h"].between(0.17, 0.5, inclusive="both")
-    annotated["benchmark_reliability_ok"] = annotated.get("compliance_pct", np.nan) >= 99.0
+    duration_floor, duration_ceiling = sorted(duration_band_hours)
+    c_rate_floor, c_rate_ceiling = sorted(c_rate_band_per_h)
+    annotated["benchmark_duration_ok"] = annotated["duration_h"].between(
+        duration_floor,
+        duration_ceiling,
+        inclusive="both",
+    )
+    annotated["benchmark_c_rate_ok"] = annotated["c_rate_per_h"].between(
+        c_rate_floor,
+        c_rate_ceiling,
+        inclusive="both",
+    )
+    annotated["benchmark_reliability_ok"] = (
+        annotated.get("compliance_pct", np.nan) >= compliance_target_pct
+    )
 
     return annotated
 
@@ -82,6 +100,9 @@ def rank_recommendation_candidates(
     ranking_column: str,
     ascending: bool,
     enforce_benchmark_gate: bool = True,
+    duration_band_hours: tuple[float, float] = (2.0, 6.0),
+    c_rate_band_per_h: tuple[float, float] = (0.17, 0.5),
+    compliance_target_pct: float = 99.0,
 ) -> pd.DataFrame:
     """Return ranked recommendation candidates using a shared sorting policy.
 
@@ -92,7 +113,12 @@ def rank_recommendation_candidates(
     if sweep_df.empty:
         return pd.DataFrame()
 
-    df = build_sizing_benchmark_table(sweep_df)
+    df = build_sizing_benchmark_table(
+        sweep_df,
+        duration_band_hours=duration_band_hours,
+        c_rate_band_per_h=c_rate_band_per_h,
+        compliance_target_pct=compliance_target_pct,
+    )
     evaluated = df[df.get("status", "evaluated") == "evaluated"].copy()
     if evaluated.empty:
         return evaluated
@@ -133,6 +159,9 @@ def choose_recommended_candidate(
     ranking_column: str = "compliance_pct",
     ascending: bool = False,
     enforce_benchmark_gate: bool = True,
+    duration_band_hours: tuple[float, float] = (2.0, 6.0),
+    c_rate_band_per_h: tuple[float, float] = (0.17, 0.5),
+    compliance_target_pct: float = 99.0,
 ) -> Optional[pd.Series]:
     """Select a practical recommendation using the configured ranking policy."""
 
@@ -141,6 +170,9 @@ def choose_recommended_candidate(
         ranking_column=ranking_column,
         ascending=ascending,
         enforce_benchmark_gate=enforce_benchmark_gate,
+        duration_band_hours=duration_band_hours,
+        c_rate_band_per_h=c_rate_band_per_h,
+        compliance_target_pct=compliance_target_pct,
     )
     if ranked.empty:
         return None
