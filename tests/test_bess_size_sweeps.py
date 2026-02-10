@@ -707,6 +707,73 @@ def test_compute_candidate_economics_uses_wesm_profile_override() -> None:
     assert npv_usd == pytest.approx(-100.0)
 
 
+
+
+def test_compute_candidate_economics_capex_changes_with_power_at_fixed_energy() -> None:
+    econ_inputs = EconomicInputs(
+        capex_musd=5.0,
+        capex_energy_usd_per_kwh=100.0,
+        capex_power_usd_per_kw=200.0,
+        capex_base_fixed_musd=1.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_inputs = PriceInputs(contract_price_usd_per_mwh=0.0)
+
+    low_power_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=100.0, initial_power_mw=20.0),
+        results=[_StubResult(delivered_firm_mwh=0.0, bess_to_contract_mwh=0.0, pv_curtailed_mwh=0.0, shortfall_mwh=0.0)],
+        augmentation_energy_added_mwh=[0.0],
+    )
+    high_power_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=100.0, initial_power_mw=40.0),
+        results=[_StubResult(delivered_firm_mwh=0.0, bess_to_contract_mwh=0.0, pv_curtailed_mwh=0.0, shortfall_mwh=0.0)],
+        augmentation_energy_added_mwh=[0.0],
+    )
+
+    _, low_costs, _, low_npv = _compute_candidate_economics(low_power_output, econ_inputs, price_inputs, base_initial_energy_mwh=50.0)
+    _, high_costs, _, high_npv = _compute_candidate_economics(high_power_output, econ_inputs, price_inputs, base_initial_energy_mwh=50.0)
+
+    assert low_costs == pytest.approx(15_000_000.0)
+    assert low_npv == pytest.approx(-15_000_000.0)
+    assert high_costs == pytest.approx(19_000_000.0)
+    assert high_npv == pytest.approx(-19_000_000.0)
+
+
+def test_compute_candidate_economics_capex_changes_with_energy_at_fixed_power() -> None:
+    econ_inputs = EconomicInputs(
+        capex_musd=5.0,
+        capex_energy_usd_per_kwh=100.0,
+        capex_power_usd_per_kw=200.0,
+        capex_base_fixed_musd=1.0,
+        fixed_opex_pct_of_capex=0.0,
+        fixed_opex_musd=0.0,
+        inflation_rate=0.0,
+        discount_rate=0.0,
+    )
+    price_inputs = PriceInputs(contract_price_usd_per_mwh=0.0)
+
+    low_energy_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=50.0, initial_power_mw=20.0),
+        results=[_StubResult(delivered_firm_mwh=0.0, bess_to_contract_mwh=0.0, pv_curtailed_mwh=0.0, shortfall_mwh=0.0)],
+        augmentation_energy_added_mwh=[0.0],
+    )
+    high_energy_output = _StubSimOutput(
+        cfg=_StubCfg(initial_usable_mwh=100.0, initial_power_mw=20.0),
+        results=[_StubResult(delivered_firm_mwh=0.0, bess_to_contract_mwh=0.0, pv_curtailed_mwh=0.0, shortfall_mwh=0.0)],
+        augmentation_energy_added_mwh=[0.0],
+    )
+
+    _, low_costs, _, low_npv = _compute_candidate_economics(low_energy_output, econ_inputs, price_inputs, base_initial_energy_mwh=50.0)
+    _, high_costs, _, high_npv = _compute_candidate_economics(high_energy_output, econ_inputs, price_inputs, base_initial_energy_mwh=50.0)
+
+    assert low_costs == pytest.approx(10_000_000.0)
+    assert low_npv == pytest.approx(-10_000_000.0)
+    assert high_costs == pytest.approx(15_000_000.0)
+    assert high_npv == pytest.approx(-15_000_000.0)
+
 def test_sweep_scales_economics_with_energy_size():
     pv_df = pd.DataFrame({"pv_mw": [0.0]})
     cycle_df = pd.DataFrame()
