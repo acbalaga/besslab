@@ -30,6 +30,7 @@ class KPIResults:
     avg_eq_cycles_per_year: float
     cap_ratio_final: float
     surplus_pct: float
+    deficit_pct: float
 
 
 def compute_kpis(
@@ -45,6 +46,8 @@ def compute_kpis(
     ]
     min_yearly_coverage = float(np.nanmin(coverage_by_year)) if coverage_by_year else float("nan")
     final = results[-1]
+    expected_total_mwh = float(np.sum([r.expected_firm_mwh for r in results]))
+    deficit_pct = (summary.total_shortfall_mwh / expected_total_mwh * 100.0) if expected_total_mwh > 0 else float("nan")
     augmentation_energy_mwh = float(np.sum(augmentation_energy_added_mwh)) if augmentation_energy_added_mwh else 0.0
     return KPIResults(
         compliance=summary.compliance,
@@ -66,6 +69,7 @@ def compute_kpis(
         avg_eq_cycles_per_year=summary.avg_eq_cycles_per_year,
         cap_ratio_final=summary.cap_ratio_final,
         surplus_pct=summary.surplus_pct,
+        deficit_pct=deficit_pct,
     )
 
 
@@ -80,27 +84,27 @@ def render_primary_metrics(cfg: SimConfig, kpis: KPIResults) -> None:
     """Render the top-level KPI cards shown after a simulation run."""
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric(
-        "Delivery compliance",
+        "Compliance %",
         _fmt_percent(kpis.compliance),
-        help="Total firm energy delivered vs contracted across project life.",
+        help="Total firm energy delivered vs expected firm energy across project life.",
     )
     c2.metric(
-        "Worst-year coverage",
-        _fmt_percent(kpis.min_yearly_coverage, as_fraction=True),
-        help="Lowest annual delivery vs contract shows weakest year.",
+        "Deficit %",
+        _fmt_percent(kpis.deficit_pct),
+        help="Total shortfall MWh divided by expected firm MWh across the project life.",
     )
     c3.metric(
-        "Final SOH_total",
+        "Surplus %",
+        _fmt_percent(kpis.surplus_pct),
+        help="PV curtailed MWh divided by expected firm MWh across the project life.",
+    )
+    c4.metric(
+        "Final SOH total",
         _fmt_percent(kpis.final_soh_pct, as_fraction=False),
         help="End-of-life usable fraction after cycle + calendar fade.",
     )
-    c4.metric(
-        "EOY deliverable vs contract",
-        _fmt_percent(kpis.eoy_capacity_margin_pct, as_fraction=False),
-        help="Final-year daily deliverable vs target day (MW×h window).",
-    )
     c5.metric(
-        "Augmentations triggered",
-        f"{kpis.augmentation_events} events",
+        "Augmentation Events",
+        f"{kpis.augmentation_events}",
         help=f"Energy added over life: {kpis.augmentation_energy_mwh:,.0f} MWh (BOL basis).",
     )
