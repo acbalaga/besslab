@@ -64,6 +64,7 @@ def test_simulation_core_runs_with_parsed_windows() -> None:
 
     summary = summarize_simulation(output)
     assert summary.compliance == pytest.approx(100.0)
+    assert summary.surplus_pct == pytest.approx((summary.pv_excess_mwh / first_year.expected_firm_mwh) * 100.0)
 
 
 def test_simulation_core_uses_contracted_schedule() -> None:
