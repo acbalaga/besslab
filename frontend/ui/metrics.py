@@ -29,6 +29,7 @@ class KPIResults:
     total_shortfall_mwh: float
     avg_eq_cycles_per_year: float
     cap_ratio_final: float
+    surplus_pct: float
 
 
 def compute_kpis(
@@ -64,6 +65,7 @@ def compute_kpis(
         total_shortfall_mwh=summary.total_shortfall_mwh,
         avg_eq_cycles_per_year=summary.avg_eq_cycles_per_year,
         cap_ratio_final=summary.cap_ratio_final,
+        surplus_pct=summary.surplus_pct,
     )
 
 

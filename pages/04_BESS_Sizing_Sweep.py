@@ -1201,6 +1201,7 @@ if sweep_df is not None:
         "duration_h",
         "compliance_pct",
         "total_shortfall_mwh",
+        "surplus_pct",
         npv_field,
         "irr_pct",
         "benchmark_duration_ok",

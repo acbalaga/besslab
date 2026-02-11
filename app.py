@@ -2024,6 +2024,7 @@ def run_app():
         "BESS share of generation (MWh)": kpis.bess_generation_mwh,
         "PV share of generation (MWh)": kpis.pv_generation_mwh,
         "PV excess (MWh)": kpis.pv_excess_mwh,
+        "Surplus (%)": kpis.surplus_pct,
         "BESS losses (MWh)": kpis.bess_losses_mwh,
         "Final EOY usable (MWh)": final.eoy_usable_mwh,
         "Final EOY power (MW)": final.eoy_power_mw,

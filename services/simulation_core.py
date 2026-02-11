@@ -342,6 +342,7 @@ class SimulationSummary:
     total_shortfall_mwh: float
     avg_eq_cycles_per_year: float
     cap_ratio_final: float
+    surplus_pct: float = float("nan")
 
 
 @dataclass
@@ -1090,6 +1091,7 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
     bess_generation_mwh = sum(r.bess_to_contract_mwh for r in results)
     pv_generation_mwh = sum(r.pv_to_contract_mwh for r in results)
     pv_excess_mwh = sum(r.pv_curtailed_mwh for r in results)
+    surplus_pct = (pv_excess_mwh / expected_total * 100.0) if expected_total > 0 else float("nan")
     charge_discharge_ratio = (total_charge_mwh / total_discharge_mwh) if total_discharge_mwh > 0 else float("nan")
     bess_share_of_firm = (bess_generation_mwh / actual_total * 100.0) if actual_total > 0 else float("nan")
     pv_capture_ratio = (
@@ -1121,4 +1123,5 @@ def summarize_simulation(sim_output: SimulationOutput) -> SimulationSummary:
         total_shortfall_mwh=total_shortfall_mwh,
         avg_eq_cycles_per_year=avg_eq_cycles_per_year,
         cap_ratio_final=cap_ratio_final,
+        surplus_pct=surplus_pct,
     )

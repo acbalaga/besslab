@@ -872,6 +872,8 @@ def _evaluate_candidate_row(
         status = "exceeds_shortfall"
 
     include_scenario_column = len(price_scenarios) > 1 or any(name is not None for name, _ in price_scenarios)
+    expected_firm_mwh = float(sum(result.expected_firm_mwh for result in sim_output.results))
+    surplus_pct = (summary.pv_excess_mwh / expected_firm_mwh * 100.0) if expected_firm_mwh > 0 else float("nan")
     rows: list[dict[str, float | bool | str]] = []
     for scenario_name, scenario_price_inputs in price_scenarios:
         lcoe = float("nan")
@@ -924,6 +926,7 @@ def _evaluate_candidate_row(
             "bess_generation_mwh": summary.bess_generation_mwh,
             "pv_generation_mwh": summary.pv_generation_mwh,
             "pv_excess_mwh": summary.pv_excess_mwh,
+            "surplus_pct": surplus_pct,
             "bess_losses_mwh": summary.bess_losses_mwh,
             "total_shortfall_mwh": summary.total_shortfall_mwh,
             "avg_eq_cycles_per_year": summary.avg_eq_cycles_per_year,
