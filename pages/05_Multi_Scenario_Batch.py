@@ -1212,6 +1212,8 @@ def _run_batch() -> pd.DataFrame | None:
 
         summary = summarize_simulation(sim_output)
         final_year = sim_output.results[-1]
+        expected_total_mwh = float(sum(result.expected_firm_mwh for result in sim_output.results))
+        surplus_pct = (summary.pv_excess_mwh / expected_total_mwh * 100.0) if expected_total_mwh > 0 else float("nan")
         economics_fields: Dict[str, Any] = {}
         economics_columns = [
             "Discounted costs (USD million)",
@@ -1334,6 +1336,7 @@ def _run_batch() -> pd.DataFrame | None:
                 "BESS discharge (MWh)": summary.bess_generation_mwh,
                 "PV contribution (MWh)": summary.pv_generation_mwh,
                 "PV excess (MWh)": summary.pv_excess_mwh,
+                "Surplus (%)": surplus_pct,
                 "BESS losses (MWh)": summary.bess_losses_mwh,
                 "Avg eq cycles/yr": summary.avg_eq_cycles_per_year,
                 "Final SOH_total": final_year.soh_total,
@@ -1378,6 +1381,7 @@ with results_container:
                 "BESS discharge (MWh)": "{:,.1f}",
                 "PV contribution (MWh)": "{:,.1f}",
                 "PV excess (MWh)": "{:,.1f}",
+                "Surplus (%)": "{:,.2f}",
                 "BESS losses (MWh)": "{:,.1f}",
                 "Avg eq cycles/yr": "{:,.2f}",
                 "Final SOH_total": "{:,.3f}",
