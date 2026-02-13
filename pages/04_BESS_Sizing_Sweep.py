@@ -902,9 +902,17 @@ with st.container():
 
     submitted = st.button("Run BESS energy sweep", use_container_width=True)
 
+    energy_values = [float(energy_mwh) for _, energy_mwh in candidate_pairs]
+    power_values = [float(power_mw) for power_mw, _ in candidate_pairs]
+
     st.session_state["bess_sweep_inputs"] = {
+        # Keep legacy array fields for backwards compatibility with prior saved JSON payloads.
         "energy_mwh_values": energy_values,
         "power_mw_values": power_values,
+        "candidate_pairs_mw_mwh": [
+            {"power_mw": float(power_mw), "energy_mwh": float(energy_mwh)}
+            for power_mw, energy_mwh in candidate_pairs
+        ],
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
         "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
