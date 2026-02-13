@@ -72,6 +72,58 @@ BENCHMARK_PRESET_OPTIONS = ["Conservative", "Base", "Aggressive", "Custom"]
 DEFAULT_DURATION_BAND_HOURS = (2.0, 6.0)
 DEFAULT_C_RATE_BAND_PER_H = (0.17, 0.5)
 DEFAULT_COMPLIANCE_TARGET_PCT = 99.0
+DEFAULT_CANDIDATE_PAIRS_MW_MWH: tuple[tuple[float, float], ...] = (
+    (5.0, 20.0),
+    (5.0, 25.0),
+    (10.0, 40.0),
+    (10.0, 50.0),
+    (15.0, 60.0),
+    (15.0, 75.0),
+    (20.0, 80.0),
+    (20.0, 100.0),
+    (25.0, 100.0),
+    (25.0, 125.0),
+    (30.0, 120.0),
+    (30.0, 150.0),
+    (35.0, 140.0),
+    (35.0, 175.0),
+    (40.0, 160.0),
+    (40.0, 200.0),
+)
+
+
+def _candidate_label(power_mw: float, energy_mwh: float) -> str:
+    return f"{power_mw:.0f} MW / {energy_mwh:.0f} MWh"
+
+
+def _with_levelized_php_metrics(df: pd.DataFrame, forex_rate_php_per_usd: float) -> pd.DataFrame:
+    """Add PHP/kWh levelized metrics for shortlist comparison views.
+
+    Why this helper exists:
+    - The sweep core outputs most economics in USD and mixed units.
+    - Advisory comparison is easier when all values are expressed in PHP/kWh.
+
+    Notes on assumptions:
+    - ``lcoe_php_per_kwh`` is a direct unit conversion from ``lcoe_usd_per_mwh``.
+    - ``lcos_php_per_kwh`` is a proxy derived from discounted costs divided by
+      simulated BESS discharge energy because discounted BESS energy is not
+      currently exposed at the row level.
+    - Effective prices for compliance/deficit/surplus allocate discounted costs
+      over each energy bucket. They are diagnostic ratios, not tariff quotes.
+    """
+
+    metrics_df = df.copy()
+    costs_php = metrics_df["npv_costs_usd"] * forex_rate_php_per_usd
+
+    metrics_df["lcoe_php_per_kwh"] = metrics_df["lcoe_usd_per_mwh"] * forex_rate_php_per_usd / 1000.0
+    metrics_df["lcos_php_per_kwh"] = costs_php.div(metrics_df["bess_generation_mwh"] * 1000.0)
+
+    compliance_energy_mwh = (metrics_df["total_project_generation_mwh"] - metrics_df["pv_excess_mwh"]).clip(lower=0.0)
+    metrics_df["effective_price_compliance_php_per_kwh"] = costs_php.div(compliance_energy_mwh * 1000.0)
+    metrics_df["effective_price_deficit_php_per_kwh"] = costs_php.div(metrics_df["total_shortfall_mwh"] * 1000.0)
+    metrics_df["effective_price_surplus_php_per_kwh"] = costs_php.div(metrics_df["pv_excess_mwh"] * 1000.0)
+
+    return metrics_df
 
 
 def _coerce_bool(value: Any, default: bool) -> bool:
@@ -402,19 +454,17 @@ with st.expander("Load/save sweep inputs (JSON)", expanded=False):
 
 with st.container():
     st.info(
-        "Comprehensive matrix mode is active: power is swept from 5–50 MW (5 MW steps) and "
-        "usable energy is swept from 10–200 MWh (10 MWh steps)."
+        "Comprehensive advisory mode is active with a predefined BESS sizing shortlist "
+        "covering 16 power/energy candidates."
     )
 
     size_col1, size_col2, size_col3, price_col = st.columns(4)
     wesm_profile_df: Optional[pd.DataFrame] = None
+    candidate_pairs = list(DEFAULT_CANDIDATE_PAIRS_MW_MWH)
+    candidate_labels = [_candidate_label(power_mw, energy_mwh) for power_mw, energy_mwh in candidate_pairs]
     with size_col1:
-        energy_values = [float(value) for value in range(10, 201, 10)]
-        power_values = [float(value) for value in range(5, 51, 5)]
-        st.metric("Energy candidates", f"{len(energy_values)} points")
-        st.caption("10 to 200 MWh, 10 MWh interval.")
-        st.metric("Power candidates", f"{len(power_values)} points")
-        st.caption("5 to 50 MW, 5 MW interval.")
+        st.metric("Sizing candidates", f"{len(candidate_pairs)} predefined pairs")
+        st.caption("; ".join(candidate_labels))
     with size_col2:
         wacc_pct = st.number_input(
             "WACC (%)",
@@ -882,9 +932,17 @@ with st.container():
 
     submitted = st.button("Run BESS energy sweep", use_container_width=True)
 
+    energy_values = [float(energy_mwh) for _, energy_mwh in candidate_pairs]
+    power_values = [float(power_mw) for power_mw, _ in candidate_pairs]
+
     st.session_state["bess_sweep_inputs"] = {
+        # Keep legacy array fields for backwards compatibility with prior saved JSON payloads.
         "energy_mwh_values": energy_values,
         "power_mw_values": power_values,
+        "candidate_pairs_mw_mwh": [
+            {"power_mw": float(power_mw), "energy_mwh": float(energy_mwh)}
+            for power_mw, energy_mwh in candidate_pairs
+        ],
         "wacc_pct": float(wacc_pct),
         "inflation_pct": float(inflation_pct),
         "forex_rate_php_per_usd": float(forex_rate_php_per_usd),
@@ -991,7 +1049,7 @@ if submitted:
         sell_to_wesm=sell_to_wesm if wesm_pricing_enabled else False,
     )
 
-    total_candidates = len(energy_values) * len(power_values)
+    total_candidates = len(candidate_pairs)
     progress_state = {"completed": 0}
     progress_bar = st.progress(
         0.0,
@@ -1032,11 +1090,11 @@ if submitted:
         )
 
         matrix_frames: list[pd.DataFrame] = []
-        for power_mw in power_values:
+        for power_mw, energy_mwh in candidate_pairs:
             matrix_frames.append(
                 sweep_bess_sizes(
                     **common_kwargs,
-                    energy_mwh_values=energy_values,
+                    energy_mwh_values=[float(energy_mwh)],
                     fixed_power_mw=float(power_mw),
                 )
             )
@@ -1144,64 +1202,139 @@ if sweep_df is not None:
         )
 
     st.subheader("Comprehensive sizing visuals")
-    viz_df = benchmark_df.copy()
-    viz_df["compliance_gap_pct"] = (compliance_target_pct - viz_df["compliance_pct"]).clip(lower=0.0)
-
-    heatmap_shortfall = (
-        alt.Chart(viz_df)
-        .mark_rect()
-        .encode(
-            x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
-            y=alt.Y("power_mw:Q", title="Power (MW)"),
-            color=alt.Color(
-                "total_shortfall_mwh:Q",
-                title="Annual shortfall (MWh)",
-                scale=alt.Scale(scheme="yelloworangered"),
-            ),
-            tooltip=[
-                alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
-                alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
-                alt.Tooltip("duration_h:Q", title="Duration (h)", format=",.2f"),
-                alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
-                alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
-            ],
-        )
-        .properties(title="Reliability map: annual shortfall by size")
+    viz_df = _with_levelized_php_metrics(
+        benchmark_df,
+        forex_rate_php_per_usd=float(forex_rate_php_per_usd),
     )
+    viz_df["compliance_gap_pct"] = (compliance_target_pct - viz_df["compliance_pct"]).clip(lower=0.0)
+    viz_df["candidate_label"] = viz_df.apply(
+        lambda row: _candidate_label(float(row["power_mw"]), float(row["energy_mwh"])),
+        axis=1,
+    )
+    candidate_order = [_candidate_label(power_mw, energy_mwh) for power_mw, energy_mwh in DEFAULT_CANDIDATE_PAIRS_MW_MWH]
 
-    st.altair_chart(heatmap_shortfall, use_container_width=True)
+    reliability_base = alt.Chart(viz_df).encode(
+        x=alt.X("candidate_label:N", title="Candidate", sort=candidate_order),
+        tooltip=[
+            alt.Tooltip("candidate_label:N", title="Candidate"),
+            alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+            alt.Tooltip("surplus_pct:Q", title="Surplus (%)", format=",.2f"),
+            alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
+        ],
+    )
+    reliability_chart = (
+        alt.layer(
+            reliability_base.mark_line(point=True, color="#1f77b4").encode(
+                y=alt.Y("compliance_pct:Q", title="Compliance (%)", axis=alt.Axis(titleColor="#1f77b4")),
+            ),
+            reliability_base.mark_line(point=True, color="#ff7f0e").encode(
+                y=alt.Y("surplus_pct:Q", title="Surplus (%)", axis=alt.Axis(titleColor="#ff7f0e")),
+            ),
+        )
+        .resolve_scale(y="independent")
+        .properties(title="Reliability by candidate: compliance and surplus")
+    )
+    st.altair_chart(reliability_chart, use_container_width=True)
 
     npv_field = "npv_usd" if "npv_usd" in viz_df.columns and viz_df["npv_usd"].notna().any() else "npv_costs_usd"
     npv_title = "Net NPV (USD)" if npv_field == "npv_usd" else "NPV of costs (USD)"
 
     tradeoff_chart = (
         alt.Chart(viz_df)
-        .mark_circle(size=90, opacity=0.85)
+        .mark_circle(size=130, opacity=0.85)
         .encode(
-            x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
-            y=alt.Y("compliance_pct:Q", title="Compliance (%)"),
-            color=alt.Color("power_mw:N", title="Power (MW)"),
-            size=alt.Size("duration_h:Q", title="Duration (h)"),
+            x=alt.X("total_shortfall_mwh:Q", title="Annual shortfall (MWh)"),
+            y=alt.Y(f"{npv_field}:Q", title=npv_title),
+            color=alt.Color("compliance_pct:Q", title="Compliance (%)", scale=alt.Scale(scheme="tealblues")),
+            size=alt.Size("energy_mwh:Q", title="Usable energy (MWh)"),
             tooltip=[
+                alt.Tooltip("candidate_label:N", title="Candidate"),
                 alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
                 alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
-                alt.Tooltip("duration_h:Q", title="Duration (h)", format=",.2f"),
                 alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+                alt.Tooltip("surplus_pct:Q", title="Surplus (%)", format=",.2f"),
                 alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
                 alt.Tooltip(f"{npv_field}:Q", title=npv_title, format=",.0f"),
             ],
         )
-        .properties(title="Sizing tradeoff: compliance vs energy (bubble size = duration)")
+        .properties(title="Sizing behavior scatter: reliability vs economics")
     )
     st.altair_chart(tradeoff_chart, use_container_width=True)
 
+    optimization_metrics = [
+        "lcoe_php_per_kwh",
+        "lcos_php_per_kwh",
+        "effective_price_compliance_php_per_kwh",
+        "effective_price_deficit_php_per_kwh",
+        "effective_price_surplus_php_per_kwh",
+    ]
+    rankable_df = viz_df.replace([float("inf"), float("-inf")], pd.NA)
+    for metric in optimization_metrics:
+        rankable_df[f"{metric}_rank"] = rankable_df[metric].rank(method="min", ascending=True)
+    rankable_df["compliance_rank"] = rankable_df["compliance_pct"].rank(method="min", ascending=False)
+
+    rank_columns = [f"{metric}_rank" for metric in optimization_metrics] + ["compliance_rank"]
+    rankable_df["optimality_score"] = rankable_df[rank_columns].mean(axis=1, skipna=True)
+
+    candidate_optimum = None
+    if rankable_df["optimality_score"].notna().any():
+        candidate_optimum = rankable_df.loc[rankable_df["optimality_score"].idxmin()]
+
+    if candidate_optimum is not None:
+        st.success(
+            "Multi-metric optimum candidate: "
+            f"{candidate_optimum['candidate_label']} (score {candidate_optimum['optimality_score']:.2f})."
+        )
+
+    optimality_chart = (
+        alt.Chart(rankable_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("candidate_label:N", title="Candidate", sort=candidate_order),
+            y=alt.Y("optimality_score:Q", title="Composite optimality score (lower is better)"),
+            color=alt.Color("compliance_pct:Q", title="Compliance (%)", scale=alt.Scale(scheme="goldgreen")),
+            tooltip=[
+                alt.Tooltip("candidate_label:N", title="Candidate"),
+                alt.Tooltip("optimality_score:Q", title="Optimality score", format=",.2f"),
+                alt.Tooltip("lcoe_php_per_kwh:Q", title="LCOE (PHP/kWh)", format=",.3f"),
+                alt.Tooltip("lcos_php_per_kwh:Q", title="LCOS (PHP/kWh)", format=",.3f"),
+                alt.Tooltip(
+                    "effective_price_compliance_php_per_kwh:Q",
+                    title="Effective compliance price (PHP/kWh)",
+                    format=",.3f",
+                ),
+                alt.Tooltip(
+                    "effective_price_deficit_php_per_kwh:Q",
+                    title="Effective deficit price (PHP/kWh)",
+                    format=",.3f",
+                ),
+                alt.Tooltip(
+                    "effective_price_surplus_php_per_kwh:Q",
+                    title="Effective surplus price (PHP/kWh)",
+                    format=",.3f",
+                ),
+            ],
+        )
+        .properties(title="Candidate optimality across reliability and PHP/kWh cost metrics")
+    )
+    st.altair_chart(optimality_chart, use_container_width=True)
+
+    viz_df = rankable_df
+
     top_cols = [
+        "candidate_label",
         "power_mw",
         "energy_mwh",
         "duration_h",
         "compliance_pct",
         "total_shortfall_mwh",
         "surplus_pct",
+        "lcoe_php_per_kwh",
+        "lcos_php_per_kwh",
+        "effective_price_compliance_php_per_kwh",
+        "effective_price_deficit_php_per_kwh",
+        "effective_price_surplus_php_per_kwh",
+        "optimality_score",
         npv_field,
         "irr_pct",
         "benchmark_duration_ok",
@@ -1217,7 +1350,7 @@ if sweep_df is not None:
         c_rate_band_per_h=(c_rate_floor, c_rate_ceiling),
         compliance_target_pct=compliance_target_pct,
     )
-    st.dataframe(ranked_df[available_top_cols].head(10), use_container_width=True, hide_index=True)
+    st.dataframe(ranked_df[available_top_cols].head(len(candidate_order)), use_container_width=True, hide_index=True)
 
     st.subheader("Pareto frontier and marginal sizing value")
     economic_objective_choice = st.selectbox(
@@ -1236,21 +1369,62 @@ if sweep_df is not None:
     if pareto_df.empty:
         st.info("No frontier candidates were available after filtering to evaluated rows.")
     else:
+        pareto_df = pareto_df.copy()
+        pareto_df["candidate_label"] = pareto_df.apply(
+            lambda row: _candidate_label(float(row["power_mw"]), float(row["energy_mwh"])),
+            axis=1,
+        )
+        pareto_df = pareto_df.sort_values(["total_shortfall_mwh", "compliance_pct"])
+
+        pareto_chart = (
+            alt.layer(
+                alt.Chart(viz_df)
+                .mark_circle(size=90, opacity=0.25, color="#9aa0a6")
+                .encode(
+                    x=alt.X("total_shortfall_mwh:Q", title="Annual shortfall (MWh)"),
+                    y=alt.Y("compliance_pct:Q", title="Compliance (%)"),
+                    tooltip=[
+                        alt.Tooltip("candidate_label:N", title="Candidate"),
+                        alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
+                        alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+                        alt.Tooltip("surplus_pct:Q", title="Surplus (%)", format=",.2f"),
+                    ],
+                ),
+                alt.Chart(pareto_df)
+                .mark_line(point=True, color="#2ca02c", strokeWidth=3)
+                .encode(
+                    x="total_shortfall_mwh:Q",
+                    y="compliance_pct:Q",
+                    tooltip=[
+                        alt.Tooltip("candidate_label:N", title="Frontier candidate"),
+                        alt.Tooltip("total_shortfall_mwh:Q", title="Shortfall (MWh)", format=",.1f"),
+                        alt.Tooltip("compliance_pct:Q", title="Compliance (%)", format=",.2f"),
+                        alt.Tooltip("surplus_pct:Q", title="Surplus (%)", format=",.2f"),
+                    ],
+                ),
+            )
+            .properties(title="Pareto frontier across predefined candidates")
+        )
+        st.altair_chart(pareto_chart, use_container_width=True)
+
         marginals_df = build_power_block_marginals(
             pareto_df,
             economic_objective=selected_economic_objective,
+        )
+        marginals_df["candidate_label"] = marginals_df.apply(
+            lambda row: _candidate_label(float(row["power_mw"]), float(row["energy_mwh"])),
+            axis=1,
         )
 
         marginal_chart = (
             alt.Chart(marginals_df)
             .mark_line(point=True)
             .encode(
-                x=alt.X("energy_mwh:Q", title="Usable energy (MWh)"),
+                x=alt.X("candidate_label:N", title="Frontier candidate", sort=candidate_order),
                 y=alt.Y("compliance_gain_per_mwh:Q", title="ΔCompliance / ΔMWh (pct-point per MWh)"),
                 color=alt.Color("power_mw:N", title="Power (MW)"),
                 tooltip=[
-                    alt.Tooltip("power_mw:Q", title="Power (MW)", format=",.0f"),
-                    alt.Tooltip("energy_mwh:Q", title="Energy (MWh)", format=",.0f"),
+                    alt.Tooltip("candidate_label:N", title="Candidate"),
                     alt.Tooltip("delta_energy_mwh:Q", title="ΔEnergy (MWh)", format=",.1f"),
                     alt.Tooltip("compliance_gain_per_mwh:Q", title="ΔCompliance/ΔMWh", format=",.5f"),
                     alt.Tooltip("shortfall_reduction_per_mwh:Q", title="ΔShortfall/ΔMWh", format=",.5f"),
@@ -1264,11 +1438,12 @@ if sweep_df is not None:
             marginal_chart = marginal_chart + (
                 alt.Chart(elbow_points)
                 .mark_point(shape="diamond", size=220, color="red")
-                .encode(x="energy_mwh:Q", y="compliance_gain_per_mwh:Q")
+                .encode(x="candidate_label:N", y="compliance_gain_per_mwh:Q")
             )
         st.altair_chart(marginal_chart, use_container_width=True)
 
         pareto_table_cols = [
+            "candidate_label",
             "power_mw",
             "energy_mwh",
             "compliance_pct",
