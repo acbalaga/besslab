@@ -96,6 +96,36 @@ def _candidate_label(power_mw: float, energy_mwh: float) -> str:
     return f"{power_mw:.0f} MW / {energy_mwh:.0f} MWh"
 
 
+def _with_levelized_php_metrics(df: pd.DataFrame, forex_rate_php_per_usd: float) -> pd.DataFrame:
+    """Add PHP/kWh levelized metrics for shortlist comparison views.
+
+    Why this helper exists:
+    - The sweep core outputs most economics in USD and mixed units.
+    - Advisory comparison is easier when all values are expressed in PHP/kWh.
+
+    Notes on assumptions:
+    - ``lcoe_php_per_kwh`` is a direct unit conversion from ``lcoe_usd_per_mwh``.
+    - ``lcos_php_per_kwh`` is a proxy derived from discounted costs divided by
+      simulated BESS discharge energy because discounted BESS energy is not
+      currently exposed at the row level.
+    - Effective prices for compliance/deficit/surplus allocate discounted costs
+      over each energy bucket. They are diagnostic ratios, not tariff quotes.
+    """
+
+    metrics_df = df.copy()
+    costs_php = metrics_df["npv_costs_usd"] * forex_rate_php_per_usd
+
+    metrics_df["lcoe_php_per_kwh"] = metrics_df["lcoe_usd_per_mwh"] * forex_rate_php_per_usd / 1000.0
+    metrics_df["lcos_php_per_kwh"] = costs_php.div(metrics_df["bess_generation_mwh"] * 1000.0)
+
+    compliance_energy_mwh = (metrics_df["total_project_generation_mwh"] - metrics_df["pv_excess_mwh"]).clip(lower=0.0)
+    metrics_df["effective_price_compliance_php_per_kwh"] = costs_php.div(compliance_energy_mwh * 1000.0)
+    metrics_df["effective_price_deficit_php_per_kwh"] = costs_php.div(metrics_df["total_shortfall_mwh"] * 1000.0)
+    metrics_df["effective_price_surplus_php_per_kwh"] = costs_php.div(metrics_df["pv_excess_mwh"] * 1000.0)
+
+    return metrics_df
+
+
 def _coerce_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -1172,7 +1202,10 @@ if sweep_df is not None:
         )
 
     st.subheader("Comprehensive sizing visuals")
-    viz_df = benchmark_df.copy()
+    viz_df = _with_levelized_php_metrics(
+        benchmark_df,
+        forex_rate_php_per_usd=float(forex_rate_php_per_usd),
+    )
     viz_df["compliance_gap_pct"] = (compliance_target_pct - viz_df["compliance_pct"]).clip(lower=0.0)
     viz_df["candidate_label"] = viz_df.apply(
         lambda row: _candidate_label(float(row["power_mw"]), float(row["energy_mwh"])),
@@ -1228,6 +1261,66 @@ if sweep_df is not None:
     )
     st.altair_chart(tradeoff_chart, use_container_width=True)
 
+    optimization_metrics = [
+        "lcoe_php_per_kwh",
+        "lcos_php_per_kwh",
+        "effective_price_compliance_php_per_kwh",
+        "effective_price_deficit_php_per_kwh",
+        "effective_price_surplus_php_per_kwh",
+    ]
+    rankable_df = viz_df.replace([float("inf"), float("-inf")], pd.NA)
+    for metric in optimization_metrics:
+        rankable_df[f"{metric}_rank"] = rankable_df[metric].rank(method="min", ascending=True)
+    rankable_df["compliance_rank"] = rankable_df["compliance_pct"].rank(method="min", ascending=False)
+
+    rank_columns = [f"{metric}_rank" for metric in optimization_metrics] + ["compliance_rank"]
+    rankable_df["optimality_score"] = rankable_df[rank_columns].mean(axis=1, skipna=True)
+
+    candidate_optimum = None
+    if rankable_df["optimality_score"].notna().any():
+        candidate_optimum = rankable_df.loc[rankable_df["optimality_score"].idxmin()]
+
+    if candidate_optimum is not None:
+        st.success(
+            "Multi-metric optimum candidate: "
+            f"{candidate_optimum['candidate_label']} (score {candidate_optimum['optimality_score']:.2f})."
+        )
+
+    optimality_chart = (
+        alt.Chart(rankable_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("candidate_label:N", title="Candidate", sort=candidate_order),
+            y=alt.Y("optimality_score:Q", title="Composite optimality score (lower is better)"),
+            color=alt.Color("compliance_pct:Q", title="Compliance (%)", scale=alt.Scale(scheme="goldgreen")),
+            tooltip=[
+                alt.Tooltip("candidate_label:N", title="Candidate"),
+                alt.Tooltip("optimality_score:Q", title="Optimality score", format=",.2f"),
+                alt.Tooltip("lcoe_php_per_kwh:Q", title="LCOE (PHP/kWh)", format=",.3f"),
+                alt.Tooltip("lcos_php_per_kwh:Q", title="LCOS (PHP/kWh)", format=",.3f"),
+                alt.Tooltip(
+                    "effective_price_compliance_php_per_kwh:Q",
+                    title="Effective compliance price (PHP/kWh)",
+                    format=",.3f",
+                ),
+                alt.Tooltip(
+                    "effective_price_deficit_php_per_kwh:Q",
+                    title="Effective deficit price (PHP/kWh)",
+                    format=",.3f",
+                ),
+                alt.Tooltip(
+                    "effective_price_surplus_php_per_kwh:Q",
+                    title="Effective surplus price (PHP/kWh)",
+                    format=",.3f",
+                ),
+            ],
+        )
+        .properties(title="Candidate optimality across reliability and PHP/kWh cost metrics")
+    )
+    st.altair_chart(optimality_chart, use_container_width=True)
+
+    viz_df = rankable_df
+
     top_cols = [
         "candidate_label",
         "power_mw",
@@ -1236,6 +1329,12 @@ if sweep_df is not None:
         "compliance_pct",
         "total_shortfall_mwh",
         "surplus_pct",
+        "lcoe_php_per_kwh",
+        "lcos_php_per_kwh",
+        "effective_price_compliance_php_per_kwh",
+        "effective_price_deficit_php_per_kwh",
+        "effective_price_surplus_php_per_kwh",
+        "optimality_score",
         npv_field,
         "irr_pct",
         "benchmark_duration_ok",
