@@ -61,6 +61,9 @@ If no files are uploaded, the app uses the sample data in `./data/`.
 - **BESS sizing sweep:** Sweep usable energy (holding power fixed) using the latest inputs, rank feasible candidates by compliance, shortfall, generation, LCOE, or cost metrics, and visualize LCOE/IRR trends.
 - **Multi-scenario batch:** Run a structured set of parameter variations and compare the resulting KPIs in one table (preferred for scenario reviews). Start from the seeded templates, tweak availability, SOC windows, augmentation, or economics, and export the table for external review.
 
+## Planning references
+- Optimization expansion plan (sensitivity, brute-force search, differential evolution, and top-down + bottom-up integration): `docs/optimization_methods_plan.md`
+
 ## Run a quick BESS sizing sweep from the CLI
 The grid-search helper can be exercised without Streamlit using the bundled sample data:
 
