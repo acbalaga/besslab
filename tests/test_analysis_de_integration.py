@@ -153,6 +153,14 @@ def test_de_bounded_domain_and_integer_enforcement() -> None:
     assert (response.results_df["input__duration_h"] % 1 == 0).all()
 
 
+def test_de_fallback_convergence_is_non_increasing_for_min_objective() -> None:
+    req = _de_request(seed=303)
+    response = run_differential_evolution_analysis(request=req, context=_context())
+
+    best_scores = [float(row["best_objective_score"]) for row in response.convergence_history]
+    assert best_scores
+    assert all(curr <= prev for prev, curr in zip(best_scores, best_scores[1:]))
+
 def test_de_penalty_behavior_for_infeasible_candidates() -> None:
     req = DERequest.from_dict(
         {

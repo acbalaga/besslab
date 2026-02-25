@@ -131,6 +131,10 @@ def _assumptions() -> BusinessRuleAssumptions:
     )
 
 
+def test_simulation_execution_context_dispatch_is_opt_in() -> None:
+    context = _context()
+    assert context.dispatch_optimizer_fn is None
+
 def test_bruteforce_request_parsing_and_columns() -> None:
     request = BruteForceAnalysisRequest.from_dict(
         {
