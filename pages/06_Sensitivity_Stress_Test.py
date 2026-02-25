@@ -5,9 +5,12 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import altair as alt
 import pandas as pd
 import streamlit as st
 
+from services.analysis_common import BusinessRuleAssumptions, SimulationExecutionContext
+from services.analysis_sensitivity import KPI_UNITS, SensitivityAnalysisRequest, run_sensitivity_analysis
 from services.simulation_core import HourlyLog, SimConfig, Window, simulate_project, summarize_simulation
 from utils import read_wesm_profile
 from utils.io import read_wesm_forecast_profile_average
@@ -632,6 +635,56 @@ def _run_sensitivity(
     return updated_table, sorted(set(warnings))
 
 
+def _parse_multiplier_list(raw_values: str, default_values: List[float]) -> List[float]:
+    """Parse comma-separated multipliers while keeping deterministic order."""
+
+    tokens = [token.strip() for token in raw_values.split(",") if token.strip()]
+    if not tokens:
+        return default_values
+    parsed = [float(token) for token in tokens]
+    # Preserve first occurrence order while deduplicating.
+    return list(dict.fromkeys(parsed))
+
+
+def _render_two_way_heatmap(
+    two_way_long_df: pd.DataFrame,
+    baseline_value: float,
+    metric_label: str,
+    delta_mode: str,
+) -> None:
+    """Render Altair heatmap for two-way sensitivity deltas."""
+
+    delta_label = "% delta from baseline" if delta_mode == "percent" else "Absolute delta from baseline"
+    subtitle = (
+        f"Baseline {metric_label}: {baseline_value:.3f}. "
+        f"Cells show {delta_label}."
+    )
+
+    chart = (
+        alt.Chart(two_way_long_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("parameter_b_value:Q", title=two_way_long_df["parameter_b_name"].iloc[0]),
+            y=alt.Y("parameter_a_value:Q", title=two_way_long_df["parameter_a_name"].iloc[0]),
+            color=alt.Color("delta_value:Q", title=delta_label),
+            tooltip=[
+                "scenario_id",
+                "parameter_a_name",
+                alt.Tooltip("parameter_a_value:Q", format=".4f"),
+                "parameter_b_name",
+                alt.Tooltip("parameter_b_value:Q", format=".4f"),
+                "kpi_name",
+                alt.Tooltip("kpi_value:Q", format=".4f"),
+                "kpi_unit",
+                alt.Tooltip("delta_value:Q", format=".4f"),
+                "delta_mode",
+            ],
+        )
+        .properties(height=320, title=alt.TitleParams(text="Two-way sensitivity heatmap", subtitle=[subtitle]))
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
 render_layout = init_page_layout(
     page_title="Sensitivity & Stress Test",
     main_title="Sensitivity & Stress Test",
@@ -895,6 +948,100 @@ if chart_source["Impact (pp)"].abs().sum() == 0:
 
 st.altair_chart(build_tornado_chart(chart_source), use_container_width=True)
 
+st.markdown("### Two-way sensitivity heatmap")
+st.caption(
+    "Evaluate a two-parameter grid (power and duration multipliers) and visualize KPI deltas from baseline."
+)
+
+cached_cfg, _ = get_cached_simulation_config()
+grid_base_cfg = cached_cfg or SimConfig()
+base_power_mw = float(grid_base_cfg.initial_power_mw)
+base_duration_h = (
+    float(grid_base_cfg.initial_usable_mwh / grid_base_cfg.initial_power_mw)
+    if grid_base_cfg.initial_power_mw > 0
+    else 1.0
+)
+delta_mode = st.radio(
+    "Two-way delta definition",
+    options=["absolute", "percent"],
+    horizontal=True,
+    help="absolute = scenario KPI - baseline KPI; percent = ((scenario - baseline) / |baseline|) × 100.",
+)
+
+cols = st.columns(3)
+grid_values_a_text = cols[0].text_input(
+    "Power multipliers (A)",
+    value="0.8,1.0,1.2",
+    help="Unitless multipliers applied to baseline power MW.",
+)
+grid_values_b_text = cols[1].text_input(
+    "Duration multipliers (B)",
+    value="0.8,1.0,1.2",
+    help="Unitless multipliers applied to baseline duration hours.",
+)
+grid_metric = cols[2].selectbox(
+    "Heatmap KPI",
+    options=["compliance_pct", "total_shortfall_mwh", "bess_share_of_firm_pct", "avg_eq_cycles_per_year", "cap_ratio_final"],
+)
+
+two_way_long_df = pd.DataFrame()
+two_way_matrix_df = pd.DataFrame()
+try:
+    grid_values_a = _parse_multiplier_list(grid_values_a_text, [0.8, 1.0, 1.2])
+    grid_values_b = _parse_multiplier_list(grid_values_b_text, [0.8, 1.0, 1.2])
+
+    two_way_request = SensitivityAnalysisRequest(
+        scenario_id="ui_two_way",
+        base_power_mw=base_power_mw,
+        base_duration_h=base_duration_h,
+        axes=[],
+        assumptions=BusinessRuleAssumptions(
+            tariff_escalation_rate_pct=0.0,
+            shortfall_penalty_usd_per_mwh=0.0,
+            min_compliance_pct=0.0,
+            objective_metric="shortfall_mwh",
+            objective_direction="min",
+        ),
+        deterministic=True,
+        seed=42,
+        two_way_grid={
+            "parameter_a": "power_mw_multiplier",
+            "parameter_b": "duration_h_multiplier",
+            "values_a": grid_values_a,
+            "values_b": grid_values_b,
+            "selected_kpis": [grid_metric],
+            "delta_mode": delta_mode,
+        },
+    )
+    two_way_response = run_sensitivity_analysis(
+        request=two_way_request,
+        context=SimulationExecutionContext(
+            base_cfg=grid_base_cfg,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            dod_override="Auto (infer)",
+        ),
+    )
+    if two_way_response.long_form_df is not None:
+        two_way_long_df = two_way_response.long_form_df.copy()
+    if two_way_response.matrix_df is not None:
+        two_way_matrix_df = two_way_response.matrix_df.copy()
+except ValueError as exc:
+    st.warning(f"Two-way inputs are invalid: {exc}")
+
+if not two_way_long_df.empty:
+    baseline_metric_value = float(two_way_long_df["baseline_kpi_value"].iloc[0])
+    _render_two_way_heatmap(
+        two_way_long_df=two_way_long_df,
+        baseline_value=baseline_metric_value,
+        metric_label=f"{grid_metric} ({KPI_UNITS.get(grid_metric, '')})",
+        delta_mode=delta_mode,
+    )
+    with st.expander("Two-way grid matrix (pivot-ready)", expanded=False):
+        st.dataframe(two_way_matrix_df, use_container_width=True)
+else:
+    st.info("Enter valid multiplier lists to generate the two-way heatmap.", icon="ℹ️")
+
 st.markdown("### Notes & export")
 st.caption(
     "Example usage: if an RTE downside is expected to reduce compliance by 1.5pp, "
@@ -904,6 +1051,46 @@ st.caption(
 export_df = edited_table.copy()
 export_df["Metric"] = selected_metric.label
 export_df["Baseline (%)"] = baseline_value
+
+if not two_way_long_df.empty:
+    sampled_inputs = two_way_long_df[
+        [
+            "scenario_id",
+            "candidate_id",
+            "parameter_a_name",
+            "parameter_a_value",
+            "parameter_b_name",
+            "parameter_b_value",
+            "kpi_name",
+            "kpi_value",
+            "kpi_unit",
+            "baseline_kpi_value",
+            "delta_mode",
+            "delta_value",
+        ]
+    ]
+    export_df = pd.concat(
+        [
+            export_df,
+            pd.DataFrame([{}]),
+            pd.DataFrame([{"Lever": "Two-way sampled inputs and KPI outputs"}]),
+            sampled_inputs.rename(
+                columns={
+                    "parameter_a_name": "Parameter A",
+                    "parameter_a_value": "Parameter A value",
+                    "parameter_b_name": "Parameter B",
+                    "parameter_b_value": "Parameter B value",
+                    "kpi_name": "KPI",
+                    "kpi_value": "KPI value",
+                    "kpi_unit": "KPI unit",
+                    "baseline_kpi_value": "Baseline KPI value",
+                    "delta_mode": "Delta mode",
+                    "delta_value": "Delta value",
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
 export_csv = export_df.to_csv(index=False).encode("utf-8")
 export_json = json.dumps(
     {
