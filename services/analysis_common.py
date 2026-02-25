@@ -6,7 +6,7 @@ from typing import Any, Callable, Sequence
 
 import pandas as pd
 
-from services.dispatch_optimizer import DispatchDecisionSeries, DispatchInputs, optimize_dispatch
+from services.dispatch_optimizer import DispatchDecisionSeries, DispatchInputs
 from services.simulation_core import SimConfig, SimulationOutput, SimulationSummary
 from utils.sweeps import run_candidate_simulation
 
@@ -63,7 +63,9 @@ class SimulationExecutionContext:
     need_logs: bool = False
     simulate_fn: Callable[..., SimulationOutput] | None = None
     summarize_fn: Callable[[SimulationOutput], SimulationSummary] | None = None
-    dispatch_optimizer_fn: Callable[[DispatchInputs], DispatchDecisionSeries] | None = optimize_dispatch
+    # Dispatch optimization is opt-in so analysis defaults preserve baseline
+    # simulation behavior unless the caller explicitly injects a dispatcher.
+    dispatch_optimizer_fn: Callable[[DispatchInputs], DispatchDecisionSeries] | None = None
 
 
 @dataclass(frozen=True)

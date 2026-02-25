@@ -269,6 +269,7 @@ def _run_fallback_de(request: DERequest, context: SimulationExecutionContext) ->
     rng = np.random.default_rng(request.seed)
     variable_count = len(request.variables)
     hp = request.hyperparameters
+    direction = request.objective.direction
 
     population = np.zeros((hp.population_size, variable_count), dtype=float)
     for idx, variable in enumerate(request.variables):
@@ -277,33 +278,65 @@ def _run_fallback_de(request: DERequest, context: SimulationExecutionContext) ->
     evaluated_rows: list[dict[str, Any]] = []
     convergence_history: list[dict[str, Any]] = []
 
-    for generation in range(hp.generations + 1):
-        if generation > 0:
-            for target_idx in range(hp.population_size):
-                available = [i for i in range(hp.population_size) if i != target_idx]
-                a_idx, b_idx, c_idx = rng.choice(available, size=3, replace=False)
-                mutant = population[a_idx] + hp.differential_weight * (population[b_idx] - population[c_idx])
-                mutant = _clip_and_cast_vector(mutant, request.variables)
+    def _is_better_score(candidate_score: float, incumbent_score: float) -> bool:
+        """Return ``True`` when ``candidate_score`` improves the incumbent."""
 
-                crossover_mask = rng.random(variable_count) < hp.crossover_rate
-                if not crossover_mask.any():
-                    crossover_mask[rng.integers(0, variable_count)] = True
-                trial = np.where(crossover_mask, mutant, population[target_idx])
-                population[target_idx] = _clip_and_cast_vector(trial, request.variables)
+        if direction == "min":
+            return candidate_score <= incumbent_score
+        return candidate_score >= incumbent_score
 
+    current_rows: list[dict[str, Any]] = []
+    for target_idx in range(hp.population_size):
+        row = _evaluate_candidate(
+            request=request,
+            context=context,
+            candidate_id=f"de_g0_i{target_idx}",
+            vector=population[target_idx],
+        )
+        current_rows.append(row)
+
+    evaluated_rows.extend(current_rows)
+    initial_scores = np.array([row["objective_score"] for row in current_rows], dtype=float)
+    initial_best_score = float(np.min(initial_scores)) if direction == "min" else float(np.max(initial_scores))
+    convergence_history.append({"generation": 0, "best_objective_score": initial_best_score})
+
+    for generation in range(1, hp.generations + 1):
         generation_rows: list[dict[str, Any]] = []
         for target_idx in range(hp.population_size):
-            row = _evaluate_candidate(
+            available = [i for i in range(hp.population_size) if i != target_idx]
+            a_idx, b_idx, c_idx = rng.choice(available, size=3, replace=False)
+            mutant = population[a_idx] + hp.differential_weight * (population[b_idx] - population[c_idx])
+            mutant = _clip_and_cast_vector(mutant, request.variables)
+
+            crossover_mask = rng.random(variable_count) < hp.crossover_rate
+            if not crossover_mask.any():
+                crossover_mask[rng.integers(0, variable_count)] = True
+            trial = np.where(crossover_mask, mutant, population[target_idx])
+            trial = _clip_and_cast_vector(trial, request.variables)
+            trial_row = _evaluate_candidate(
                 request=request,
                 context=context,
-                candidate_id=f"de_g{generation}_i{target_idx}",
-                vector=population[target_idx],
+                candidate_id=f"de_g{generation}_trial_{target_idx}",
+                vector=trial,
             )
-            generation_rows.append(row)
+
+            incumbent_row = current_rows[target_idx]
+            trial_score = float(trial_row["objective_score"])
+            incumbent_score = float(incumbent_row["objective_score"])
+            if _is_better_score(trial_score, incumbent_score):
+                population[target_idx] = trial
+                selected_row = trial_row
+            else:
+                selected_row = incumbent_row
+
+            snapshot_row = dict(selected_row)
+            snapshot_row["candidate_id"] = f"de_g{generation}_i{target_idx}"
+            generation_rows.append(snapshot_row)
 
         evaluated_rows.extend(generation_rows)
+        current_rows = generation_rows
         scores = np.array([row["objective_score"] for row in generation_rows], dtype=float)
-        best_score = float(np.min(scores)) if request.objective.direction == "min" else float(np.max(scores))
+        best_score = float(np.min(scores)) if direction == "min" else float(np.max(scores))
         convergence_history.append({"generation": generation, "best_objective_score": best_score})
 
     return evaluated_rows, convergence_history
