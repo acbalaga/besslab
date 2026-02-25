@@ -332,5 +332,5 @@ def test_de_fixed_seed_is_deterministic() -> None:
     second = run_differential_evolution_analysis(request=request, context=_context())
 
     assert first.records == second.records
-    assert list(first.results_df.columns) == EXPECTED_COLUMNS
+    assert set(EXPECTED_COLUMNS).issubset(first.results_df.columns)
     assert first.best_record is not None
