@@ -244,6 +244,7 @@ def _evaluate_one_candidate(
         need_logs=context.need_logs,
         seed=request.seed,
         deterministic=request.deterministic,
+        dispatch_optimizer_fn=context.dispatch_optimizer_fn,
     )
 
     objective_value = _extract_metric(request.objective.metric, summary, assumptions)

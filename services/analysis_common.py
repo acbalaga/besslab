@@ -6,6 +6,7 @@ from typing import Any, Callable, Sequence
 
 import pandas as pd
 
+from services.dispatch_optimizer import DispatchDecisionSeries, DispatchInputs, optimize_dispatch
 from services.simulation_core import SimConfig, SimulationOutput, SimulationSummary
 from utils.sweeps import run_candidate_simulation
 
@@ -62,6 +63,7 @@ class SimulationExecutionContext:
     need_logs: bool = False
     simulate_fn: Callable[..., SimulationOutput] | None = None
     summarize_fn: Callable[[SimulationOutput], SimulationSummary] | None = None
+    dispatch_optimizer_fn: Callable[[DispatchInputs], DispatchDecisionSeries] | None = optimize_dispatch
 
 
 @dataclass(frozen=True)
@@ -120,6 +122,7 @@ def evaluate_candidates(
             need_logs=context.need_logs,
             seed=seed,
             deterministic=deterministic,
+            dispatch_optimizer_fn=context.dispatch_optimizer_fn,
         )
 
         objective_value = _compute_objective_value(assumptions, summary)

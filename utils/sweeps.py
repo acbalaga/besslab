@@ -24,6 +24,7 @@ from utils.economics import (
 )
 
 if TYPE_CHECKING:
+    from services.dispatch_optimizer import DispatchDecisionSeries, DispatchInputs
     from services.simulation_core import SimConfig, SimulationOutput, SimulationSummary
 
 
@@ -239,6 +240,7 @@ def run_candidate_simulation(
     need_logs: bool = False,
     seed: int | None = None,
     deterministic: bool | None = None,
+    dispatch_optimizer_fn: Callable[["DispatchInputs"], "DispatchDecisionSeries"] | None = None,
 ) -> Tuple["SimulationOutput", "SimulationSummary"]:
     """Call the core engine for a single BESS size.
 
@@ -246,6 +248,8 @@ def run_candidate_simulation(
     engine while tests can supply a stub without touching the grid-search
     logic. Optional ``seed`` and ``deterministic`` flags are forwarded to
     simulators that accept them so callers can enforce reproducible runs.
+    Optional ``dispatch_optimizer_fn`` can inject contract profiles/schedules per
+    candidate before simulation for top-down design search workflows.
     """
 
     if simulate_fn is None or summarize_fn is None:
@@ -259,6 +263,32 @@ def run_candidate_simulation(
         initial_power_mw=float(power_mw),
         initial_usable_mwh=candidate_energy_mwh,
     )
+
+    if dispatch_optimizer_fn is not None:
+        from services.dispatch_optimizer import DispatchInputs
+
+        dispatch_inputs = DispatchInputs(
+            base_cfg=cfg_for_run,
+            pv_df=pv_df,
+            cycle_df=cycle_df,
+            dod_override=dod_override,
+            power_mw=float(power_mw),
+            duration_h=float(duration_h),
+        )
+        decisions = dispatch_optimizer_fn(dispatch_inputs)
+        cfg_for_run = replace(
+            cfg_for_run,
+            contracted_mw_profile=(
+                None
+                if decisions.contracted_mw_profile is None
+                else list(decisions.contracted_mw_profile)
+            ),
+            contracted_mw_schedule=(
+                None
+                if decisions.contracted_mw_schedule is None
+                else list(decisions.contracted_mw_schedule)
+            ),
+        )
 
     simulate_kwargs = _collect_optional_simulation_kwargs(simulate_fn, seed, deterministic)
     sim_output = simulate_fn(
