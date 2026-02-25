@@ -135,8 +135,14 @@ def test_bruteforce_request_parsing_and_columns() -> None:
     request = BruteForceAnalysisRequest.from_dict(
         {
             "scenario_id": "base",
-            "power_mw_values": [2, 4],
-            "duration_h_values": [1, 2],
+            "variables": [
+                {"name": "power_mw", "values": [2, 4], "unit": "MW"},
+                {"name": "duration_h", "values": [1, 2], "unit": "h"},
+            ],
+            "objective": {"metric": "shortfall_mwh", "direction": "min"},
+            "constraints": [
+                {"metric": "compliance_pct", "operator": ">=", "value": 0.6, "penalty": 500.0}
+            ],
             "assumptions": _assumptions().__dict__,
             "deterministic": True,
             "seed": 7,
@@ -145,9 +151,80 @@ def test_bruteforce_request_parsing_and_columns() -> None:
 
     response = run_bruteforce_analysis(request=request, context=_context())
 
-    assert list(response.results_df.columns) == EXPECTED_COLUMNS
+    assert set(EXPECTED_COLUMNS).issubset(response.results_df.columns)
     assert len(response.records) == 4
     assert response.results_df["candidate_rank"].tolist() == [1, 2, 3, 4]
+
+
+def test_bruteforce_cartesian_enumeration_is_complete() -> None:
+    request = BruteForceAnalysisRequest.from_dict(
+        {
+            "scenario_id": "grid",
+            "variables": [
+                {"name": "power_mw", "values": [1, 2], "unit": "MW"},
+                {"name": "duration_h", "values": [1, 2, 3], "unit": "h"},
+                {"name": "tariff_escalation_rate_pct", "values": [1.0, 2.0], "unit": "%/year"},
+            ],
+            "objective": {"metric": "shortfall_mwh", "direction": "min"},
+            "constraints": [],
+            "assumptions": _assumptions().__dict__,
+            "deterministic": True,
+            "seed": 1,
+        }
+    )
+
+    response = run_bruteforce_analysis(request=request, context=_context())
+
+    assert len(response.results_df) == 2 * 3 * 2
+    assert response.results_df["candidate_id"].nunique() == len(response.results_df)
+
+
+def test_bruteforce_constraint_penalty_marks_infeasible_candidates() -> None:
+    request = BruteForceAnalysisRequest.from_dict(
+        {
+            "scenario_id": "constraints",
+            "variables": [
+                {"name": "power_mw", "values": [2, 6], "unit": "MW"},
+                {"name": "duration_h", "values": [1], "unit": "h"},
+            ],
+            "objective": {"metric": "shortfall_mwh", "direction": "min"},
+            "constraints": [
+                {"metric": "compliance_pct", "operator": ">=", "value": 0.94, "penalty": 1_000.0}
+            ],
+            "assumptions": _assumptions().__dict__,
+            "deterministic": True,
+            "seed": 5,
+        }
+    )
+
+    response = run_bruteforce_analysis(request=request, context=_context())
+
+    infeasible = response.results_df.loc[~response.results_df["feasible"]]
+    assert not infeasible.empty
+    assert (infeasible["constraint_penalty"] > 0).all()
+    assert (infeasible["objective_score"] > infeasible["objective_value"]).all()
+
+
+def test_bruteforce_ranking_is_deterministic_for_ties() -> None:
+    request = BruteForceAnalysisRequest.from_dict(
+        {
+            "scenario_id": "ties",
+            "variables": [
+                {"name": "power_mw", "values": [2, 2], "unit": "MW"},
+                {"name": "duration_h", "values": [1], "unit": "h"},
+            ],
+            "objective": {"metric": "shortfall_mwh", "direction": "min"},
+            "constraints": [],
+            "assumptions": _assumptions().__dict__,
+            "deterministic": True,
+            "seed": 9,
+        }
+    )
+
+    first = run_bruteforce_analysis(request=request, context=_context())
+    second = run_bruteforce_analysis(request=request, context=_context())
+
+    assert first.records == second.records
 
 
 def test_sensitivity_schema_and_output_stability() -> None:
