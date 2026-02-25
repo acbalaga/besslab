@@ -173,6 +173,68 @@ def test_sensitivity_schema_and_output_stability() -> None:
     assert response.results_df["deterministic"].all()
 
 
+def test_two_way_sensitivity_matrix_shape_and_units() -> None:
+    request = SensitivityAnalysisRequest.from_dict(
+        {
+            "scenario_id": "sens_2d",
+            "base_power_mw": 3,
+            "base_duration_h": 2,
+            "axes": [],
+            "assumptions": _assumptions().__dict__,
+            "deterministic": True,
+            "seed": 17,
+            "two_way_grid": {
+                "parameter_a": "power_mw_multiplier",
+                "parameter_b": "duration_h_multiplier",
+                "values_a": [0.8, 1.0, 1.2],
+                "values_b": [0.5, 1.0],
+                "selected_kpis": ["compliance_pct", "total_shortfall_mwh"],
+                "delta_mode": "absolute",
+            },
+        }
+    )
+
+    response = run_sensitivity_analysis(request=request, context=_context())
+
+    assert response.long_form_df is not None
+    assert response.matrix_df is not None
+    expected_points = 3 * 2
+    assert len(response.long_form_df) == expected_points * 2
+
+    per_kpi = response.matrix_df.groupby("kpi_name")["parameter_a_value"].nunique().to_dict()
+    assert per_kpi["compliance_pct"] == 3
+    assert per_kpi["total_shortfall_mwh"] == 3
+
+    baseline_rows = response.results_df.loc[response.results_df["candidate_id"] == "baseline"]
+    assert len(baseline_rows) == 1
+    baseline_compliance = float(baseline_rows.iloc[0]["compliance_pct"])
+    one_x_one = response.long_form_df.loc[
+        (response.long_form_df["parameter_a_value"] == 1.0)
+        & (response.long_form_df["parameter_b_value"] == 1.0)
+        & (response.long_form_df["kpi_name"] == "compliance_pct")
+    ]
+    assert len(one_x_one) == 1
+    assert float(one_x_one.iloc[0]["baseline_kpi_value"]) == baseline_compliance
+    assert float(one_x_one.iloc[0]["delta_value"]) == 0.0
+
+    required_columns = {
+        "scenario_id",
+        "candidate_id",
+        "parameter_a_name",
+        "parameter_a_value",
+        "parameter_b_name",
+        "parameter_b_value",
+        "kpi_name",
+        "kpi_value",
+        "kpi_unit",
+        "baseline_kpi_value",
+        "delta_mode",
+        "delta_value",
+    }
+    assert required_columns.issubset(response.long_form_df.columns)
+    assert set(response.long_form_df["kpi_unit"]) == {"%", "MWh"}
+
+
 def test_de_fixed_seed_is_deterministic() -> None:
     request = DifferentialEvolutionRequest.from_dict(
         {
