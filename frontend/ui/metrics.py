@@ -96,7 +96,7 @@ def render_primary_metrics(cfg: SimConfig, kpis: KPIResults) -> None:
     c3.metric(
         "Surplus %",
         _fmt_percent(kpis.surplus_pct),
-        help="PV curtailed MWh divided by expected firm MWh across the project life.",
+        help="PV surplus MWh divided by expected firm MWh across the project life.",
     )
     c4.metric(
         "Final SOH total",

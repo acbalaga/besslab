@@ -370,7 +370,7 @@ def build_pdf_summary(
     _draw_table(pdf, margin, pdf.get_y(), perf_widths, performance_rows, font_size=8)
     pdf.ln(2)
 
-    _draw_subsection_title(pdf, "2.2 SOC distribution, clipping, curtailment interaction")
+    _draw_subsection_title(pdf, "2.2 SOC distribution, clipping, surplus interaction")
     soc_values = np.array([])
     if final_year_logs is not None and final.eoy_usable_mwh > 0:
         soc_values = np.clip(final_year_logs.soc_mwh / final.eoy_usable_mwh, 0, 1)
@@ -395,8 +395,8 @@ def build_pdf_summary(
     curtailment_pct_final = _percent(final.pv_curtailed_mwh, final.available_pv_mwh)
     clipping_rows = [
         ["Indicator", "Value"],
-        ["PV curtailment (final)", f"{curtailment_pct_final:,.2f}%"],
-        ["PV curtailment (project)", f"{surplus_pct:,.2f}%"],
+        ["PV surplus (final)", f"{curtailment_pct_final:,.2f}%"],
+        ["PV surplus (project)", f"{surplus_pct:,.2f}%"],
         ["SOC ceiling hits (project)", f"{sum(r.flags.get('soc_ceiling_hits', 0) for r in results):,}"],
         ["SOC floor hits (project)", f"{sum(r.flags.get('soc_floor_hits', 0) for r in results):,}"],
     ]
@@ -454,7 +454,7 @@ def build_pdf_summary(
         ["Metric", "Value"],
         ["Compliance (project)", f"{compliance:,.2f}%"],
         ["Deficit share (project)", f"{deficit_pct:,.2f}%"],
-        ["PV surplus / curtailment share", f"{surplus_pct:,.2f}%"],
+        ["PV surplus share", f"{surplus_pct:,.2f}%"],
         ["Total delivered", f"{total_delivered_mwh:,.1f} MWh"],
         ["Expected delivered", f"{total_expected_mwh:,.1f} MWh"],
     ]
@@ -736,7 +736,7 @@ def build_pdf_summary(
         ["Total shortfall", f"{total_shortfall_mwh:,.1f} MWh"],
         ["PV->Contract (project)", f"{pv_generation_mwh:,.1f} MWh"],
         ["BESS->Contract (project)", f"{bess_generation_mwh:,.1f} MWh"],
-        ["PV surplus/curtailment", f"{pv_excess_mwh:,.1f} MWh"],
+        ["PV surplus", f"{pv_excess_mwh:,.1f} MWh"],
         ["BESS losses (charging ineff.)", f"{bess_losses_mwh:,.1f} MWh"],
         ["Charge/Discharge ratio", _fmt(charge_discharge_ratio)],
         ["PV capture ratio", _fmt(pv_capture_ratio)],
