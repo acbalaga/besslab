@@ -74,7 +74,7 @@ def _metric_definitions() -> List[MetricDefinition]:
         MetricDefinition(
             key="surplus_pct",
             label="% Surplus",
-            description="PV curtailment as a share of total PV generation.",
+            description="PV surplus as a share of total PV generation.",
         ),
         MetricDefinition(
             key="soh_pct",
@@ -1122,5 +1122,5 @@ st.download_button(
 )
 
 st.caption(
-    "Surplus % uses PV curtailment ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
+    "Surplus % uses PV surplus ÷ total expected firm energy. Deficit % uses total shortfall ÷ total expected firm energy."
 )

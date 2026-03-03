@@ -938,7 +938,7 @@ def _yearly_summary_column_units() -> Dict[str, str]:
         "SOH_total": "fraction",
         "EOY usable MWh": "MWh",
         "EOY power MW (avail-adjusted)": "MW",
-        "PV curtailed MWh": "MWh",
+        "PV surplus MWh": "MWh",
     }
 
 
@@ -965,7 +965,7 @@ def _monthly_summary_column_units() -> Dict[str, str]:
         "SOH_total": "fraction",
         "EOY usable MWh": "MWh",
         "EOY power MW (avail-adjusted)": "MW",
-        "PV curtailed MWh": "MWh",
+        "PV surplus MWh": "MWh",
     }
 
 
@@ -1833,7 +1833,7 @@ def run_app():
         'SOH_total': r.soh_total,
         'EOY usable MWh': r.eoy_usable_mwh,
         'EOY power MW (avail-adjusted)': r.eoy_power_mw,
-        'PV curtailed MWh': r.pv_curtailed_mwh,
+        'PV surplus MWh': r.pv_curtailed_mwh,
     } for r in results])
 
     monthly_df = pd.DataFrame([{
@@ -1856,7 +1856,7 @@ def run_app():
         'SOH_total': m.soh_total,
         'EOY usable MWh': m.eom_usable_mwh,
         'EOY power MW (avail-adjusted)': m.eom_power_mw,
-        'PV curtailed MWh': m.pv_curtailed_mwh,
+        'PV surplus MWh': m.pv_curtailed_mwh,
     } for m in monthly_results_all])
     default_df_formatters = {
         'Expected firm MWh': '{:,.1f}',
@@ -1875,7 +1875,7 @@ def run_app():
         'SOH_total': '{:,.3f}',
         'EOY usable MWh': '{:,.1f}',
         'EOY power MW (avail-adjusted)': '{:,.1f}',
-        'PV curtailed MWh': '{:,.1f}',
+        'PV surplus MWh': '{:,.1f}',
     }
 
     # --------- KPIs ---------
@@ -2612,7 +2612,7 @@ def run_app():
             st.altair_chart(build_avg_profile_chart(avg_profiles.project), use_container_width=True)
         st.caption(
             "Stacked bars (narrow width with soft fill): PV→Contract (blue) + BESS→Contract (green) fill the contract box "
-            "(gold). Negative area: BESS charging (purple). PV surplus/curtailment shown in light red. PV resource overlay "
+            "(gold). Negative area: BESS charging (purple). PV surplus shown in light red. PV resource overlay "
             "(tan, dashed outline). Contract step shown with gold outline."
         )
     else:
@@ -2646,7 +2646,7 @@ def run_app():
 
             st.caption(
                 "Heatmap: dark troughs near the SOC floor overnight hint at reliability risk; saturated midday bands near 100% "
-                "indicate PV clipping/curtailment. Use the resolution control if the view feels heavy."
+                "indicate PV clipping/surplus. Use the resolution control if the view feels heavy."
             )
             heatmap_pivot = prepare_soc_heatmap_data(selected_logs, cfg.initial_usable_mwh)
             heatmap_source = (
@@ -2671,7 +2671,7 @@ def run_app():
             )
             heatmap_source["soc_pct"] = heatmap_source["soc_frac"] * 100.0
             heatmap_source["diagnostic_tip"] = (
-                "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/curtailment headroom."
+                "Low overnight SOC → reliability risk. Flat mid-day SOC near 100% → PV clipping/surplus headroom."
             )
             if heatmap_source.empty:
                 st.info("SOC heatmap unavailable — simulation logs were empty for this scenario.")
