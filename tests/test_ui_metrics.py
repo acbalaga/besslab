@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from frontend.ui.metrics import compute_kpis
+from frontend.ui.metrics import build_compliance_deficit_surplus_summary, compute_kpis
 from services.simulation_core import SimConfig, YearResult
 
 
@@ -96,3 +96,30 @@ def test_compute_kpis_deficit_percent_nan_with_zero_expected() -> None:
     )
 
     assert kpis.deficit_pct != kpis.deficit_pct
+
+
+def test_build_compliance_deficit_surplus_summary_includes_project_life_and_first_20_years() -> None:
+    results = [
+        _year_result(expected_firm_mwh=100.0, shortfall_mwh=10.0)
+        for _ in range(25)
+    ]
+
+    summary_df = build_compliance_deficit_surplus_summary(results)
+
+    assert list(summary_df["Window"]) == ["Project life", "First 20 years"]
+    assert list(summary_df["Years included"]) == [25, 20]
+    assert summary_df.loc[0, "Compliance %"] == pytest.approx(90.0)
+    assert summary_df.loc[0, "Deficit %"] == pytest.approx(10.0)
+    assert summary_df.loc[0, "Surplus %"] == pytest.approx(0.0)
+
+
+def test_build_compliance_deficit_surplus_summary_omits_20_year_row_when_shorter_project() -> None:
+    results = [
+        _year_result(expected_firm_mwh=100.0, shortfall_mwh=5.0)
+        for _ in range(10)
+    ]
+
+    summary_df = build_compliance_deficit_surplus_summary(results)
+
+    assert list(summary_df["Window"]) == ["Project life"]
+    assert summary_df.loc[0, "Years included"] == 10

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import List, Sequence
 
 import numpy as np
+import pandas as pd
 import streamlit as st
 
 from services.simulation_core import SimConfig, YearResult
@@ -108,3 +109,38 @@ def render_primary_metrics(cfg: SimConfig, kpis: KPIResults) -> None:
         f"{kpis.augmentation_events}",
         help=f"Energy added over life: {kpis.augmentation_energy_mwh:,.0f} MWh (BOL basis).",
     )
+
+
+def build_compliance_deficit_surplus_summary(results: Sequence[YearResult]) -> pd.DataFrame:
+    """Build a compact percentage summary for project-life and 20-year views.
+
+    Percentages are energy-weighted over the selected window:
+    compliance = delivered / expected, deficit = shortfall / expected,
+    surplus = PV surplus / expected.
+    """
+
+    def _window_row(label: str, window_results: Sequence[YearResult]) -> dict[str, float | str | int]:
+        expected_mwh = float(np.sum([year.expected_firm_mwh for year in window_results]))
+        delivered_mwh = float(np.sum([year.delivered_firm_mwh for year in window_results]))
+        shortfall_mwh = float(np.sum([year.shortfall_mwh for year in window_results]))
+        surplus_mwh = float(np.sum([year.pv_curtailed_mwh for year in window_results]))
+        if expected_mwh <= 0:
+            compliance_pct = float("nan")
+            deficit_pct = float("nan")
+            surplus_pct = float("nan")
+        else:
+            compliance_pct = delivered_mwh / expected_mwh * 100.0
+            deficit_pct = shortfall_mwh / expected_mwh * 100.0
+            surplus_pct = surplus_mwh / expected_mwh * 100.0
+        return {
+            "Window": label,
+            "Years included": len(window_results),
+            "Compliance %": compliance_pct,
+            "Deficit %": deficit_pct,
+            "Surplus %": surplus_pct,
+        }
+
+    rows: list[dict[str, float | str | int]] = [_window_row("Project life", results)]
+    if len(results) >= 20:
+        rows.append(_window_row("First 20 years", results[:20]))
+    return pd.DataFrame(rows)
