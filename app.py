@@ -37,7 +37,12 @@ from frontend.ui.forms import (
     render_rate_limit_section,
     render_simulation_form,
 )
-from frontend.ui.metrics import KPIResults, compute_kpis, render_primary_metrics
+from frontend.ui.metrics import (
+    KPIResults,
+    build_compliance_deficit_surplus_summary,
+    compute_kpis,
+    render_primary_metrics,
+)
 from frontend.ui.rendering import MetricSpec, render_formatted_dataframe, render_metrics
 from frontend.ui.pdf import build_pdf_summary
 from frontend.ui.sensitivity_tornado import (
@@ -2340,6 +2345,18 @@ def run_app():
     st.markdown("---")
     st.subheader("Yearly Summary")
     render_formatted_dataframe(res_df, default_df_formatters)
+
+    percentage_summary_df = build_compliance_deficit_surplus_summary(results)
+    percentage_summary_formatters = {
+        "Compliance %": "{:,.2f}",
+        "Deficit %": "{:,.2f}",
+        "Surplus %": "{:,.2f}",
+    }
+    st.caption(
+        "Project-life percentages are energy-weighted across all simulation years. "
+        "A 20-year view is included when the run length is at least 20 years."
+    )
+    render_formatted_dataframe(percentage_summary_df, percentage_summary_formatters)
 
     with st.expander("Monthly summary preview", expanded=False):
         render_formatted_dataframe(monthly_df, default_df_formatters)
