@@ -319,6 +319,34 @@ def _cell_to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _build_validation_status_message(errors: List[str], warnings: List[str]) -> Optional[Tuple[str, str]]:
+    """Return a compact validation summary for the form header area.
+
+    The simulation form can produce many per-field messages that are helpful but
+    easy to miss in long pages. This summary gives users a quick count of what
+    needs attention before they hunt through detailed notices.
+    """
+
+    error_count = len(errors)
+    warning_count = len(warnings)
+    if error_count == 0 and warning_count == 0:
+        return None
+
+    summary_parts: List[str] = []
+    if error_count:
+        summary_parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
+    if warning_count:
+        summary_parts.append(f"{warning_count} warning{'s' if warning_count != 1 else ''}")
+    summary = " and ".join(summary_parts)
+
+    if error_count:
+        return (
+            "error",
+            f"Input validation found {summary}. Resolve errors before running the simulation.",
+        )
+    return ("warning", f"Input validation found {summary}. Review warnings before you run.")
+
+
 def _window_overlaps(windows: List[Window]) -> List[str]:
     errors: List[str] = []
     for idx, left in enumerate(windows):
@@ -1460,6 +1488,14 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
     validation_details.extend(manual_details)
     validation_details.extend(dispatch_validation.details)
     validation_details.extend(schedule_validation.details)
+
+    validation_status = _build_validation_status_message(validation_errors, validation_warnings)
+    if validation_status is not None:
+        status_kind, status_message = validation_status
+        if status_kind == "error":
+            st.error(status_message)
+        else:
+            st.warning(status_message)
 
     for msg in validation_warnings:
         st.warning(msg)
