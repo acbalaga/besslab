@@ -1014,42 +1014,62 @@ def render_simulation_form(pv_df: pd.DataFrame, cycle_df: pd.DataFrame) -> Simul
                     "Provide a MW value for each hour (00:00-23:00). Use 0 for off hours; blanks are flagged "
                     "as missing hours."
                 )
+                st.caption("Edits are staged locally; click **Save hourly schedule** to apply them.")
                 hourly_default = _extract_data_editor_payload("inputs_dispatch_hourly_schedule")
-                hourly_schedule_df = st.data_editor(
-                    _normalize_hourly_schedule_payload(hourly_default),
-                    num_rows="fixed",
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Hour": st.column_config.NumberColumn("Hour", disabled=True),
-                        "Capacity (MW)": st.column_config.NumberColumn(
-                            "Capacity (MW)", min_value=0.0, step=0.01, format="%.2f"
-                        ),
-                    },
-                    key="inputs_dispatch_hourly_schedule",
-                )
-                _store_data_editor_payload("inputs_dispatch_hourly_schedule", hourly_schedule_df)
+                hourly_schedule_df = _normalize_hourly_schedule_payload(hourly_default)
+                with st.form("dispatch_hourly_schedule_form", clear_on_submit=False):
+                    edited_hourly_schedule_df = st.data_editor(
+                        hourly_schedule_df,
+                        num_rows="fixed",
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Hour": st.column_config.NumberColumn("Hour", disabled=True),
+                            "Capacity (MW)": st.column_config.NumberColumn(
+                                "Capacity (MW)", min_value=0.0, step=0.01, format="%.2f"
+                            ),
+                        },
+                        key="inputs_dispatch_hourly_schedule_editor",
+                    )
+                    saved_hourly_schedule = st.form_submit_button(
+                        "Save hourly schedule", use_container_width=True
+                    )
+                if saved_hourly_schedule:
+                    _store_data_editor_payload("inputs_dispatch_hourly_schedule", edited_hourly_schedule_df)
+                    hourly_schedule_df = edited_hourly_schedule_df
+                    st.success("Saved hourly dispatch schedule for this session.")
             elif dispatch_mode == DISPATCH_MODE_PERIOD:
                 st.caption(
                     "Add periods with HH:MM start/end and a MW capacity. Wrap-around windows like 22:00-02:00 "
                     "are allowed. Overlaps are not allowed; gaps imply 0 MW for uncovered hours."
                 )
+                st.caption("Edits are staged locally; click **Save period schedule** to apply them.")
                 period_default = _extract_data_editor_payload("inputs_dispatch_period_schedule") or []
-                period_schedule_df = st.data_editor(
-                    pd.DataFrame(period_default, columns=["Start time", "End time", "Capacity (MW)"]),
-                    num_rows="dynamic",
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Start time": st.column_config.TextColumn("Start time", help="HH:MM (00:00-23:59)"),
-                        "End time": st.column_config.TextColumn("End time", help="HH:MM (00:00-23:59)"),
-                        "Capacity (MW)": st.column_config.NumberColumn(
-                            "Capacity (MW)", min_value=0.0, step=0.5
-                        ),
-                    },
-                    key="inputs_dispatch_period_schedule",
+                period_schedule_df = pd.DataFrame(
+                    period_default, columns=["Start time", "End time", "Capacity (MW)"]
                 )
-                _store_data_editor_payload("inputs_dispatch_period_schedule", period_schedule_df)
+                with st.form("dispatch_period_schedule_form", clear_on_submit=False):
+                    edited_period_schedule_df = st.data_editor(
+                        period_schedule_df,
+                        num_rows="dynamic",
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Start time": st.column_config.TextColumn("Start time", help="HH:MM (00:00-23:59)"),
+                            "End time": st.column_config.TextColumn("End time", help="HH:MM (00:00-23:59)"),
+                            "Capacity (MW)": st.column_config.NumberColumn(
+                                "Capacity (MW)", min_value=0.0, step=0.5
+                            ),
+                        },
+                        key="inputs_dispatch_period_schedule_editor",
+                    )
+                    saved_period_schedule = st.form_submit_button(
+                        "Save period schedule", use_container_width=True
+                    )
+                if saved_period_schedule:
+                    _store_data_editor_payload("inputs_dispatch_period_schedule", edited_period_schedule_df)
+                    period_schedule_df = edited_period_schedule_df
+                    st.success("Saved period dispatch schedule for this session.")
             else:
                 st.caption(
                     "Upload an 8760-hour requirement CSV with columns hour_index and required_mw (MW). "
